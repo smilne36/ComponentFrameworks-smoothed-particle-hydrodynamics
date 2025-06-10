@@ -40,4 +40,5 @@ private:
     long long computeCellHash(const MATH::Vec3& pos) const;
     void buildGrid();
     void clearGrid();
+
 };
