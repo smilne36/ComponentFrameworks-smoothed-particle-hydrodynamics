@@ -33,8 +33,8 @@ private:
 	GLuint posSSBO = 0, velSSBO = 0, accSSBO = 0, densitySSBO = 0, pressureSSBO = 0;
 	GLuint computeShaderID = 0;
 	float ballAnimTime = 0.0f;
-	int pos; 
-	bool ballMoving = false;	
+	int pos;
+	bool ballMoving = false;
 	bool simulationRunning = false;
 
 public:
@@ -45,11 +45,8 @@ public:
 	virtual void OnDestroy() override;
 	virtual void Update(const float deltaTime) override;
 	virtual void Render() const override;
-	virtual void HandleEvents(const SDL_Event &sdlEvent) override;
-	SPHFluid3D* fluid;
-
-	
+	virtual void HandleEvents(const SDL_Event& sdlEvent) override;
+	SPHFluidGPU* fluidGPU;
 };
-
 
 #endif // SCENE0P_H

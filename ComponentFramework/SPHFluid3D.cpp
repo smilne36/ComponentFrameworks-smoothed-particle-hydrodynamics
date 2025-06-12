@@ -1,143 +1,163 @@
 #include "SPHFluid3D.h"
-#include <SDL_stdinc.h>
-#include  < omp.h >
-SPHFluid3D::SPHFluid3D(int numParticles) {
-    int n = static_cast<int>(std::cbrt(numParticles));
-    float spacing = h * 0.5f;
-    for (int x = 0; x < n; ++x)
-        for (int y = 0; y < n; ++y)
-            for (int z = 0; z < n; ++z) {
-                SPHParticle p;
-                p.pos = MATH::Vec3(x * spacing, y * spacing, z * spacing);
-                p.vel = MATH::Vec3(0, 0, 0);
-                p.acc = MATH::Vec3(0, 0, 0);
-                p.density = restDensity;
-                p.pressure = 0;
-                particles.push_back(p);
-            }
+#include "Debug.h"
+#include <fstream>
+#include <sstream>
+#include <random> 
+
+SPHFluidGPU::SPHFluidGPU(size_t numParticles_) : numParticles(numParticles_) {
+    computeShader = LoadComputeShader("shaders/SPHFluid.comp");
+    InitializeParticles();
+    UploadDataToGPU();
 }
 
-float SPHFluid3D::poly6(float r2) const {
-    float h2 = h * h;
-    if (r2 >= 0 && r2 <= h2) {
-        float coeff = 315.0f / (64.0f * M_PI * std::pow(h, 9));
-        return coeff * std::pow(h2 - r2, 3);
-    }
-    return 0.0f;
+SPHFluidGPU::~SPHFluidGPU() {
+    glDeleteBuffers(1, &ssbo);
+    glDeleteProgram(computeShader);
 }
 
-MATH::Vec3 SPHFluid3D::spikyGrad(const MATH::Vec3& rij) const {
-    float r = std::sqrt(rij.x * rij.x + rij.y * rij.y + rij.z * rij.z);
-    if (r > 0 && r <= h) {
-        float coeff = -45.0f / (M_PI * std::pow(h, 6));
-        return rij * (coeff * std::pow(h - r, 2) / r);
-    }
-    return MATH::Vec3(0, 0, 0);
-}
+void SPHFluidGPU::InitializeParticles() {
+    particles.resize(numParticles);
+    int count = 0;
 
-float SPHFluid3D::viscosityLaplacian(float r) const {
-    if (r >= 0 && r <= h) {
-        float coeff = 45.0f / (M_PI * std::pow(h, 6));
-        return coeff * (h - r);
-    }
-    return 0.0f;
-}
+    int cubeSize = static_cast<int>(std::round(std::cbrt(numParticles)));
+    float spacing = 0.3f;
+    float half = (cubeSize - 1) * spacing * 0.5f;
 
-// Helper to compute a unique hash for a 3D cell
-long long SPHFluid3D::computeCellHash(const MATH::Vec3& pos) const {
-    int xi = static_cast<int>(std::floor(pos.x / cellSize));
-    int yi = static_cast<int>(std::floor(pos.y / cellSize));
-    int zi = static_cast<int>(std::floor(pos.z / cellSize));
-    // Combine into a unique key (use a better hash in production)
-    return (static_cast<long long>(xi) << 40) | (static_cast<long long>(yi) << 20) | zi;
-}
+    // Create random jitter generator
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> jitterDist(-0.05f, 0.05f); // small random offset
 
-void SPHFluid3D::clearGrid() {
-    grid.clear();
-}
-
-void SPHFluid3D::buildGrid() {
-    clearGrid();
-    for (int i = 0; i < particles.size(); ++i) {
-        long long hash = computeCellHash(particles[i].pos);
-        grid[hash].particleIndices.push_back(i);
-    }
-}
-
-void SPHFluid3D::findNeighbors(int pi, std::vector<int>& neighbors) const {
-    neighbors.clear();
-    const MATH::Vec3& pos = particles[pi].pos;
-    int xi = static_cast<int>(std::floor(pos.x / cellSize));
-    int yi = static_cast<int>(std::floor(pos.y / cellSize));
-    int zi = static_cast<int>(std::floor(pos.z / cellSize));
-    for (int dx = -1; dx <= 1; ++dx)
-    for (int dy = -1; dy <= 1; ++dy)
-    for (int dz = -1; dz <= 1; ++dz) {
-        long long hash = (static_cast<long long>(xi+dx) << 40) | (static_cast<long long>(yi+dy) << 20) | (zi+dz);
-        auto it = grid.find(hash);
-        if (it != grid.end()) {
-            for (int pj : it->second.particleIndices) {
-                if (pj != pi) neighbors.push_back(pj);
+    for (int x = 0; x < cubeSize && count < numParticles; x++) {
+        for (int y = 0; y < cubeSize / 3 && count < numParticles; y++) {
+            for (int z = 0; z < cubeSize && count < numParticles; z++) {
+                SPHParticle& p = particles[count++];
+                p.pos = Vec4(
+                    x * spacing - half + jitterDist(gen),
+                    y * spacing - half + jitterDist(gen),
+                    z * spacing - half + jitterDist(gen),
+                    0.0f
+                );
+                p.vel = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+                p.acc = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+                p.density = 0.0f;
+                p.pressure = 0.0f;
             }
         }
     }
+    std::cout << "Total particles initialized: " << count << std::endl;
 }
 
-void SPHFluid3D::step() {
-    cellSize = h;
-    buildGrid();
+void SPHFluidGPU::UploadDataToGPU() {
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(SPHParticle) * particles.size(), particles.data(), GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+}
 
-    std::vector<int> neighbors;
+void SPHFluidGPU::DispatchCompute() {
+    glUseProgram(computeShader);
+    float timeStep = 0.0001f;
+    float h = 0.8f;
+    float mass = 0.02f;
+    float restDensity = 1000.0f;
+    float gasConstant = 750.0f;
+    float viscosity = 3.0f;
+    MATH::Vec3 gravity = MATH::Vec3(0, -98.0, 0);   // More dramatic
 
-    // 1. Compute density and pressure (parallel)
-    #pragma omp parallel for private(neighbors)
-    for (int i = 0; i < particles.size(); ++i) {
-        SPHParticle& pi = particles[i];
-        pi.density = 0.0f;
-        findNeighbors(i, neighbors);
-        for (int j : neighbors) {
-            const SPHParticle& pj = particles[j];
-            MATH::Vec3 rij = pi.pos - pj.pos;
-            float r2 = rij.x * rij.x + rij.y * rij.y + rij.z * rij.z;
-            if (r2 < h * h) {
-                pi.density += mass * poly6(r2);
-            }
+
+
+    glUniform1f(glGetUniformLocation(computeShader, "timeStep"), timeStep);
+    glUniform1f(glGetUniformLocation(computeShader, "h"), h);
+    glUniform1f(glGetUniformLocation(computeShader, "mass"), mass);
+    glUniform1f(glGetUniformLocation(computeShader, "restDensity"), restDensity);
+    glUniform1f(glGetUniformLocation(computeShader, "gasConstant"), gasConstant);
+    glUniform1f(glGetUniformLocation(computeShader, "viscosity"), viscosity);
+    glUniform3f(glGetUniformLocation(computeShader, "gravity"), gravity.x, gravity.y, gravity.z);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((GLuint)((numParticles + 255) / 256), 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    glUseProgram(0);
+}
+
+void SPHFluidGPU::DownloadDataFromGPU() {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    void* ptr = glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+    if (ptr) {
+        memcpy(particles.data(), ptr, sizeof(SPHParticle) * particles.size());
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+       
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+   
+}
+
+std::vector<Vec3> SPHFluidGPU::GetPositions() const {
+    std::vector<Vec3> result;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    const SPHParticle* gpuData = (const SPHParticle*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+    if (gpuData) {
+        for (size_t i = 0; i < numParticles; ++i) {
+            result.push_back(Vec3(gpuData[i].pos.x, gpuData[i].pos.y, gpuData[i].pos.z));
         }
-        // Self contribution
-        pi.density += mass * poly6(0.0f);
-        pi.pressure = gasConstant * (pi.density - restDensity);
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        /*for (int i = 0; i < 20 && i < numParticles; ++i) {
+            std::cout << "P" << i << ": "
+                << gpuData[i].pos.x << ", "
+                << gpuData[i].pos.y << ", "
+                << gpuData[i].pos.z << std::endl;
+        }*/
+    }
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    return result;
+}
+
+GLuint SPHFluidGPU::LoadComputeShader(const char* filePath) {
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        Debug::FatalError("Failed to open compute shader file", __FILE__, __LINE__);
     }
 
-    // 3. Compute forces
-    for (int i = 0; i < particles.size(); ++i) {
-        SPHParticle& pi = particles[i];
-        MATH::Vec3 fPressure(0, 0, 0), fViscosity(0, 0, 0);
-        findNeighbors(i, neighbors);
-        for (int j : neighbors) {
-            const SPHParticle& pj = particles[j];
-            if (i == j) continue;
-            MATH::Vec3 rij = pi.pos - pj.pos;
-            float r = std::sqrt(rij.x * rij.x + rij.y * rij.y + rij.z * rij.z);
-            if (r < h) {
-                // Pressure force
-                fPressure += spikyGrad(rij) * (-mass * (pi.pressure + pj.pressure) / (2.0f * pj.density));
-                // Viscosity force
-                fViscosity += (pj.vel - pi.vel) * (viscosityLaplacian(r) * mass / pj.density);
-            }
-        }
-        MATH::Vec3 fGravity = gravity * pi.density;
-        pi.acc = (fPressure + viscosity * fViscosity + fGravity) / pi.density;
+    std::stringstream ss;
+    ss << file.rdbuf();
+    std::string sourceStr = ss.str();
+    const char* source = sourceStr.c_str();
+
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    GLint isCompiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &isCompiled);
+    if (!isCompiled) {
+        GLint maxLength = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &maxLength);
+
+        std::string errorLog(maxLength, ' ');
+        glGetShaderInfoLog(shader, maxLength, &maxLength, &errorLog[0]);
+
+        glDeleteShader(shader);
+        Debug::FatalError("Compute shader compilation failed:\n" + errorLog, __FILE__, __LINE__);
     }
 
-    // 4. Integrate
-    for (auto& p : particles) {
-        p.vel += p.acc * timeStep;
-        p.vel *= 0.99f; // Damping
-        p.pos += p.vel * timeStep;
-        // Simple boundary (cube)
-        for (int i = 0; i < 3; ++i) {
-            if (p.pos[i] < -5.0f) { p.pos[i] = -5.0f; p.vel[i] *= -0.3f; }
-            if (p.pos[i] > 5.0f)  { p.pos[i] = 5.0f;  p.vel[i] *= -0.3f; }
-        }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+    glDeleteShader(shader);
+
+    GLint isLinked = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &isLinked);
+    if (!isLinked) {
+        GLint maxLength = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &maxLength);
+        std::string errorLog(maxLength, ' ');
+        glGetProgramInfoLog(program, maxLength, &maxLength, &errorLog[0]);
+
+        glDeleteProgram(program);
+        Debug::FatalError("Compute shader link failed:\n" + errorLog, __FILE__, __LINE__);
     }
+
+    return program;
 }

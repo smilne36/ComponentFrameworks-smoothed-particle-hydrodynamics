@@ -2,8 +2,7 @@
 #define WINDOW_H
 
 #include <SDL.h>
-#include <glew.h>
-#include <SDL_opengl.h>
+#include <glad.h>
 #include <string>
 #include <iostream>
 #include "Debug.h"
@@ -32,5 +31,6 @@ public:
 private: /// internal tools OpenGl versions. 
 	void setAttributes(int major_, int minor_);
 	void getInstalledOpenGLInfo(int *major, int *minor);
+	void getInstalledOpenGLInfo();
 };
 #endif /// !WINDOW_H

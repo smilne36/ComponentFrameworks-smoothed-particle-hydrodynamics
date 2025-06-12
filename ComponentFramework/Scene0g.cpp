@@ -1,4 +1,4 @@
-#include <glew.h>
+#include "glad.h"
 #include <iostream>
 #include <SDL.h>
 #include "Scene0g.h"

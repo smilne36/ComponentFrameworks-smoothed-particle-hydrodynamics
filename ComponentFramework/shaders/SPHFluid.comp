@@ -1,0 +1,121 @@
+#version 450
+#extension GL_ARB_compute_shader : enable
+#extension GL_ARB_shader_storage_buffer_object : enable
+
+layout(local_size_x = 256) in;  // Workgroup size
+
+// Particle data
+struct Particle {
+    vec4 pos;      // xyz = position, w = unused
+    vec4 vel;      // xyz = velocity, w = unused
+    vec4 acc;      // xyz = acceleration, w = unused
+    float density;
+    float pressure;
+};
+
+// Bind SSBOs
+layout(std430, binding = 0) buffer PosBuffer {
+    Particle particles[];
+};
+
+uniform float timeStep = 0.003;
+uniform float h = 1.0;
+uniform float mass = 0.02;
+uniform float restDensity = 1000.0;
+uniform float gasConstant = 2000.0;
+uniform float viscosity = 3.5;
+uniform vec3 gravity = vec3(0.0, -50.0, 0.0);
+
+// Poly6 kernel
+float poly6(float r2) {
+    float h2 = h * h;
+    if (r2 >= 0.0 && r2 <= h2) {
+        float coeff = 315.0 / (64.0 * 3.141592 * pow(h, 9));
+        return coeff * pow(h2 - r2, 3);
+    }
+    return 0.0;
+}
+
+// Spiky gradient
+vec3 spikyGrad(vec3 rij) {
+    float r = length(rij);
+    if (r > 0.0 && r <= h) {
+        float coeff = -45.0 / (3.141592 * pow(h, 6));
+        return rij * (coeff * pow(h - r, 2) / r);
+    }
+    return vec3(0.0);
+}
+
+// Viscosity kernel
+float viscosityLap(float r) {
+    if (r >= 0.0 && r <= h) {
+        float coeff = 45.0 / (3.141592 * pow(h, 6));
+        return coeff * (h - r);
+    }
+    return 0.0;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= particles.length()) return;
+
+    Particle pi = particles[i];
+    pi.density = 0.0;
+
+    // --- Density calculation ---
+    for (uint j = 0; j < particles.length(); ++j) {
+        vec3 rij = pi.pos.xyz - particles[j].pos.xyz;
+        float r2 = dot(rij, rij);
+        if (r2 < h * h) {
+            pi.density += mass * poly6(r2);
+        }
+    }
+    pi.density = max(pi.density, 1.0); // Prevent divide-by-zero
+    pi.pressure = gasConstant * (pi.density - restDensity);
+
+    // --- Force computation ---
+    vec3 fPressure = vec3(0.0);
+    vec3 fViscosity = vec3(0.0);
+    for (uint j = 0; j < particles.length(); ++j) {
+        if (i == j) continue;
+        Particle pj = particles[j];
+        vec3 rij = pi.pos.xyz - pj.pos.xyz;
+        float r = length(rij);
+        if (r < h && pj.density > 0.0) {
+            fPressure += spikyGrad(rij) * (-mass * (pi.pressure + pj.pressure) / (2.0 * pj.density));
+            fViscosity += (pj.vel.xyz - pi.vel.xyz) * (viscosityLap(r) * mass / pj.density);
+        }
+    }
+
+    vec3 fGravity = gravity * pi.density;
+    vec3 totalForce = fPressure + viscosity * fViscosity + fGravity;
+    vec3 acceleration = totalForce / pi.density;
+
+    // --- Integration ---
+    pi.vel.xyz += acceleration * timeStep;
+    pi.vel.xyz *= 0.98; // damping
+    pi.pos.xyz += pi.vel.xyz * timeStep;
+
+    // --- Boundary conditions ---
+    const float box = 5.0;
+    const float damp = 0.1;
+
+    for (int c = 0; c < 3; ++c) {
+        if (pi.pos[c] < -box) {
+            pi.pos[c] = -box;
+            if (pi.vel[c] < 0.0) pi.vel[c] *= -damp;
+        }
+        if (pi.pos[c] > box) {
+            pi.pos[c] = box;
+            if (pi.vel[c] > 0.0) pi.vel[c] *= -damp;
+        }
+    }
+
+    // --- Floor friction (optional) ---
+    if (pi.pos.y <= -box + 0.01 && abs(pi.vel.y) < 0.1) {
+        pi.vel.x *= 0.95;
+        pi.vel.z *= 0.95;
+    }
+
+    particles[i] = pi;
+}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <glew.h>
+#include "glad.h"
 #include <vector>
 #include <Vector.h>
 using namespace MATH;

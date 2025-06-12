@@ -2,7 +2,6 @@
 #include "SceneManager.h"
 #include "Timer.h"
 #include "Window.h"
-#include "Scene0g.h"
 #include "Scene0p.h"
 
 
@@ -116,10 +115,6 @@ bool SceneManager::BuildNewScene(SCENE_NUMBER scene) {
 	}
 
 	switch (scene) {
-	case SCENE_NUMBER::SCENE0g:
-		currentScene = new Scene0g();
-		status = currentScene->OnCreate();
-		break;
 	case SCENE_NUMBER::SCENE0p:
 		currentScene = new Scene0p();
 		status = currentScene->OnCreate();
