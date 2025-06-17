@@ -8,9 +8,12 @@ struct Particle {
     vec4 acc;
     float density;
     float pressure;
+    float padA;
+    float padB;
     int isGhost;
-    float pad0;
     int isActive;
+    int padC;
+    int pad0;
 };
 
 layout(std430, binding = 0) buffer ParticleBuf    { Particle particles[]; };
@@ -30,6 +33,7 @@ uniform float viscosity;
 uniform float timeStep;
 uniform vec3 gravity;
 uniform float surfaceTension; // Tunable from CPU
+uniform int numParticles; // total particle count
 
 // ----------- SPH Kernels -----------
 float poly6(float r2, float h) {
@@ -58,10 +62,15 @@ float viscLaplacian(float r, float h) {
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(numParticles)) return; // guard against extra threads
     Particle pi = particles[i];
 
     // ---------- Ghost boundary handling ----------
     if (pi.isGhost == 1) {
+        if (pi.isActive == 0) {
+            particles[i] = pi;
+            return;
+        }
         pi.vel = vec4(0.0);
         pi.acc = vec4(0.0);
         pi.density = restDensity;
@@ -150,6 +159,7 @@ void main() {
     // ---------- Gravity and integration ----------
     vec3 fGravity = gravity * pi.density;
     vec3 acc = (fPressure + viscosity * fViscosity + fGravity + fSurfaceTension) / pi.density;
+    pi.acc = vec4(acc, 0.0); // store acceleration
 
     pi.vel.xyz += acc * timeStep;
     pi.vel.xyz *= 0.995; // Gentle damping (optional)

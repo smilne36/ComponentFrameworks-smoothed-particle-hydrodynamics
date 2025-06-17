@@ -33,6 +33,7 @@ public:
     void RadixSortByCell();
     void ActivateClosestGhost(float x, float y, float z);
     void UpdateGhostParticlesDynamic(float h);
+    void UploadGhostActivityToGPU();
     void UploadDataToGPU();
     void DownloadDataFromGPU();
   
