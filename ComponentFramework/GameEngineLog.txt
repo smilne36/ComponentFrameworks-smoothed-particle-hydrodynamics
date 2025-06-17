@@ -1,4 +1,4 @@
-Tue Jun 17 11:33:21 2025
+Tue Jun 17 11:38:41 2025
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 576.52
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -11,3 +11,6 @@ Tue Jun 17 11:33:21 2025
 "projectionMatrix" loc:1
 "viewMatrix" loc:2
 
+[INFO]: Deleting the SceneManager
+[INFO]: Deleting assets Scene0: 
+[INFO]: Deleted Scene0: 

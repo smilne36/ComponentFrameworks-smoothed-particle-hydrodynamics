@@ -311,7 +311,7 @@ void SPHFluidGPU::DispatchCompute() {
     float viscosity = 3.0f;
     MATH::Vec3 gravity = MATH::Vec3(0, -98000.0f, 0);
     float surfaceTension = 0.5f;
-    float timeStep = 0.002f;
+    float timeStep = 0.00002f;
 
     UpdateGhostParticlesDynamic(h);
     UploadGhostActivityToGPU();
