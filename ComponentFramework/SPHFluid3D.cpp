@@ -300,7 +300,19 @@ void SPHFluidGPU::UploadDataToGPU() {
 
 }
 
-// ... (DownloadDataFromGPU & VBO update same as before)
+void SPHFluidGPU::DownloadDataFromGPU() {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    const SPHParticle* gpuParticles =
+        (const SPHParticle*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
+    if (gpuParticles) {
+        memcpy(particles.data(), gpuParticles,
+               sizeof(SPHParticle) * particles.size());
+    }
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+// ... (VBO update same as before)
 
 void SPHFluidGPU::DispatchCompute() {
     float h = 0.28f;
@@ -313,6 +325,8 @@ void SPHFluidGPU::DispatchCompute() {
     float surfaceTension = 0.5f;
     float timeStep = 0.001f;
 
+    // Sync CPU copy with latest GPU data so ghost activation uses fresh positions
+    DownloadDataFromGPU();
     UpdateGhostParticlesDynamic(h);
     UploadGhostActivityToGPU();
 
