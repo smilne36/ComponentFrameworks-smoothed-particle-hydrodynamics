@@ -156,14 +156,16 @@ void main() {
         fSurfaceTension = -surfaceTension * lapC * (gradC / gradC_len);
     }
 
-    // ---------- Gravity and integration ----------
-    vec3 fGravity = gravity * pi.density;
-    vec3 acc = (fPressure + viscosity * fViscosity + fGravity + fSurfaceTension) / pi.density;
-    pi.acc = vec4(acc, 0.0); // store acceleration
+ // ---------- Gravity and integration ----------
+vec3 fGravity = gravity * pi.density;
+vec3 acc = (fPressure + viscosity * fViscosity + fGravity + fSurfaceTension) / pi.density;
+pi.acc = vec4(acc, 0.0); // store acceleration
 
-    pi.vel.xyz += acc * timeStep;
-    pi.vel.xyz *= 0.995; // Gentle damping (optional)
-    pi.pos.xyz += pi.vel.xyz * timeStep;
+pi.vel.xyz += acc * timeStep;
+pi.vel.xyz *= 0.995; // Gentle damping (optional)
+pi.pos.xyz += pi.vel.xyz * timeStep;
+
+   
 
     // ---------- Boundaries ----------
     for (int c = 0; c < 3; ++c) {
