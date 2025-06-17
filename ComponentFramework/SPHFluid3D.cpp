@@ -309,9 +309,9 @@ void SPHFluidGPU::DispatchCompute() {
     float restDensity = mass / (spacing * spacing * spacing); // ≈ 370     // mass / (spacing^3)
     float gasConstant = 15000.0f;
     float viscosity = 3.0f;
-    MATH::Vec3 gravity = MATH::Vec3(0, -98000.0f, 0);
+    MATH::Vec3 gravity = MATH::Vec3(0, -980.0f, 0);
     float surfaceTension = 0.5f;
-    float timeStep = 0.00002f;
+    float timeStep = 0.002f;
 
     UpdateGhostParticlesDynamic(h);
     UploadGhostActivityToGPU();
@@ -328,6 +328,7 @@ void SPHFluidGPU::DispatchCompute() {
     glUniform3i(glGetUniformLocation(buildGridShader, "gridSize"), gridSizeX, gridSizeY, gridSizeZ);
     glUniform1f(glGetUniformLocation(buildGridShader, "cellSize"), cellSize);
     glUniform1f(glGetUniformLocation(buildGridShader, "box"), box);
+    glUniform1i(glGetUniformLocation(buildGridShader, "numParticles"), int(particles.size()));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
@@ -344,6 +345,7 @@ void SPHFluidGPU::DispatchCompute() {
     glUniform3i(glGetUniformLocation(sphGridShader, "gridSize"), gridSizeX, gridSizeY, gridSizeZ);
     glUniform1f(glGetUniformLocation(sphGridShader, "cellSize"), cellSize);
     glUniform1f(glGetUniformLocation(sphGridShader, "box"), box);
+    glUniform1i(glGetUniformLocation(sphGridShader, "numParticles"), int(particles.size()));
     glUniform1f(glGetUniformLocation(sphGridShader, "timeStep"), timeStep);
     glUniform1f(glGetUniformLocation(sphGridShader, "h"), h);
     glUniform1f(glGetUniformLocation(sphGridShader, "mass"), mass);

@@ -20,8 +20,10 @@ layout(std430, binding = 3) buffer ParticleCellBuf { int particleCell[]; };
 uniform ivec3 gridSize;
 uniform float cellSize;
 uniform float box;
+uniform int numParticles; // total particle count
 void main() {
     uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(numParticles)) return; // guard against extra threads
     if (particles[id].isGhost == 1 && particles[id].isActive == 0) {
         particleCell[id] = -1;
         particleNext[id] = -1;
