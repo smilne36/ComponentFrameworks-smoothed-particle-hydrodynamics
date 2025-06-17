@@ -8,9 +8,12 @@ struct Particle {
     vec4 acc;
     float density;
     float pressure;
+    float padA;
+    float padB;
     int isGhost;
-    float pad0;
     int isActive;
+    int padC;
+    int pad0;
 };
 
 layout(std430, binding = 0) buffer ParticleBuf    { Particle particles[]; };
