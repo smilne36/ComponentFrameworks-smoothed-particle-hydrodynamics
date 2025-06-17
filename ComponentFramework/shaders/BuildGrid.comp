@@ -1,7 +1,12 @@
 #version 450
 layout(local_size_x = 256) in;
 struct Particle {
-    vec4 pos; vec4 vel; vec4 acc; float density; float pressure; int isGhost; float pad0;
+    vec4 pos; vec4 vel; vec4 acc;
+    float density;
+    float pressure;
+    int isGhost;
+    float pad0;
+    int isActive;
 };
 layout(std430, binding = 0) buffer ParticleBuf { Particle particles[]; };
 layout(std430, binding = 1) buffer CellHeadBuf { int cellHead[]; };
@@ -12,6 +17,11 @@ uniform float cellSize;
 uniform float box;
 void main() {
     uint id = gl_GlobalInvocationID.x;
+    if (particles[id].isGhost == 1 && particles[id].isActive == 0) {
+        particleCell[id] = -1;
+        particleNext[id] = -1;
+        return;
+    }
     vec3 pos = particles[id].pos.xyz;
     ivec3 cellCoord = ivec3(floor((pos + vec3(box)) / cellSize));
     cellCoord = clamp(cellCoord, ivec3(0), gridSize - 1);

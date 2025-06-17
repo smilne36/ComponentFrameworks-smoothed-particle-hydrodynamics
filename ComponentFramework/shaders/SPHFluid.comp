@@ -62,6 +62,10 @@ void main() {
 
     // ---------- Ghost boundary handling ----------
     if (pi.isGhost == 1) {
+        if (pi.isActive == 0) {
+            particles[i] = pi;
+            return;
+        }
         pi.vel = vec4(0.0);
         pi.acc = vec4(0.0);
         pi.density = restDensity;

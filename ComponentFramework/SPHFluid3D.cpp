@@ -70,14 +70,15 @@ void SPHFluidGPU::InitializeParticles() {
                     -box * 0.7f + z * spacing + jitter(rng),
                     0.0f
                 );
-                p.vel = Vec4(0, 0, 0, 0);
-                p.acc = Vec4(0, 0, 0, 0);
-                p.density = 0.0f;
-                p.pressure = 0.0f;
-                p.isGhost = 0;
-                p.pad0 = 0.0f;
-                particles.push_back(p);
-                ++count;
+        p.vel = Vec4(0, 0, 0, 0);
+        p.acc = Vec4(0, 0, 0, 0);
+        p.density = 0.0f;
+        p.pressure = 0.0f;
+        p.isGhost = 0;
+        p.isActive = 0;
+        p.pad0 = 0.0f;
+        particles.push_back(p);
+        ++count;
             }
             if (count >= numParticles) break;
         }
@@ -93,6 +94,7 @@ void SPHFluidGPU::InitializeParticles() {
         p.density = 0.0f;
         p.pressure = 0.0f;
         p.isGhost = 1;
+        p.isActive = 0;
         p.pad0 = 0.0f;
         particles.push_back(p);
         };
@@ -278,6 +280,13 @@ void SPHFluidGPU::UpdateGhostParticlesDynamic(float h) {
         if (fluid.pos.z > box - h)  ActivateClosestGhost(fluid.pos.x, fluid.pos.y, box);
     }
 }
+
+void SPHFluidGPU::UploadGhostActivityToGPU() {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+        sizeof(SPHParticle) * particles.size(), particles.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
 // -- Upload full particle buffer to GPU
 void SPHFluidGPU::UploadDataToGPU() {
     glGenBuffers(1, &ssbo);
@@ -303,7 +312,9 @@ void SPHFluidGPU::DispatchCompute() {
     MATH::Vec3 gravity = MATH::Vec3(0, -980.0f, 0);
     float surfaceTension = 0.5f;
     float timeStep = 0.002f;
-   
+
+    UpdateGhostParticlesDynamic(h);
+    UploadGhostActivityToGPU();
 
     // 1. Clear grid
     glUseProgram(clearGridShader);
