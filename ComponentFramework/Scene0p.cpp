@@ -8,6 +8,10 @@
 #include "Body.h"
 #include <cmath>
 #include "SPHFluid3D.h"
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "SceneManager.h"
+
 
 Scene0p::Scene0p() :
     sphere{ nullptr }, shader{ nullptr }, mesh{ nullptr },
@@ -41,7 +45,7 @@ bool Scene0p::OnCreate() {
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
-    fluidGPU = new SPHFluidGPU(20000); // ? You can increase this!
+    fluidGPU = new SPHFluidGPU(50000); // ? You can increase this!
 
     return true;
 }
@@ -95,6 +99,16 @@ void Scene0p::Update(const float deltaTime) {
 
     if (fluidGPU) {
         fluidGPU->DispatchCompute();
+        fluidGPU->UpdateFluidVBOFromGPU();
+
+        std::vector<Vec3> velocities;
+        velocities.reserve(fluidGPU->particles.size());
+        for (const auto& p : fluidGPU->particles) {
+            if (p.isGhost == 0) {
+                velocities.emplace_back(p.vel.x, p.vel.y, p.vel.z);
+            }
+        }
+        mesh->SetInstanceVelocities(velocities);
     }
 }
 
@@ -114,21 +128,20 @@ void Scene0p::Render() const {
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
     if (fluidGPU && mesh) {
-        std::vector<Vec3> positions = fluidGPU->GetPositions();
+        // 1. Get the mapped VBO (must hold only fluid particle positions)
+        GLuint vbo = fluidGPU->GetFluidVBO();       // returns VBO for instance positions
+        size_t numInstances = fluidGPU->GetNumFluids(); // returns fluid particle count
 
-        mesh->SetInstanceData(positions);
+        // 2. Bind the instance buffer for position (vec4 per instance)
+        mesh->BindInstanceBuffer(vbo, sizeof(Vec4)); // or 4 * sizeof(float)
 
-        std::vector<Vec3> colors;
-        for (const auto& p : positions) {
-            float height = (p.y + 5.0f) / 10.0f;
-            colors.push_back(Vec3(0.2f, 0.4f + height, 1.0f - height));
-        }
-        mesh->SetInstanceColors(colors);
-
+        // 3. Set scale/model matrix as usual
         Matrix4 scaleMat = MMath::scale(0.1f, 0.1f, 0.1f);
         glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
-        mesh->RenderInstanced(GL_TRIANGLES, positions.size());
-    }
 
+        // 4. Draw fluid instances
+        mesh->RenderInstanced(GL_TRIANGLES, numInstances); // Only fluids!
+    }
+   
     glUseProgram(0);
 }

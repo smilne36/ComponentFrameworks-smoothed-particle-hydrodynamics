@@ -7,7 +7,7 @@
 #include <SDL.h>
 #include "window.h" 
 #include "Body.h"
-
+#include "Mesh.h"
 using namespace MATH;
 
 /// Forward declarations 
@@ -36,6 +36,15 @@ private:
 	int pos;
 	bool ballMoving = false;
 	bool simulationRunning = false;
+
+	float guiGravityY = -980000.0f;
+	float guiViscosity = 3.5f;
+	float guiGasConstant = 2000.0f;
+	float guiRestDensity = 1000.0f;
+	float h = 0.28f;
+	float guiTimeStep = 0.00009f;
+
+
 
 public:
 	explicit Scene0p();

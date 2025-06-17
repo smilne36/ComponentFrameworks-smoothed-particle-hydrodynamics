@@ -5,7 +5,7 @@
 #include "tiny_obj_loader.h"
 
 Mesh::Mesh(const char* filename_):dateLength{0}, drawmode{0}, 
-vao{0}, vbo{0}, instanceVBO{0}, instanceColorVBO{0}, instanceCount{0} {
+vao{0}, vbo{0}, instanceVBO{0}, instanceColorVBO{0}, instanceVelVBO{0}, instanceCount{0} {
 	filename = filename_;
 }
 
@@ -118,6 +118,16 @@ void Mesh::RenderInstanced(GLenum drawmode_, size_t count) const {
     glBindVertexArray(0);
 }
 
+void Mesh::BindInstanceBuffer(GLuint vbo, GLsizei stride) {
+    glBindVertexArray(this->vao);   // Your mesh's VAO
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(5);   // Choose location 4, for example
+    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)0);
+    glVertexAttribDivisor(5, 1);    // Advance once per instance
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+	//std::cout << "Instance buffer bound to VAO: " << vao << " with VBO: " << vbo << std::endl;
+} 
 void Mesh::SetInstanceData(const std::vector<Vec3>& positions) {
     if (instanceVBO == 0) {
         glGenBuffers(1, &instanceVBO);
@@ -154,13 +164,35 @@ void Mesh::SetInstanceColors(const std::vector<Vec3>& colors) {
     glBindVertexArray(0);
 }
 
+void Mesh::SetInstanceVelocities(const std::vector<Vec3>& velocities) {
+    if (instanceVelVBO == 0) {
+        glGenBuffers(1, &instanceVelVBO);
+    }
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVelVBO);
+    glBufferData(GL_ARRAY_BUFFER, velocities.size() * sizeof(Vec3), velocities.data(), GL_DYNAMIC_DRAW);
+
+    // Attribute 6: instance velocity
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void*)0);
+    glVertexAttribDivisor(6, 1); // Advance per instance
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+	//std::cout << "Instance velocities set for " << velocities.size() << " instances." << std::endl;
+}
+
 void Mesh::OnDestroy() {
     glDeleteBuffers(1, &vbo);
     if (instanceVBO != 0) {
         glDeleteBuffers(1, &instanceVBO);
+
     }
     if (instanceColorVBO != 0) {
         glDeleteBuffers(1, &instanceColorVBO);
+    }
+    if (instanceVelVBO != 0) {
+        glDeleteBuffers(1, &instanceVelVBO);
     }
 	glDeleteVertexArrays(1, &vao);
 }

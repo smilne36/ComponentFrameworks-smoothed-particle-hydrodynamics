@@ -26,6 +26,7 @@ private:
 	GLuint instanceVBO = 0;
 	GLuint instanceColorVBO = 0;
 	size_t instanceCount = 0;
+	GLuint instanceVelVBO = 0;
 
 public:
 	
@@ -36,9 +37,12 @@ public:
 	void Update(const float deltaTime);
 	void Render() const;
 	void Render(GLenum drawmode) const;
+	void BindInstanceBuffer(GLuint vbo, GLsizei stride);
 	void SetInstanceData(const std::vector<Vec3>& positions);
 	void SetInstanceColors(const std::vector<Vec3>& colors);
+	void SetInstanceVelocities(const std::vector<Vec3>& velocities);
 	void RenderInstanced(GLenum drawmode, size_t count) const;
 	
+
 };
 

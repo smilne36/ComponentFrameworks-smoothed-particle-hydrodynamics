@@ -131,6 +131,13 @@
     <ClCompile Include="Body.cpp" />
     <ClCompile Include="Debug.cpp" />
     <ClCompile Include="glad.c" />
+    <ClCompile Include="imgui.cpp" />
+    <ClCompile Include="imgui_demo.cpp" />
+    <ClCompile Include="imgui_draw.cpp" />
+    <ClCompile Include="imgui_impl_opengl2.cpp" />
+    <ClCompile Include="imgui_impl_sdl2.cpp" />
+    <ClCompile Include="imgui_tables.cpp" />
+    <ClCompile Include="imgui_widgets.cpp" />
     <ClCompile Include="Mesh.cpp" />
     <ClCompile Include="Scene0p.cpp" />
     <ClCompile Include="SceneManager.cpp" />
@@ -144,6 +151,11 @@
   <ItemGroup>
     <ClInclude Include="Body.h" />
     <ClInclude Include="Debug.h" />
+    <ClInclude Include="imconfig.h" />
+    <ClInclude Include="imgui.h" />
+    <ClInclude Include="imgui_impl_opengl2.h" />
+    <ClInclude Include="imgui_impl_opengl3_loader.h" />
+    <ClInclude Include="imgui_impl_sdl2.h" />
     <ClInclude Include="Mesh.h" />
     <ClInclude Include="Scene0p.h" />
     <ClInclude Include="SceneManager.h" />
@@ -159,8 +171,11 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="shaders\BuildGrid.comp" />
+    <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />
     <None Include="shaders\defaultVert.glsl" />
+    <None Include="shaders\RadixSort.comp" />
     <None Include="shaders\SPHFluid.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

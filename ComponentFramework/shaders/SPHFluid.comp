@@ -1,55 +1,56 @@
 #version 450
-#extension GL_ARB_compute_shader : enable
-#extension GL_ARB_shader_storage_buffer_object : enable
+layout(local_size_x = 256) in;
 
-layout(local_size_x = 256) in;  // Workgroup size
-
-// Particle data
+// ----------- Types -----------
 struct Particle {
-    vec4 pos;      // xyz = position, w = unused
-    vec4 vel;      // xyz = velocity, w = unused
-    vec4 acc;      // xyz = acceleration, w = unused
+    vec4 pos;
+    vec4 vel;
+    vec4 acc;
     float density;
     float pressure;
+    int isGhost;
+    float pad0;
+    int isActive;
 };
 
-// Bind SSBOs
-layout(std430, binding = 0) buffer PosBuffer {
-    Particle particles[];
-};
+layout(std430, binding = 0) buffer ParticleBuf    { Particle particles[]; };
+layout(std430, binding = 1) buffer CellHeadBuf    { int cellHead[]; };
+layout(std430, binding = 2) buffer ParticleNextBuf{ int particleNext[]; };
+layout(std430, binding = 3) buffer ParticleCellBuf{ int particleCell[]; };
 
-uniform float timeStep = 0.003;
-uniform float h = 1.0;
-uniform float mass = 0.02;
-uniform float restDensity = 1000.0;
-uniform float gasConstant = 2000.0;
-uniform float viscosity = 3.5;
-uniform vec3 gravity = vec3(0.0, -50.0, 0.0);
+// ----------- Uniforms -----------
+uniform ivec3 gridSize;
+uniform float cellSize;
+uniform float box;
+uniform float h;
+uniform float mass;
+uniform float restDensity;
+uniform float gasConstant;
+uniform float viscosity;
+uniform float timeStep;
+uniform vec3 gravity;
+uniform float surfaceTension; // Tunable from CPU
 
-// Poly6 kernel
-float poly6(float r2) {
+// ----------- SPH Kernels -----------
+float poly6(float r2, float h) {
     float h2 = h * h;
     if (r2 >= 0.0 && r2 <= h2) {
-        float coeff = 315.0 / (64.0 * 3.141592 * pow(h, 9));
-        return coeff * pow(h2 - r2, 3);
+        float coeff = 315.0 / (64.0 * 3.141592653589 * pow(h, 9));
+        return coeff * pow(h2 - r2, 3.0);
     }
     return 0.0;
 }
-
-// Spiky gradient
-vec3 spikyGrad(vec3 rij) {
+vec3 spikyGrad(vec3 rij, float h) {
     float r = length(rij);
     if (r > 0.0 && r <= h) {
-        float coeff = -45.0 / (3.141592 * pow(h, 6));
-        return rij * (coeff * pow(h - r, 2) / r);
+        float coeff = -45.0 / (3.141592653589 * pow(h, 6));
+        return coeff * pow(h - r, 2.0) * (rij / r);
     }
     return vec3(0.0);
 }
-
-// Viscosity kernel
-float viscosityLap(float r) {
+float viscLaplacian(float r, float h) {
     if (r >= 0.0 && r <= h) {
-        float coeff = 45.0 / (3.141592 * pow(h, 6));
+        float coeff = 45.0 / (3.141592653589 * pow(h, 6));
         return coeff * (h - r);
     }
     return 0.0;
@@ -57,65 +58,147 @@ float viscosityLap(float r) {
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
-    if (i >= particles.length()) return;
-
     Particle pi = particles[i];
-    pi.density = 0.0;
 
-    // --- Density calculation ---
-    for (uint j = 0; j < particles.length(); ++j) {
-        vec3 rij = pi.pos.xyz - particles[j].pos.xyz;
-        float r2 = dot(rij, rij);
-        if (r2 < h * h) {
-            pi.density += mass * poly6(r2);
+    // ---------- Ghost boundary handling ----------
+    if (pi.isGhost == 1) {
+        pi.vel = vec4(0.0);
+        pi.acc = vec4(0.0);
+        pi.density = restDensity;
+        pi.pressure = 0.0;
+        particles[i] = pi;
+        return;
+    }
+
+    vec3 pos = pi.pos.xyz;
+    ivec3 cellCoord = ivec3(floor((pos + vec3(box)) / cellSize));
+    cellCoord = clamp(cellCoord, ivec3(0), gridSize - 1);
+
+    // ---------- Density ----------
+    float density = 0.0;
+    for (int dx = -1; dx <= 1; ++dx)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dz = -1; dz <= 1; ++dz) {
+        ivec3 nCoord = cellCoord + ivec3(dx, dy, dz);
+        if (any(lessThan(nCoord, ivec3(0))) || any(greaterThanEqual(nCoord, gridSize))) continue;
+        int nIdx = nCoord.x + gridSize.x * (nCoord.y + gridSize.y * nCoord.z);
+        int pjIdx = cellHead[nIdx];
+        while (pjIdx != -1) {
+            Particle pj = particles[pjIdx];
+            float r2 = dot(pi.pos.xyz - pj.pos.xyz, pi.pos.xyz - pj.pos.xyz);
+            if (r2 < h*h) density += mass * poly6(r2, h);
+            pjIdx = particleNext[pjIdx];
         }
     }
-    pi.density = max(pi.density, 1.0); // Prevent divide-by-zero
+    density = max(density, restDensity * 0.5);
+    pi.density = density;
+
+    // ---------- Pressure ----------
     pi.pressure = gasConstant * (pi.density - restDensity);
 
-    // --- Force computation ---
+    // ---------- Forces ----------
     vec3 fPressure = vec3(0.0);
     vec3 fViscosity = vec3(0.0);
-    for (uint j = 0; j < particles.length(); ++j) {
-        if (i == j) continue;
-        Particle pj = particles[j];
-        vec3 rij = pi.pos.xyz - pj.pos.xyz;
-        float r = length(rij);
-        if (r < h && pj.density > 0.0) {
-            fPressure += spikyGrad(rij) * (-mass * (pi.pressure + pj.pressure) / (2.0 * pj.density));
-            fViscosity += (pj.vel.xyz - pi.vel.xyz) * (viscosityLap(r) * mass / pj.density);
+
+    // --- Surface tension accumulators ---
+    float c = 0.0;
+    vec3 gradC = vec3(0.0);
+    float lapC = 0.0;
+
+    for (int dx = -1; dx <= 1; ++dx)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dz = -1; dz <= 1; ++dz) {
+        ivec3 nCoord = cellCoord + ivec3(dx, dy, dz);
+        if (any(lessThan(nCoord, ivec3(0))) || any(greaterThanEqual(nCoord, gridSize))) continue;
+        int nIdx = nCoord.x + gridSize.x * (nCoord.y + gridSize.y * nCoord.z);
+        int pjIdx = cellHead[nIdx];
+        while (pjIdx != -1) {
+            if (pjIdx == int(i)) { pjIdx = particleNext[pjIdx]; continue; }
+            Particle pj = particles[pjIdx];
+            float r = length(pi.pos.xyz - pj.pos.xyz);
+            vec3 rij = pi.pos.xyz - pj.pos.xyz;
+            if (r < h && pj.density > 0.0) {
+                // Pressure force (Symmetric form)
+                fPressure += spikyGrad(rij, h)
+                             * (-mass * (pi.pressure + pj.pressure) / (2.0 * pj.density));
+                // Viscosity force
+                fViscosity += (pj.vel.xyz - pi.vel.xyz)
+                              * (mass / pj.density) * viscLaplacian(r, h);
+
+                // Surface tension accumulators
+                float w = poly6(r*r, h);
+                vec3 gradW = spikyGrad(rij, h);
+                float lapW = viscLaplacian(r, h);
+
+                float mj_over_rhoj = mass / pj.density;
+                c += mj_over_rhoj * w;
+                gradC += mj_over_rhoj * gradW;
+                lapC += mj_over_rhoj * lapW;
+            }
+            pjIdx = particleNext[pjIdx];
         }
     }
 
-    vec3 fGravity = gravity * pi.density;
-    vec3 totalForce = fPressure + viscosity * fViscosity + fGravity;
-    vec3 acceleration = totalForce / pi.density;
+    // ---------- Surface Tension ----------
+    vec3 fSurfaceTension = vec3(0.0);
+    float gradC_len = length(gradC);
+    float surfaceThreshold = 1e-6; // Only apply at the interface
+    if (gradC_len > surfaceThreshold) {
+        fSurfaceTension = -surfaceTension * lapC * (gradC / gradC_len);
+    }
 
-    // --- Integration ---
-    pi.vel.xyz += acceleration * timeStep;
-    pi.vel.xyz *= 0.98; // damping
+    // ---------- Gravity and integration ----------
+    vec3 fGravity = gravity * pi.density;
+    vec3 acc = (fPressure + viscosity * fViscosity + fGravity + fSurfaceTension) / pi.density;
+
+    pi.vel.xyz += acc * timeStep;
+    pi.vel.xyz *= 0.995; // Gentle damping (optional)
     pi.pos.xyz += pi.vel.xyz * timeStep;
 
-    // --- Boundary conditions ---
-    const float box = 5.0;
-    const float damp = 0.1;
-
+    // ---------- Boundaries ----------
     for (int c = 0; c < 3; ++c) {
-        if (pi.pos[c] < -box) {
-            pi.pos[c] = -box;
-            if (pi.vel[c] < 0.0) pi.vel[c] *= -damp;
-        }
-        if (pi.pos[c] > box) {
-            pi.pos[c] = box;
-            if (pi.vel[c] > 0.0) pi.vel[c] *= -damp;
-        }
+        if (pi.pos[c] < -box) { pi.pos[c] = -box; if (pi.vel[c] < 0.0) pi.vel[c] *= -0.15; }
+        if (pi.pos[c] >  box) { pi.pos[c] =  box; if (pi.vel[c] > 0.0) pi.vel[c] *= -0.15; }
+    }
+    // Floor friction
+    if (pi.pos.y <= -box + 0.01 && abs(pi.vel.y) < 0.1) {
+        pi.vel.x *= 0.93;
+        pi.vel.z *= 0.93;
     }
 
-    // --- Floor friction (optional) ---
-    if (pi.pos.y <= -box + 0.01 && abs(pi.vel.y) < 0.1) {
+    if (pi.pos.y < -box) {
+        pi.pos.y = -box;
+        if (pi.vel.y < 0.0) pi.vel.y *= -0.02;
         pi.vel.x *= 0.95;
         pi.vel.z *= 0.95;
     }
 
+    // ---------- XSPH velocity correction ----------
+    vec3 xsph = vec3(0.0);
+    float xsphC = 0.12;
+    float norm = 0.0;
+    for (int dx = -1; dx <= 1; ++dx)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dz = -1; dz <= 1; ++dz) {
+        ivec3 nCoord = cellCoord + ivec3(dx, dy, dz);
+        if (any(lessThan(nCoord, ivec3(0))) || any(greaterThanEqual(nCoord, gridSize))) continue;
+        int nIdx = nCoord.x + gridSize.x * (nCoord.y + gridSize.y * nCoord.z);
+        int pjIdx = cellHead[nIdx];
+        while (pjIdx != -1) {
+            if (pjIdx == int(i)) { pjIdx = particleNext[pjIdx]; continue; }
+            Particle pj = particles[pjIdx];
+            float r2 = dot(pi.pos.xyz - pj.pos.xyz, pi.pos.xyz - pj.pos.xyz);
+            if (r2 < h*h && pj.density > 0.0) {
+                float w = poly6(r2, h);
+                xsph += (pj.vel.xyz - pi.vel.xyz) * w * (mass / pj.density);
+                norm += w;
+            }
+            pjIdx = particleNext[pjIdx];
+        }
+    }
+    if (norm > 0.0) xsph /= norm;
+    pi.vel.xyz += xsphC * xsph;
+
+    // ---------- Write back ----------
     particles[i] = pi;
 }

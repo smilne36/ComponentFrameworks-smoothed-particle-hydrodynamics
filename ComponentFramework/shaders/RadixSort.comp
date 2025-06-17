@@ -1,0 +1,69 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer KeyBuf { int cellKeys[]; };
+layout(std430, binding = 1) buffer IdxBuf  { int indices[]; };
+layout(std430, binding = 2) buffer TmpBuf  { int tempIdx[]; };
+
+// Radix sort parameters
+uniform int N;           // Total number of elements
+uniform int pass;        // Pass index (0 = LSB 4 bits, 1 = next 4 bits, etc.)
+
+shared uint sHist[16];       // Per-workgroup histogram (16 bins for 4 bits)
+shared uint sScan[16];
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+    uint lsize = gl_WorkGroupSize.x;
+
+    // 1. Build local histogram (per workgroup)
+    for (uint i = lid; i < 16; i += lsize) sHist[i] = 0u;
+    barrier();
+
+    if (gid < uint(N)) {
+        int idx = indices[gid];
+        int key = cellKeys[idx];
+        uint digit = uint((key >> (4 * pass)) & 0xF);
+        atomicAdd(sHist[digit], 1u);
+    }
+    barrier();
+
+    // 2. Scan histogram to get prefix sum (workgroup-wide, so fine for 16 bins)
+    if (lid == 0u) {
+        uint sum = 0u;
+        for (uint i = 0u; i < 16u; ++i) {
+            uint h = sHist[i];
+            sScan[i] = sum;
+            sum += h;
+        }
+    }
+    barrier();
+
+    // 3. Calculate per-element offset in digit bin (serially for small N, else do in stages)
+    uint myOffset = 0u;
+    uint digit = 0u;
+    if (gid < uint(N)) {
+        int idx = indices[gid];
+        int key = cellKeys[idx];
+        digit = uint((key >> (4 * pass)) & 0xF);
+
+        // Count number of items with same digit in local group before me
+        for (uint i = 0u; i < lid; ++i) {
+            int lidx = int(gl_WorkGroupID.x * lsize + i);
+            if (lidx < N) {
+                int li = indices[lidx];
+                int lkey = cellKeys[li];
+                uint ldigit = uint((lkey >> (4 * pass)) & 0xF);
+                if (ldigit == digit) myOffset++;
+            }
+        }
+    }
+    barrier();
+
+    // 4. Write out to temp buffer, scatter by scanned histogram offset
+    if (gid < uint(N)) {
+        uint globalOffset = sScan[digit] + myOffset;
+        tempIdx[gl_WorkGroupID.x * lsize + globalOffset] = indices[gid];
+    }
+}
