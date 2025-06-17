@@ -309,7 +309,7 @@ void SPHFluidGPU::DispatchCompute() {
     float restDensity = mass / (spacing * spacing * spacing); // ≈ 370     // mass / (spacing^3)
     float gasConstant = 15000.0f;
     float viscosity = 3.0f;
-    MATH::Vec3 gravity = MATH::Vec3(0, -980.0f, 0);
+    MATH::Vec3 gravity = MATH::Vec3(0, -98000.0f, 0);
     float surfaceTension = 0.5f;
     float timeStep = 0.002f;
 
