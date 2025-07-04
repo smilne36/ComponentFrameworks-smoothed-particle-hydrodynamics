@@ -12,13 +12,13 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     clearGridShader = LoadComputeShader("shaders/ClearGrid.comp");
     buildGridShader = LoadComputeShader("shaders/BuildGrid.comp");
     sphGridShader = LoadComputeShader("shaders/SPHFluid.comp");
-    radixSortShader = LoadComputeShader("shaders/RadixSort.comp"); // NEW
+    radixSortShader = LoadComputeShader("shaders/RadixSort.comp"); 
 
     InitializeParticles();
     InitializeFluidVBO();
     InitializeGridAndBuffers();
     UploadDataToGPU();
-    InitializeSortBuffers(); // NEW
+    InitializeSortBuffers(); 
 }
 
 SPHFluidGPU::~SPHFluidGPU() {
@@ -30,13 +30,13 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteBuffers(1, &cellHeadSSBO);
     glDeleteBuffers(1, &particleNextSSBO);
     glDeleteBuffers(1, &particleCellSSBO);
-    glDeleteBuffers(1, &cellKeySSBO);   // NEW
-    glDeleteBuffers(1, &sortIdxSSBO);   // NEW
-    glDeleteBuffers(1, &sortTmpSSBO);   // NEW
+    glDeleteBuffers(1, &cellKeySSBO);   
+    glDeleteBuffers(1, &sortIdxSSBO);   
+    glDeleteBuffers(1, &sortTmpSSBO);  
     glDeleteProgram(clearGridShader);
     glDeleteProgram(buildGridShader);
     glDeleteProgram(sphGridShader);
-    glDeleteProgram(radixSortShader);   // NEW
+    glDeleteProgram(radixSortShader);  
 }
 
 void SPHFluidGPU::InitializeParticles() {
@@ -85,7 +85,7 @@ void SPHFluidGPU::InitializeParticles() {
         if (count >= numParticles) break;
     }
 
-    // Add ghost particles on all boundaries (unchanged)
+    // Add ghost particles on all boundaries 
     auto add_ghost = [&](float x, float y, float z) {
         SPHParticle p;
         p.pos = Vec4(x, y, z, 0.0f);
@@ -115,7 +115,7 @@ void SPHFluidGPU::InitializeParticles() {
         }
 
     std::cout << "Fluid particles: " << count << ", ghosts: " << (particles.size() - count) << std::endl;
-    BuildGhostGrids(); // <-- Add this line
+    BuildGhostGrids(); 
 }
 
 void SPHFluidGPU::InitializeFluidVBO() {
@@ -201,7 +201,6 @@ void SPHFluidGPU::InitializeSortBuffers() {
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, nullptr, GL_DYNAMIC_COPY);
 }
 
-// --- Call this before SPH step, after cell indices are filled
 void SPHFluidGPU::RadixSortByCell() {
     size_t N = particles.size();
     // Assume cellKeys[] has been filled on GPU by BuildGrid.comp
@@ -312,18 +311,17 @@ void SPHFluidGPU::DownloadDataFromGPU() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-// ... (VBO update same as before)
 
 void SPHFluidGPU::DispatchCompute() {
-    float h = 0.28f;
-    float spacing = h * 0.85f;
-    float mass = 5.0f;
-    float restDensity = mass / (spacing * spacing * spacing); // ≈ 370     // mass / (spacing^3)
-    float gasConstant = 15000.0f;
-    float viscosity = 3.0f;
-    MATH::Vec3 gravity = MATH::Vec3(0, -980000.0f, 0);
-    float surfaceTension = 0.5f;
-    float timeStep = 0.001f;
+    float h = 0.28f;                // Smoothing length (keep as is if your particle spacing is ~0.24)
+    float spacing = h * 0.85f;      // Particle spacing (good)
+    float mass = 1.0f;              // Mass per particle (see note below)
+    float restDensity = 1000.0f;    // Water density in kg/m^3 (or g/cm^3 if using CGS, so 1000.0)
+    float gasConstant = 2000.0f;    // Stiffness (try 2000–3000 for water, higher = less compressible)
+    float viscosity = 3.5f;         // Dynamic viscosity (water: 3.5–10.0 in CGS units)
+    MATH::Vec3 gravity = MATH::Vec3(0, -980.0f, 0); // Gravity in cm/s^2 (earth gravity)
+    float surfaceTension = 0.0728f; // Water surface tension in N/m (0.0728), but 0.07–0.2 is typical for SPH
+    float timeStep = 0.001f;        // 1 ms per st
 
     // Sync CPU copy with latest GPU data so ghost activation uses fresh positions
     DownloadDataFromGPU();

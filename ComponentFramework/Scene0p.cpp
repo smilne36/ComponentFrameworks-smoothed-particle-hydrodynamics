@@ -45,7 +45,7 @@ bool Scene0p::OnCreate() {
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
-    fluidGPU = new SPHFluidGPU(50000); // ? You can increase this!
+    fluidGPU = new SPHFluidGPU(20000); // ? You can increase this!
 
     return true;
 }
