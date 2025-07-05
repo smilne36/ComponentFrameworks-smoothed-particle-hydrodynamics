@@ -321,7 +321,7 @@ void SPHFluidGPU::DispatchCompute() {
     float viscosity = 3.5f;         // Dynamic viscosity (water: 3.5–10.0 in CGS units)
     MATH::Vec3 gravity = MATH::Vec3(0, -980.0f, 0); // Gravity in cm/s^2 (earth gravity)
     float surfaceTension = 0.0728f; // Water surface tension in N/m (0.0728), but 0.07–0.2 is typical for SPH
-    float timeStep = 0.001f;        // 1 ms per st
+    float timeStep = 0.005f;        // 1 ms per st
 
     // Sync CPU copy with latest GPU data so ghost activation uses fresh positions
     DownloadDataFromGPU();
