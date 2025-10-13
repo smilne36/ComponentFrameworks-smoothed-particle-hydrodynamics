@@ -1,7 +1,9 @@
 #version 450
 in vec3 fragColor;
+flat in int fragGhost;
 out vec4 outColor;
 
 void main() {
-    outColor = vec4(fragColor, 0.8); // 0.8 = alpha for some transparency
+    if (fragGhost == 1) discard;
+    outColor = vec4(fragColor, 1.0);
 }

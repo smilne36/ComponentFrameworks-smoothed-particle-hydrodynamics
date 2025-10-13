@@ -135,6 +135,7 @@
     <ClCompile Include="imgui_demo.cpp" />
     <ClCompile Include="imgui_draw.cpp" />
     <ClCompile Include="imgui_impl_opengl2.cpp" />
+    <ClCompile Include="imgui_impl_opengl3.cpp" />
     <ClCompile Include="imgui_impl_sdl2.cpp" />
     <ClCompile Include="imgui_tables.cpp" />
     <ClCompile Include="imgui_widgets.cpp" />
@@ -154,6 +155,7 @@
     <ClInclude Include="imconfig.h" />
     <ClInclude Include="imgui.h" />
     <ClInclude Include="imgui_impl_opengl2.h" />
+    <ClInclude Include="imgui_impl_opengl3.h" />
     <ClInclude Include="imgui_impl_opengl3_loader.h" />
     <ClInclude Include="imgui_impl_sdl2.h" />
     <ClInclude Include="Mesh.h" />
@@ -171,6 +173,7 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="OBBConstraints.comp" />
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />

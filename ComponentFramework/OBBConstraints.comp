@@ -1,0 +1,50 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 pos; vec4 vel; vec4 acc;
+    float density; float pressure; float padA; float padB;
+    int isGhost; int isActive; int padC; int pad0;
+};
+layout(std430, binding=0) buffer Particles { Particle particles[]; };
+
+uniform vec3 uBoxCenter;
+uniform vec3 uBoxHalf;
+uniform mat3 uBoxRot;
+uniform float uRestitution;
+uniform float uFriction;
+
+vec3 worldToLocal(vec3 p){ vec3 d = p - uBoxCenter; return vec3(dot(d,uBoxRot[0]), dot(d,uBoxRot[1]), dot(d,uBoxRot[2])); }
+vec3 localToWorld(vec3 q){ return uBoxCenter + uBoxRot * q; }
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= particles.length()) return;
+    if (particles[i].isGhost != 0) return;
+
+    vec3 pW = particles[i].pos.xyz;
+    vec3 vW = particles[i].vel.xyz;
+
+    vec3 pL = worldToLocal(pW);
+    vec3 qL = clamp(pL, -uBoxHalf, uBoxHalf);
+    vec3 delta = pL - qL;
+
+    if (any(greaterThan(abs(delta), vec3(0.0)))) {
+        vec3 nL = vec3(0.0);
+        vec3 d = abs(delta);
+        if (d.x >= d.y && d.x >= d.z) nL = vec3(sign(delta.x), 0.0, 0.0);
+        else if (d.y >= d.x && d.y >= d.z) nL = vec3(0.0, sign(delta.y), 0.0);
+        else nL = vec3(0.0, 0.0, sign(delta.z));
+
+        vec3 nW = normalize(uBoxRot * nL);
+        pW = localToWorld(qL);
+
+        float vn = dot(vW, nW);
+        vec3 vN = vn * nW;
+        vec3 vT = vW - vN;
+        vW = -uRestitution * vN + (1.0 - uFriction) * vT;
+    }
+
+    particles[i].pos.xyz = pW;
+    particles[i].vel.xyz = vW;
+}

@@ -115,6 +115,8 @@ void Mesh::Render(GLenum drawmode_) const {
 void Mesh::RenderInstanced(GLenum drawmode_, size_t count) const {
     glBindVertexArray(vao);
     glDrawArraysInstanced(drawmode_, 0, dateLength, static_cast<GLsizei>(count));
+    GLenum err = glGetError();
+    if (err) std::cerr << "glDrawArraysInstanced error: 0x" << std::hex << err << std::dec << "\n";
     glBindVertexArray(0);
 }
 
@@ -136,10 +138,10 @@ void Mesh::SetInstanceData(const std::vector<Vec3>& positions) {
     glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
     glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(Vec3), positions.data(), GL_DYNAMIC_DRAW);
 
-    // Attribute 3: instance position
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void*)0);
-    glVertexAttribDivisor(3, 1); // Advance per instance
+    // Match defaultVert.glsl (instancePos is location = 5)
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void*)0);
+    glVertexAttribDivisor(5, 1);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);

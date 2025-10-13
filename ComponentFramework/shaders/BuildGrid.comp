@@ -1,38 +1,38 @@
 #version 450
 layout(local_size_x = 256) in;
+
 struct Particle {
-    vec4 pos;
-    vec4 vel;
-    vec4 acc;
-    float density;
-    float pressure;
-    float padA;
-    float padB;
-    int isGhost;
-    int isActive;
-    int padC;
-    int pad0;
+    vec4 pos; vec4 vel; vec4 acc;
+    float density; float pressure; float padA; float padB;
+    int isGhost; int isActive; int padC; int pad0;
 };
-layout(std430, binding = 0) buffer ParticleBuf { Particle particles[]; };
-layout(std430, binding = 1) buffer CellHeadBuf { int cellHead[]; };
-layout(std430, binding = 2) buffer ParticleNextBuf { int particleNext[]; };
-layout(std430, binding = 3) buffer ParticleCellBuf { int particleCell[]; };
+
+layout(std430, binding=0) buffer Particles { Particle particles[]; };
+layout(std430, binding=1) buffer CellHead  { int cellHead[]; };
+layout(std430, binding=2) buffer NextIdx   { int particleNext[]; };
+layout(std430, binding=3) buffer PartCell  { int particleCell[]; };
+layout(std430, binding=4) buffer CellKey   { int cellKey[]; };
+
 uniform ivec3 gridSize;
 uniform float cellSize;
-uniform float box;
-uniform int numParticles; // total particle count
+uniform vec3  gridMin;
+uniform int   numParticles;
+
+int flatten(ivec3 c) { return (c.z * gridSize.y + c.y) * gridSize.x + c.x; }
+
 void main() {
-    uint id = gl_GlobalInvocationID.x;
-    if (id >= uint(numParticles)) return; // guard against extra threads
-    if (particles[id].isGhost == 1 && particles[id].isActive == 0) {
-        particleCell[id] = -1;
-        particleNext[id] = -1;
-        return;
-    }
-    vec3 pos = particles[id].pos.xyz;
-    ivec3 cellCoord = ivec3(floor((pos + vec3(box)) / cellSize));
-    cellCoord = clamp(cellCoord, ivec3(0), gridSize - 1);
-    int cellIdx = cellCoord.x + gridSize.x * (cellCoord.y + gridSize.y * cellCoord.z);
-    particleCell[id] = cellIdx;
-    particleNext[id] = atomicExchange(cellHead[cellIdx], int(id));
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(numParticles)) return;
+
+    particleNext[i] = -1;
+    vec3 p = particles[i].pos.xyz;
+
+    ivec3 c = ivec3(floor((p - gridMin) / cellSize));
+    c = clamp(c, ivec3(0), gridSize - ivec3(1));
+    int cell = flatten(c);
+
+    particleCell[i] = cell;
+    cellKey[i] = cell;
+    int prev = atomicExchange(cellHead[cell], int(i));
+    particleNext[i] = prev;
 }
