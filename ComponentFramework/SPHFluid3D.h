@@ -39,7 +39,7 @@ public:
     void DownloadDataFromGPU();
 
     void UpdateFluidVBOFromGPU();
-    void DispatchCompute();
+    void DispatchCompute(float overrideDt = -1.0f);
     GLuint GetFluidVBO() const;
     size_t GetNumFluids() const;
     std::vector<Vec3> GetPositions() const;
@@ -98,7 +98,7 @@ public:
     float param_timeStep = 0.001f;
     bool  param_pause = false;
 
-    bool  param_useJitter = true;     // spawn jitter
+    bool  param_useJitter = false;     // spawn jitter
     float param_jitterAmp = 0.20f;
 
     // Performance toggles
@@ -114,31 +114,39 @@ public:
 
     // Ghost grid structures (unchanged, but note ghosts are axis-aligned)
     struct GhostGrid2D {
-        float minA, minB, cellSize;
-        int cellsA, cellsB;
-        std::vector<std::vector<std::vector<size_t>>> grid;
+    float minA, minB, cellSize;
+    int cellsA, cellsB;
+    std::vector<std::vector<std::vector<size_t>>> grid;
 
-        GhostGrid2D() : minA(0), minB(0), cellSize(1), cellsA(0), cellsB(0) {}
-        void init(float minA_, float minB_, float cellSize_, int cellsA_, int cellsB_) {
-            minA = minA_; minB = minB_; cellSize = cellSize_;
-            cellsA = cellsA_; cellsB = cellsB_;
-            grid.resize(cellsA, std::vector<std::vector<size_t>>(cellsB));
-        }
-        void addGhost(float a, float b, size_t idx) {
-            int ia = int((a - minA) / cellSize);
-            int ib = int((b - minB) / cellSize);
-            if (ia >= 0 && ia < cellsA && ib >= 0 && ib < cellsB)
-                grid[ia][ib].push_back(idx);
-        }
-        const std::vector<size_t>& getCell(float a, float b) const {
-            static const std::vector<size_t> empty;
-            int ia = int((a - minA) / cellSize);
-            int ib = int((b - minB) / cellSize);
-            if (ia >= 0 && ia < cellsA && ib >= 0 && ib < cellsB)
-                return grid[ia][ib];
-            return empty;
-        }
-    };
+    GhostGrid2D() : minA(0), minB(0), cellSize(1), cellsA(0), cellsB(0) {}
+
+    void init(float minA_, float minB_, float cellSize_, int cellsA_, int cellsB_) {
+        minA = minA_;
+        minB = minB_;
+        cellSize = cellSize_;
+        cellsA = std::max(1, cellsA_);
+        cellsB = std::max(1, cellsB_);
+
+        // Rebuild the full 2D shape so every row has exactly cellsB columns.
+        // Using assign() ensures old per-row sizes don’t linger after a reset.
+        grid.assign(cellsA, std::vector<std::vector<size_t>>(cellsB));
+    }
+
+    void addGhost(float a, float b, size_t idx) {
+        int ia = int((a - minA) / cellSize);
+        int ib = int((b - minB) / cellSize);
+        if (ia >= 0 && ia < cellsA && ib >= 0 && ib < cellsB)
+            grid[ia][ib].push_back(idx);
+    }
+    const std::vector<size_t>& getCell(float a, float b) const {
+        static const std::vector<size_t> empty;
+        int ia = int((a - minA) / cellSize);
+        int ib = int((b - minB) / cellSize);
+        if (ia >= 0 && ia < cellsA && ib >= 0 && ib < cellsB)
+            return grid[ia][ib];
+        return empty;
+    }
+};
 
     GhostGrid2D ghostXNeg, ghostXPos, ghostYNeg, ghostYPos, ghostZNeg, ghostZPos;
     void BuildGhostGrids();

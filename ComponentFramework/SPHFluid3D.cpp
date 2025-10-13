@@ -42,15 +42,18 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     buildGridShader = LoadComputeShader("shaders/BuildGrid.comp");
     sphGridShader = LoadComputeShader("shaders/SPHFluid.comp");
     radixSortShader = LoadComputeShader("shaders/RadixSort.comp");
-    obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp"); // NEW
+    obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
 
+    // 1) Build particles (also sets 'box')
+    InitializeParticles();
+
+    // 2) Now size grid/aux SSBOs using the actual particle count
     InitializeGridAndBuffers();
 
-
-    InitializeParticles();
-    InitializeFluidVBO();
+    // 3) GPU resources
     UploadDataToGPU();
     InitializeSortBuffers();
+    InitializeFluidVBO();
 }
 
 SPHFluidGPU::~SPHFluidGPU() {
@@ -78,6 +81,8 @@ void SPHFluidGPU::InitializeParticles() {
     float h = param_h;                      // use current smoothing length
     float spacing = h * 0.85f;
     float box = this->box;
+
+    param_mass = param_restDensity * spacing * spacing * spacing;
 
     particles.clear();
     int count = 0;
@@ -186,20 +191,16 @@ void SPHFluidGPU::InitializeGridAndBuffers() {
     float h = param_h;
     cellSize = h;
 
-    // Grid dimensions around current box extents
     Vec3 half = param_boxHalf;
-    gridSizeX = int(ceil((2.0f * half.x) / cellSize));
-    gridSizeY = int(ceil((2.0f * half.y) / cellSize));
-    gridSizeZ = int(ceil((2.0f * half.z) / cellSize));
-    gridSizeX = std::max(1, gridSizeX);
-    gridSizeY = std::max(1, gridSizeY);
-    gridSizeZ = std::max(1, gridSizeZ);
-    numCells = gridSizeX * gridSizeY * gridSizeZ;
+    gridSizeX = std::max(1, int(std::ceil((2.0f * half.x) / cellSize)));
+    gridSizeY = std::max(1, int(std::ceil((2.0f * half.y) / cellSize)));
+    gridSizeZ = std::max(1, int(std::ceil((2.0f * half.z) / cellSize)));
+    numCells = std::max(1, gridSizeX * gridSizeY * gridSizeZ);
 
-    // Legacy fallback for other code using 'box'
     box = std::max(half.x, std::max(half.y, half.z));
 
-    // SSBOs
+    const size_t N = std::max<size_t>(particles.size(), 1);
+
     if (cellHeadSSBO) glDeleteBuffers(1, &cellHeadSSBO);
     if (particleNextSSBO) glDeleteBuffers(1, &particleNextSSBO);
     if (particleCellSSBO) glDeleteBuffers(1, &particleCellSSBO);
@@ -211,12 +212,12 @@ void SPHFluidGPU::InitializeGridAndBuffers() {
 
     glGenBuffers(1, &particleNextSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleNextSSBO);
-    std::vector<int> nextInit(particles.size(), -1);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * particles.size(), nextInit.data(), GL_DYNAMIC_COPY);
+    std::vector<int> nextInit(N, -1);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, nextInit.data(), GL_DYNAMIC_COPY);
 
     glGenBuffers(1, &particleCellSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleCellSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * particles.size(), nullptr, GL_DYNAMIC_COPY);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, nullptr, GL_DYNAMIC_COPY);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
@@ -361,10 +362,8 @@ void SPHFluidGPU::DownloadDataFromGPU() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-void SPHFluidGPU::DispatchCompute() {
-    if (param_pause) {
-        return;
-    }
+void SPHFluidGPU::DispatchCompute(float overrideDt) {
+    if (param_pause) return;
 
     // Live parameters
     float h = param_h;
@@ -374,9 +373,11 @@ void SPHFluidGPU::DispatchCompute() {
     float viscosity = param_viscosity;
     MATH::Vec3 gravity = MATH::Vec3(0, param_gravityY, 0);
     float surfaceTension = param_surfaceTension;
-    float timeStep = param_timeStep;
 
-    // Only do ghost activation if enabled (CPU sync)
+    // Use override dt if provided, else the configured param_timeStep
+    float timeStep = (overrideDt > 0.0f ? overrideDt : param_timeStep);
+
+    // Optional ghosts sync
     if (param_enableGhosts) {
         DownloadDataFromGPU();
         UpdateGhostParticlesDynamic(h);
@@ -390,7 +391,7 @@ void SPHFluidGPU::DispatchCompute() {
     glDispatchCompute((numCells + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 2) Build grid (now uses gridMin offset)
+    // 2) Build grid
     glUseProgram(buildGridShader);
     glUniform3i(glGetUniformLocation(buildGridShader, "gridSize"), gridSizeX, gridSizeY, gridSizeZ);
     glUniform1f(glGetUniformLocation(buildGridShader, "cellSize"), cellSize);
@@ -405,7 +406,6 @@ void SPHFluidGPU::DispatchCompute() {
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 3) Sort by cell (optional / unused by SPH kernel)
     if (param_enableSort) {
         RadixSortByCell();
     }
@@ -423,27 +423,25 @@ void SPHFluidGPU::DispatchCompute() {
     glUniform1f(glGetUniformLocation(sphGridShader, "viscosity"), viscosity);
     glUniform3f(glGetUniformLocation(sphGridShader, "gravity"), gravity.x, gravity.y, gravity.z);
     glUniform1f(glGetUniformLocation(sphGridShader, "surfaceTension"), surfaceTension);
+    glUniform1f(glGetUniformLocation(sphGridShader, "box"), box);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, particleCellSSBO);
-
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 5) OBB boundary constraints (fast)
-    {
-        glUseProgram(obbConstraintShader);
-        float R[9]; MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
-        glUniformMatrix3fv(glGetUniformLocation(obbConstraintShader, "uBoxRot"), 1, GL_FALSE, R);
-        glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxCenter"), param_boxCenter.x, param_boxCenter.y, param_boxCenter.z);
-        glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxHalf"), param_boxHalf.x, param_boxHalf.y, param_boxHalf.z);
-        glUniform1f(glGetUniformLocation(obbConstraintShader, "uRestitution"), param_wallRestitution);
-        glUniform1f(glGetUniformLocation(obbConstraintShader, "uFriction"), param_wallFriction);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
-        glDispatchCompute((particles.size() + 255) / 256, 1, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    }
+    // 5) OBB constraints
+    glUseProgram(obbConstraintShader);
+    float R[9]; MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
+    glUniformMatrix3fv(glGetUniformLocation(obbConstraintShader, "uBoxRot"), 1, GL_FALSE, R);
+    glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxCenter"), param_boxCenter.x, param_boxCenter.y, param_boxCenter.z);
+    glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxHalf"), param_boxHalf.x, param_boxHalf.y, param_boxHalf.z);
+    glUniform1f(glGetUniformLocation(obbConstraintShader, "uRestitution"), param_wallRestitution);
+    glUniform1f(glGetUniformLocation(obbConstraintShader, "uFriction"), param_wallFriction);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glUseProgram(0);
 }
@@ -496,8 +494,8 @@ GLuint SPHFluidGPU::LoadComputeShader(const char* filePath) {
 }
 
 void SPHFluidGPU::BuildGhostGrids() {
-    float spacing = param_h * 0.85f;  // use current h
-    int cells = int(ceil((2.0f * box) / spacing)) + 1;
+    float spacing = std::max(1e-6f, param_h * 0.85f);
+    int cells = std::max(1, int(std::ceil((2.0f * box) / spacing)) + 1);
 
     // X faces: grid in (y, z)
     ghostXNeg.init(-box, -box, spacing, cells, cells);
@@ -512,12 +510,12 @@ void SPHFluidGPU::BuildGhostGrids() {
     for (size_t i = 0; i < particles.size(); ++i) {
         const SPHParticle& p = particles[i];
         if (!p.isGhost) continue;
-        if (fabs(p.pos.x + box) < 1e-4f) ghostXNeg.addGhost(p.pos.y, p.pos.z, i);
-        if (fabs(p.pos.x - box) < 1e-4f) ghostXPos.addGhost(p.pos.y, p.pos.z, i);
-        if (fabs(p.pos.y + box) < 1e-4f) ghostYNeg.addGhost(p.pos.x, p.pos.z, i);
-        if (fabs(p.pos.y - box) < 1e-4f) ghostYPos.addGhost(p.pos.x, p.pos.z, i);
-        if (fabs(p.pos.z + box) < 1e-4f) ghostZNeg.addGhost(p.pos.x, p.pos.y, i);
-        if (fabs(p.pos.z - box) < 1e-4f) ghostZPos.addGhost(p.pos.x, p.pos.y, i);
+        if (fabsf(p.pos.x + box) < 1e-4f) ghostXNeg.addGhost(p.pos.y, p.pos.z, i);
+        if (fabsf(p.pos.x - box) < 1e-4f) ghostXPos.addGhost(p.pos.y, p.pos.z, i);
+        if (fabsf(p.pos.y + box) < 1e-4f) ghostYNeg.addGhost(p.pos.x, p.pos.z, i);
+        if (fabsf(p.pos.y - box) < 1e-4f) ghostYPos.addGhost(p.pos.x, p.pos.z, i);
+        if (fabsf(p.pos.z + box) < 1e-4f) ghostZNeg.addGhost(p.pos.x, p.pos.y, i);
+        if (fabsf(p.pos.z - box) < 1e-4f) ghostZPos.addGhost(p.pos.x, p.pos.y, i);
     }
 }
 
@@ -568,10 +566,16 @@ void SPHFluidGPU::ResetSimulation()
     if (sortIdxSSBO) { glDeleteBuffers(1, &sortIdxSSBO); sortIdxSSBO = 0; }
     if (sortTmpSSBO) { glDeleteBuffers(1, &sortTmpSSBO); sortTmpSSBO = 0; }
 
-    // Rebuild in the correct order: box/grid first, then particles
-    InitializeGridAndBuffers();
-    InitializeParticles();
-    InitializeSortBuffers();
-    UploadDataToGPU();
-    InitializeFluidVBO();
+    // Rebuild in the same order as the ctor to keep sizes consistent
+    InitializeParticles();          // fills 'particles', sets 'box'
+    InitializeGridAndBuffers();     // sizes per-cell/per-particle SSBOs from particles.size()
+    UploadDataToGPU();              // alloc+upload main SSBO (binding=0)
+    InitializeSortBuffers();        // alloc sort buffers using particles.size()
+    InitializeFluidVBO();           // alloc fluid-only VBO (numFluids)
+
+    // Optional: print sizes for quick sanity
+    std::cout << "Reset: particles=" << particles.size()
+        << " fluids=" << numFluids
+        << " grid=" << gridSizeX << "x" << gridSizeY << "x" << gridSizeZ
+        << " cells=" << numCells << std::endl;
 }

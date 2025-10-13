@@ -44,8 +44,9 @@ private:
 	float h = 0.28f;
 	float guiTimeStep = 0.00009f;
 
-
-
+	bool pendingReset = false;
+    
+    float dtAccumulator = 0.0f;
 public:
 	explicit Scene0p();
 	virtual ~Scene0p();

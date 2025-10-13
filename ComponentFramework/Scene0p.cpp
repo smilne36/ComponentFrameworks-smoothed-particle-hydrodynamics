@@ -123,9 +123,28 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_restDensity = 1000.0f;
             fluidGPU->param_gasConstant = 2000.0f;
             fluidGPU->param_viscosity = 3.5f;
-            fluidGPU->param_gravityY = -9.81f;
+            fluidGPU->param_gravityY = -980.0f;     // cm/s^2 (was -9.81f)
             fluidGPU->param_surfaceTension = 0.0f;
-            fluidGPU->param_timeStep = 2e-4f;
+            fluidGPU->param_timeStep = 1.0e-3f;     // was 2e-4f (too small)
+            pendingReset = true;                    // ensure buffers rebuilt when h or layout changes
+        }
+
+        if (ImGui::Button("Preset: Splashy Water")) {
+            fluidGPU->param_pause = false;
+            fluidGPU->param_h = 0.22f;
+            fluidGPU->param_restDensity = 1000.0f;
+            fluidGPU->param_gasConstant = 6000.0f;
+            fluidGPU->param_viscosity = 1.2f;
+            fluidGPU->param_gravityY = -980.0f;        // cm/s^2 (was -9.81f)
+            fluidGPU->param_surfaceTension = 0.12f;
+            fluidGPU->param_timeStep = 5.0e-4f;        // was 1e-4f
+            fluidGPU->param_useJitter = true;
+            fluidGPU->param_jitterAmp = 0.06f;
+
+            fluidGPU->param_wallRestitution = 0.05f;
+            fluidGPU->param_wallFriction = 0.05f;
+
+            pendingReset = true;
         }
         ImGui::SameLine();
         if (ImGui::Button("Fit Camera")) {
@@ -190,6 +209,7 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
         if (ImGui::Button("Rebuild Grid for Box")) {
             fluidGPU->RecreateGridForBox();
+
         }
 
         // Spawn layout
@@ -200,7 +220,8 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f");
         ImGui::SameLine();
         if (ImGui::Button("Rebuild Layout")) {
-            fluidGPU->ResetSimulation();
+            pendingReset = true;
+
         }
 
         // Waves
@@ -230,7 +251,7 @@ void Scene0p::Update(const float deltaTime) {
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset Simulation")) {
-            fluidGPU->ResetSimulation();
+            pendingReset = true;
         }
 
         // Visualization
@@ -245,6 +266,14 @@ void Scene0p::Update(const float deltaTime) {
 
         ImGui::End();
 
+        if (pendingReset) {
+            fluidGPU->ResetSimulation();
+            fluidGPU->param_pause = false;
+            pendingReset = false;
+            // clear sim time accumulator to avoid large catch-up
+            dtAccumulator = 0.0f;
+        }
+
         if (continuousWave) {
             wavePhase += wavePhaseSpeed * deltaTime;
             Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
@@ -252,7 +281,30 @@ void Scene0p::Update(const float deltaTime) {
         }
 
         // Sim step
-        fluidGPU->DispatchCompute();
+       // Sim step (fixed step accumulator; never exceed param_timeStep)
+        static float dtAccumulator = 0.0f;
+        const float fixedDt = std::max(1e-6f, fluidGPU->param_timeStep);
+        const int maxSubstepsPerFrame = 64; // cap to avoid long frames
+
+        // If we just reset, drop leftovers to avoid a huge burst
+        if (pendingReset == false) {
+            dtAccumulator += deltaTime;
+        }
+
+        int didSteps = 0;
+        while (dtAccumulator >= fixedDt && didSteps < maxSubstepsPerFrame) {
+            fluidGPU->DispatchCompute(fixedDt);
+            dtAccumulator -= fixedDt;
+            ++didSteps;
+        }
+
+        // Optional: if we hit the cap, discard excess to prevent spiral-of-death
+        if (didSteps == maxSubstepsPerFrame && dtAccumulator > fixedDt) {
+            dtAccumulator = fmodf(dtAccumulator, fixedDt);
+        }
+
+        // Show what happened this frame
+        ImGui::Text("Substeps: %d  dt: %.6f  accum: %.6f", didSteps, fixedDt, dtAccumulator);
 
         if (!useSSBO) {
             fluidGPU->UpdateFluidVBOFromGPU();
