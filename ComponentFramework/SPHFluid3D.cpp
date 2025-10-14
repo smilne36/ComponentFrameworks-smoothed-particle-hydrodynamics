@@ -33,7 +33,16 @@ static void MakeRotationMat3XYZ(float rxDeg, float ryDeg, float rzDeg, float out
     mul3(Rzy, Rx, outM);
 }
 
-
+MATH::Vec3 SPHFluidGPU::ComputeAABBFittedHalf() const {
+    float R[9];
+    MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
+    const Vec3 H = param_boxHalf;
+    // Column-major 3x3: x' = R0*x + R3*y + R6*z, etc.
+    const float ax = std::fabs(R[0]) * H.x + std::fabs(R[3]) * H.y + std::fabs(R[6]) * H.z;
+    const float ay = std::fabs(R[1]) * H.x + std::fabs(R[4]) * H.y + std::fabs(R[7]) * H.z;
+    const float az = std::fabs(R[2]) * H.x + std::fabs(R[5]) * H.y + std::fabs(R[8]) * H.z;
+    return Vec3(ax, ay, az);
+}
 
 SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     : numParticles(numParticles_), fluidVBO(0), vboPtr(nullptr), numFluids(0)
@@ -76,39 +85,54 @@ SPHFluidGPU::~SPHFluidGPU() {
 
 void SPHFluidGPU::InitializeParticles() {
 
-    this->box = std::max(param_boxHalf.x, std::max(param_boxHalf.y, param_boxHalf.z));
+    // Build in OBB local space [-H,H], then transform to world with R and center
+    float Rm[9];
+    MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, Rm);
+    const Vec3 H = param_boxHalf;
+    const Vec3 C = param_boxCenter;
 
-    float h = param_h;                      // use current smoothing length
+    // Grid spacing from h
+    float h = param_h;
     float spacing = h * 0.85f;
-    float box = this->box;
 
+    // Mass from spacing
     param_mass = param_restDensity * spacing * spacing * spacing;
 
     particles.clear();
     int count = 0;
 
+    // Fill a block at the bottom in local space
     float fillFraction = 0.4f;
-    float fluidHeight = (2.0f * box) * fillFraction;
+    float fluidHeight = (2.0f * H.y) * fillFraction;
     int fluidLayersY = int(fluidHeight / spacing);
-    int fluidSide = int((box * 1.7f) / spacing);
+    int fluidSideX = int((2.0f * H.x) / spacing);
+    int fluidSideZ = int((2.0f * H.z) / spacing);
 
     std::default_random_engine rng(static_cast<unsigned>(time(nullptr)));
-    std::uniform_real_distribution<float> jitterDist(-spacing * param_jitterAmp,
-        +spacing * param_jitterAmp);
-
+    std::uniform_real_distribution<float> jitterDist(-spacing * param_jitterAmp, +spacing * param_jitterAmp);
     auto j = [&]() -> float { return param_useJitter ? jitterDist(rng) : 0.0f; };
 
-    // Fill a block at the bottom of the box
-    for (int x = 0; x < fluidSide && count < numParticles; ++x) {
-        for (int y = 0; y < fluidLayersY && count < numParticles; ++y) {
-            for (int z = 0; z < fluidSide && count < numParticles; ++z) {
-                SPHParticle p;
-                p.pos = Vec4(
-                    -box * 0.7f + x * spacing + j(),
-                    -box + spacing + y * spacing + j(), // Start at bottom
-                    -box * 0.7f + z * spacing + j(),
-                    0.0f
-                );
+    auto xformLocalToWorld = [&](float lx, float ly, float lz) -> Vec3 {
+        // Rotate then translate; R is column-major
+        return Vec3(
+            Rm[0] * lx + Rm[3] * ly + Rm[6] * lz + C.x,
+            Rm[1] * lx + Rm[4] * ly + Rm[7] * lz + C.y,
+            Rm[2] * lx + Rm[5] * ly + Rm[8] * lz + C.z
+        );
+        };
+
+    for (int ix = 0; ix < fluidSideX && count < (int)numParticles; ++ix) {
+        for (int iy = 0; iy < fluidLayersY && count < (int)numParticles; ++iy) {
+            for (int iz = 0; iz < fluidSideZ && count < (int)numParticles; ++iz) {
+                // Local position inside OBB, bottom layer starts at -H.y
+                float lx = -H.x + spacing + ix * spacing + j();
+                float ly = -H.y + spacing + iy * spacing + j();
+                float lz = -H.z + spacing + iz * spacing + j();
+
+                Vec3 w = xformLocalToWorld(lx, ly, lz);
+
+                SPHParticle p{};
+                p.pos = Vec4(w.x, w.y, w.z, 0.0f);
                 p.vel = Vec4(0, 0, 0, 0);
                 p.acc = Vec4(0, 0, 0, 0);
                 p.density = 0.0f;
@@ -122,27 +146,11 @@ void SPHFluidGPU::InitializeParticles() {
         }
     }
 
-    // Ghosts on all boundaries (use spacing from param_h)
-    auto add_ghost = [&](float x, float y, float z) {
-        SPHParticle p;
-        p.pos = Vec4(x, y, z, 0.0f);
-        p.vel = Vec4(0, 0, 0, 0);
-        p.acc = Vec4(0, 0, 0, 0);
-        p.density = 0.0f;
-        p.pressure = 0.0f;
-        p.isGhost = 1;
-        p.isActive = 0;
-        p.pad0 = 0.0f;
-        particles.push_back(p);
-        };
-    for (float y = -box; y <= box; y += spacing)
-        for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
-    for (float x = -box; x <= box; x += spacing)
-        for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
-    for (float x = -box; x <= box; x += spacing)
-        for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
-
-    std::cout << "Fluid particles: " << count << ", ghosts: " << (particles.size() - count) << std::endl;
+    // Legacy ghosts remain axis-aligned around origin/box and don't match OBB.
+    // If you rely on ghosts, prefer keeping param_enableGhosts = false when using OBB.
+    // (Leaving existing ghost build to avoid wider refactor.)
+    this->box = std::max(H.x, std::max(H.y, H.z)); // legacy size used by ghost helpers
+    // Build ghosts and grids for legacy walls
     BuildGhostGrids();
 }
 
@@ -191,13 +199,16 @@ void SPHFluidGPU::InitializeGridAndBuffers() {
     float h = param_h;
     cellSize = h;
 
-    Vec3 half = param_boxHalf;
-    gridSizeX = std::max(1, int(std::ceil((2.0f * half.x) / cellSize)));
-    gridSizeY = std::max(1, int(std::ceil((2.0f * half.y) / cellSize)));
-    gridSizeZ = std::max(1, int(std::ceil((2.0f * half.z) / cellSize)));
+    // Use AABB that bounds the rotated OBB
+    Vec3 halfAA = ComputeAABBFittedHalf();
+
+    gridSizeX = std::max(1, int(std::ceil((2.0f * halfAA.x) / cellSize)));
+    gridSizeY = std::max(1, int(std::ceil((2.0f * halfAA.y) / cellSize)));
+    gridSizeZ = std::max(1, int(std::ceil((2.0f * halfAA.z) / cellSize)));
     numCells = std::max(1, gridSizeX * gridSizeY * gridSizeZ);
 
-    box = std::max(half.x, std::max(half.y, half.z));
+    // Legacy 'box' = max half-extent (AABB) for any code that still uses it
+    box = std::max(halfAA.x, std::max(halfAA.y, halfAA.z));
 
     const size_t N = std::max<size_t>(particles.size(), 1);
 
@@ -391,11 +402,12 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glDispatchCompute((numCells + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 2) Build grid
+    // 2) Build grid (use AABB-fit for rotated box)
     glUseProgram(buildGridShader);
     glUniform3i(glGetUniformLocation(buildGridShader, "gridSize"), gridSizeX, gridSizeY, gridSizeZ);
     glUniform1f(glGetUniformLocation(buildGridShader, "cellSize"), cellSize);
-    const Vec3 gridMin = param_boxCenter - param_boxHalf;
+    const Vec3 halfAA = ComputeAABBFittedHalf();
+    const Vec3 gridMin = param_boxCenter - halfAA;
     glUniform3f(glGetUniformLocation(buildGridShader, "gridMin"), gridMin.x, gridMin.y, gridMin.z);
     glUniform1i(glGetUniformLocation(buildGridShader, "numParticles"), int(particles.size()));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);

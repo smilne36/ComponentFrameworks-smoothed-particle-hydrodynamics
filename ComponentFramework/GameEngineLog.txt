@@ -1,4 +1,4 @@
-Mon Oct 13 18:36:59 2025
+Mon Oct 13 21:10:12 2025
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 581.42
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -8,11 +8,17 @@ Mon Oct 13 18:36:59 2025
 [INFO]: Loading assets Scene0: 
 [INFO]: Uniforms:
 "colorMode" loc:0
-"modelMatrix" loc:1
-"projectionMatrix" loc:2
-"useSSBO" loc:3
-"viewMatrix" loc:4
-"vizRange" loc:5
+"heightMinMax" loc:1
+"modelMatrix" loc:2
+"projectionMatrix" loc:3
+"useSSBO" loc:4
+"viewMatrix" loc:5
+"vizRange" loc:6
+
+[INFO]: Uniforms:
+"projectionMatrix" loc:0
+"uColor" loc:1
+"viewMatrix" loc:2
 
 [INFO]: Deleting the SceneManager
 [INFO]: Deleting assets Scene0: 

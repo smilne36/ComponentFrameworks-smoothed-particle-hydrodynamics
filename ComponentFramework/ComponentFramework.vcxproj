@@ -173,6 +173,8 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="lineFrag.glsl" />
+    <None Include="lineVert.glsl" />
     <None Include="OBBConstraints.comp" />
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />

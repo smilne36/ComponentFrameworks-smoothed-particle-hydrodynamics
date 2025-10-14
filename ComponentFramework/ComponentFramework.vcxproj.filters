@@ -171,5 +171,11 @@
     <None Include="OBBConstraints.comp">
       <Filter>Resource Files</Filter>
     </None>
+    <None Include="lineVert.glsl">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="lineFrag.glsl">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

@@ -121,15 +121,22 @@ void Mesh::RenderInstanced(GLenum drawmode_, size_t count) const {
 }
 
 void Mesh::BindInstanceBuffer(GLuint vbo, GLsizei stride) {
-    glBindVertexArray(this->vao);   // Your mesh's VAO
+    glBindVertexArray(this->vao);   // Mesh VAO
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glEnableVertexAttribArray(5);   // Choose location 4, for example
+
+    // Per-instance position (vec4) at location 5
+    glEnableVertexAttribArray(5);
     glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)0);
-    glVertexAttribDivisor(5, 1);    // Advance once per instance
+    glVertexAttribDivisor(5, 1); // advance once per instance
+
+    // Explicitly keep optional instance attrs disabled unless provided
+    glDisableVertexAttribArray(4); // optional color
+    glDisableVertexAttribArray(6); // optional velocity
+
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
-	//std::cout << "Instance buffer bound to VAO: " << vao << " with VBO: " << vbo << std::endl;
-} 
+}
+
 void Mesh::SetInstanceData(const std::vector<Vec3>& positions) {
     if (instanceVBO == 0) {
         glGenBuffers(1, &instanceVBO);

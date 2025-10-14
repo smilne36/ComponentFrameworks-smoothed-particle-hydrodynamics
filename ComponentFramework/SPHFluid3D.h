@@ -52,6 +52,8 @@ public:
     // NEW: rebuild grid only (when box/h changes), doesn’t touch particles
     void RecreateGridForBox();
 
+    MATH::Vec3 ComputeAABBFittedHalf() const;
+
     // Simulation/box/grid properties
     // Legacy 'box' kept for compatibility (half-size max extent), used as fallback
     float box = 7.0f; // size of bucket ([-box, box]) legacy

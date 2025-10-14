@@ -47,6 +47,12 @@ private:
 	bool pendingReset = false;
     
     float dtAccumulator = 0.0f;
+
+	Shader* lineShader = nullptr;
+	GLuint boxVAO = 0, boxVBO = 0;
+	void UpdateBoxWireframe(); // recompute line vertices from fluidGPU->param_box*
+	bool renderFromSSBO = true;
+
 public:
 	explicit Scene0p();
 	virtual ~Scene0p();
