@@ -1,61 +1,78 @@
-#pragma once
-#include <glad.h>
-#include <SDL.h>
-#include <MMath.h>
-#include "Shader.h"
-#include "SPHFluid3D.h"
+#ifndef SCENE0P_H
+#define SCENE0P_H
 #include "Scene.h"
+#include "Vector.h"
+#include <Matrix.h>
+#include "SPHFluid3D.h"
+#include <SDL.h>
+#include "window.h" 
+#include "Body.h"
+#include "Mesh.h"
+#include "Shader.h"
+#include <glad.h>
+using namespace MATH;
+
+/// Forward declarations 
+union SDL_Event;
 
 class Scene0p : public Scene {
-public:
-    Scene0p();
-    ~Scene0p();
-
-    bool OnCreate();
-    void OnDestroy();
-    void HandleEvents(const SDL_Event& sdlEvent);
-    void Update(float deltaTime);
-    void Render();
-
 private:
-    // Shaders
-    Shader* impostorShader = nullptr;
-    Shader* lineShader = nullptr;
-
-    // Impostor VAO (GL_POINTS)
-    GLuint impostorVAO = 0;
+    // Your existing members
+    Body* sphere = nullptr;
+    Shader* shader = nullptr;         // instanced sphere shader (defaultVert/defaultFrag)
+    Mesh* mesh = nullptr;
+    Matrix4 projectionMatrix;
+    Matrix4 viewMatrix;
+    Matrix4 modelMatrix;
+    bool    drawInWireMode = true;
+    bool    mouseDown = false;
+    int     mouseX = 0, mouseY = 0;
+    Vec3    cameraPos = Vec3(0.0f, 0.0f, 10.0f);
+    Vec3    cameraTarget = Vec3(0.0f, 0.0f, 0.0f);
+    Vec3    cameraUp = Vec3(0.0f, 1.0f, 0.0f);
 
     // Wireframe box
-    struct BoxWire {
-        GLuint vao = 0, vbo = 0;
-        void init();
-        void draw(Shader& lineShader, const MATH::Matrix4& P, const MATH::Matrix4& V,
-            const MATH::Matrix4& M, const MATH::Vec3& color);
-        void destroy();
-    } boxWire;
+    Shader* lineShader = nullptr;
+    GLuint  boxVAO = 0, boxVBO = 0;
 
-    // Fluid
-    SPHFluidGPU* fluidGPU = nullptr;
+    // Performance / sim controls
+    bool    pendingReset = false;
+    float   ballAnimTime = 0.0f;
 
-    // Camera
-    MATH::Matrix4 projectionMatrix, viewMatrix, modelMatrix;
+    // Fixed-step accumulator (member, not local static)
+    float   dtAccumulator = 0.0f;
+    int     maxSubstepsPerFrame = 16;        // lowered cap
 
-    // Timing
-    float dtAccumulator = 0.0f;   // member (no local static!)
-    const float fixedDt = 1.0f / 120.0f;
-    int   maxSubstepsPerFrame = 16;  // adaptive between 8 and 16
+    // Render fast path (single toggle)
+    bool    renderFromSSBO = true;
 
-    // Render toggles
-    bool renderFromSSBO = true;   // single toggle
+    // Track last box values to update wireframe only when something changed
+    Vec3    lastBoxCenter{};
+    Vec3    lastBoxHalf{};
+    Vec3    lastBoxEuler{};
 
-    // Track last box to rebuild wireframe only on change
-    MATH::Vec3 lastBoxCenter{}, lastBoxHalf{}, lastBoxEuler{};
+    // Point-impostor path
+    bool    useImpostors = false;
+    Shader* impostorShader = nullptr;        // shaders/particleImpostor.vert/frag
+    GLuint  impostorVAO = 0;                 // empty VAO for gl_VertexID impostors
 
     // Helpers
-    void SetupImpostorVAO();
-    void UpdateBoxWireframe();
-    void DrawFluidImpostors();
+    void    UpdateBoxWireframe();
+    void    SetupImpostorVAO();
+    void    DrawFluidImpostors() const;
+    int     CurrentViewportHeight() const;
 
-    // Utility
-    int CurrentViewportHeight() const;
+public:
+    explicit Scene0p();
+    ~Scene0p() override;
+
+    bool OnCreate() override;
+    void OnDestroy() override;
+    void HandleEvents(const SDL_Event& sdlEvent) override;
+    void Update(const float deltaTime) override;
+    void Render() const override;
+
+    SPHFluidGPU* fluidGPU = nullptr;
 };
+
+#endif // SCENE0P_H

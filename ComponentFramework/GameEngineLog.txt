@@ -1,11 +1,10 @@
-Tue Oct 14 11:13:48 2025
+Tue Oct 14 13:10:46 2025
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 581.42
 [INFO]: Graphics card vendor: NVIDIA Corporation
 [INFO]: Graphics card name: NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2
 [INFO]: GLSL version: 4.50 NVIDIA
-[INFO]: Created Scene0: 
-[INFO]: Loading assets Scene0: 
+[INFO]: Loading assets Scene0p
 [INFO]: Uniforms:
 "colorMode" loc:0
 "heightMinMax" loc:1
@@ -20,6 +19,8 @@ Tue Oct 14 11:13:48 2025
 "uColor" loc:1
 "viewMatrix" loc:2
 
+[INFO]: Uniforms:
+"projectionMatrix" loc:0
+"viewMatrix" loc:1
+
 [INFO]: Deleting the SceneManager
-[INFO]: Deleting assets Scene0: 
-[INFO]: Deleted Scene0: 

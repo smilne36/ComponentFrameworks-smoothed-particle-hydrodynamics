@@ -1,7 +1,11 @@
 #ifndef SCENEMANAGER_H
 #define SCENEMANAGER_H
+#include "Scene.h"
+#include "Timer.h"
+#include "Window.h"
 
 #include <string>
+
 class SceneManager  {
 public:
 	
@@ -26,7 +30,7 @@ private:
 
 	Scene* currentScene;
 	Timer* timer;
-	Window* window;
+	Window* window; 
 
 	unsigned int fps;
 	bool isRunning;
