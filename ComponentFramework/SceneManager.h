@@ -24,9 +24,9 @@ private:
 		SCENE6
 	};
 
-	class Scene* currentScene;
-	class Timer* timer;
-	class Window* window;
+	Scene* currentScene;
+	Timer* timer;
+	Window* window;
 
 	unsigned int fps;
 	bool isRunning;

@@ -180,8 +180,11 @@
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />
     <None Include="shaders\defaultVert.glsl" />
+    <None Include="shaders\particleImpostor.frag" />
+    <None Include="shaders\particleImpostor.vert" />
     <None Include="shaders\RadixSort.comp" />
     <None Include="shaders\SPHFluid.comp" />
+    <None Include="shaders\WaveImpulse.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

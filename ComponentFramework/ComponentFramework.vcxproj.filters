@@ -177,5 +177,14 @@
     <None Include="lineFrag.glsl">
       <Filter>Resource Files</Filter>
     </None>
+    <None Include="shaders\particleImpostor.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\particleImpostor.vert">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\WaveImpulse.comp">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
