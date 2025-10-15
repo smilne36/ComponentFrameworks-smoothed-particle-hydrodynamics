@@ -46,11 +46,9 @@ bool Scene0p::OnCreate() {
 
     mesh = new Mesh("meshes/Sphere.obj"); mesh->OnCreate();
 
-    // Instanced sphere shader (your original)
     shader = new Shader("shaders/defaultVert.glsl", "shaders/defaultFrag.glsl");
     if (!shader->OnCreate()) { std::cerr << "default shader failed\n"; return false; }
 
-    // Make sure SSBO block is at binding=0 for vertex fetch
     {
         GLuint prog = shader->GetProgram();
         GLuint block = glGetProgramResourceIndex(prog, GL_SHADER_STORAGE_BLOCK, "ParticleBuf");
@@ -62,13 +60,9 @@ bool Scene0p::OnCreate() {
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
-    // Fluid sim (allocs SSBOs/compute)
     fluidGPU = new SPHFluidGPU(30000);
-
-    // One-time instancing hookup (attribute 5 for instance pos)
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
 
-    // Wireframe box shader + VBO
     lineShader = new Shader("shaders/lineVert.glsl", "shaders/lineFrag.glsl");
     if (!lineShader->OnCreate()) { std::cerr << "line shader failed\n"; return false; }
     glGenVertexArrays(1, &boxVAO);
@@ -80,16 +74,18 @@ bool Scene0p::OnCreate() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
     glBindVertexArray(0);
 
-    // Point-impostor shader & dummy VAO (gl_VertexID path)
     impostorShader = new Shader("shaders/particleImpostor.vert", "shaders/particleImpostor.frag");
     if (!impostorShader->OnCreate()) { std::cerr << "impostor shader failed\n"; return false; }
     SetupImpostorVAO();
 
-    // Initialize wire once
     UpdateBoxWireframe();
     lastBoxCenter = fluidGPU->param_boxCenter;
     lastBoxHalf = fluidGPU->param_boxHalf;
     lastBoxEuler = fluidGPU->param_boxEulerDeg;
+
+    vizMode = 0;        // Default to height-based coloring
+    vizRangeMin = 0.0f;
+    vizRangeMax = 10.0f;
 
     return true;
 }
@@ -159,7 +155,6 @@ void Scene0p::UpdateBoxWireframe() {
 }
 
 void Scene0p::Update(const float deltaTime) {
-    // simple anim so you can see something moving
     ballAnimTime += deltaTime;
     float ballX = std::sin(ballAnimTime) * 3.0f;
     if (sphere) sphere->SetPosition(Vec3(ballX, 0.0f, 0.0f));
@@ -167,7 +162,6 @@ void Scene0p::Update(const float deltaTime) {
 
     if (!fluidGPU) return;
 
-    // --- ImGui (kept intact + small adds) ---
     ImGui::Begin("Fluid Controls");
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Particles: %zu (fluids: %zu)", fluidGPU->particles.size(), fluidGPU->GetNumFluids());
@@ -226,7 +220,6 @@ void Scene0p::Update(const float deltaTime) {
         }
     }
 
-    // Sim params
     ImGui::Checkbox("Pause simulation", &fluidGPU->param_pause);
     ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
     ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
@@ -237,15 +230,13 @@ void Scene0p::Update(const float deltaTime) {
     ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
     ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
 
-    // Performance toggles (deduped)
     ImGui::Separator(); ImGui::Text("Performance");
     ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
-    ImGui::Checkbox("Enable ghost boundaries (slower)", &fluidGPU->param_enableGhosts);
+    ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
     ImGui::SameLine();
     ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
     ImGui::Checkbox("Use point impostors", &useImpostors);
 
-    // Box transform
     ImGui::Separator(); ImGui::Text("Box Transform (OBB)");
     ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
     ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
@@ -257,18 +248,16 @@ void Scene0p::Update(const float deltaTime) {
         UpdateBoxWireframe();
     }
 
-    // Spawn
     ImGui::Separator(); ImGui::Text("Spawn Layout");
     ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
     ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
     if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
 
-    // Waves (now GPU-only in SPHFluidGPU)
     ImGui::Separator(); ImGui::Text("Waves");
     static float waveAmplitude = 1.5f;
     static float waveWavelength = 3.0f;
     static float wavePhaseSpeed = 4.0f;
-    static int   waveDirIdx = 1; // 0:X 1:Y 2:Z
+    static int   waveDirIdx = 1;
     static float yBandMin = -std::numeric_limits<float>::infinity();
     static float yBandMax = std::numeric_limits<float>::infinity();
     static bool  continuousWave = false;
@@ -290,18 +279,13 @@ void Scene0p::Update(const float deltaTime) {
     ImGui::SameLine();
     if (ImGui::Button("Reset Simulation")) pendingReset = true;
 
-    // Visualization
     ImGui::Separator(); ImGui::Text("Visualization");
-    static int   vizMode = 1;
-    static float rangeMin = 0.0f, rangeMax = 10.0f;
-    ImGui::Combo("Color by", &vizMode, "Depth\0Speed\0Pressure\0Density\0\0");
-    ImGui::DragFloat("Range Min", &rangeMin, 0.1f);
-    ImGui::DragFloat("Range Max", &rangeMax, 0.1f);
-    ImGui::TextDisabled("Tip: SSBO mode avoids CPU readbacks and boosts FPS.");
+    ImGui::Combo("Color by", &vizMode, "Height\0Speed\0Pressure\0Density\0InstanceColor\0");
+    ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
+    ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
+    ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
     ImGui::End();
-    // --- end ImGui ---
 
-    // Update wireframe only when box params changed
     if (lastBoxCenter.x != fluidGPU->param_boxCenter.x ||
         lastBoxCenter.y != fluidGPU->param_boxCenter.y ||
         lastBoxCenter.z != fluidGPU->param_boxCenter.z ||
@@ -331,11 +315,8 @@ void Scene0p::Update(const float deltaTime) {
         fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
     }
 
-    // Fixed-step sim loop (member accumulator + lower cap)
     const float fixedDt = std::max(1e-6f, fluidGPU->param_timeStep);
     dtAccumulator += deltaTime;
-
-    // simple adaptive safety: if frame is very slow, shrink the cap from 16 -> 8
     const int cap = (deltaTime > 0.033f) ? std::min(8, maxSubstepsPerFrame) : maxSubstepsPerFrame;
 
     int didSteps = 0;
@@ -353,10 +334,8 @@ void Scene0p::Render() const {
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    if (drawInWireMode) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    else                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glPolygonMode(GL_FRONT_AND_BACK, drawInWireMode ? GL_LINE : GL_FILL);
 
-    // 1) Box wireframe
     if (lineShader && boxVAO) {
         glUseProgram(lineShader->GetProgram());
         glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
@@ -371,15 +350,12 @@ void Scene0p::Render() const {
 
     if (!fluidGPU) return;
 
-    // 2) Particles
     if (useImpostors && impostorShader) {
         DrawFluidImpostors();
         return;
     }
 
-    // Instanced spheres path
     if (!renderFromSSBO) {
-        // If the VS reads instance pos from a VBO, refresh it from GPU (slow path)
         fluidGPU->UpdateFluidVBOFromGPU();
     }
 
@@ -387,7 +363,7 @@ void Scene0p::Render() const {
     glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
-    // Height band (for your heat map)
+    // Height range (box Y extents)
     if (GLint hLoc = shader->GetUniformID("heightMinMax"); hLoc != -1) {
         glUniform2f(hLoc,
             fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
@@ -397,9 +373,9 @@ void Scene0p::Render() const {
     if (GLint useLoc = shader->GetUniformID("useSSBO"); useLoc != -1)
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
     if (GLint cmLoc = shader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, 1); // Speed
+        glUniform1i(cmLoc, vizMode);
     if (GLint vrLoc = shader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, 0.0f, 10.0f);
+        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
 
     float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h);
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
@@ -417,7 +393,7 @@ void Scene0p::SetupImpostorVAO() {
 int Scene0p::CurrentViewportHeight() const {
     GLint vp[4] = { 0,0,0,0 };
     glGetIntegerv(GL_VIEWPORT, vp);
-    return vp[3] > 0 ? vp[3] : 1080; // fallback
+    return vp[3] > 0 ? vp[3] : 1080;
 }
 
 void Scene0p::DrawFluidImpostors() const {
@@ -425,31 +401,20 @@ void Scene0p::DrawFluidImpostors() const {
     glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
     glUniformMatrix4fv(impostorShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
-    // screen-space point size scale (many impostor VS expect this)
-    if (GLint s = impostorShader->GetUniformID("uPointScale"); s != -1) {
-        const float fovY = 45.0f * (3.14159265359f / 180.0f);
-        float pointScale = float(CurrentViewportHeight()) / (2.0f * tanf(fovY * 0.5f));
-        glUniform1f(s, pointScale);
-    }
-
     if (GLint hLoc = impostorShader->GetUniformID("heightMinMax"); hLoc != -1) {
         glUniform2f(hLoc,
             fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
             fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
     }
-
     if (GLint cmLoc = impostorShader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, 1); // speed
+        glUniform1i(cmLoc, vizMode);
     if (GLint vrLoc = impostorShader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, 0.0f, 10.0f);
+        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
 
-    // Particle radius (if shader needs it)
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
 
-    // SSBO with all particles (VS uses gl_VertexID to index)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
-
     glBindVertexArray(impostorVAO);
     glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
     glBindVertexArray(0);

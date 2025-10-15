@@ -1,4 +1,4 @@
-Tue Oct 14 13:10:46 2025
+Tue Oct 14 14:40:06 2025
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 581.42
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -20,7 +20,11 @@ Tue Oct 14 13:10:46 2025
 "viewMatrix" loc:2
 
 [INFO]: Uniforms:
-"projectionMatrix" loc:0
-"viewMatrix" loc:1
+"colorMode" loc:0
+"heightMinMax" loc:1
+"particleRadius" loc:2
+"projectionMatrix" loc:3
+"viewMatrix" loc:4
+"vizRange" loc:5
 
 [INFO]: Deleting the SceneManager
