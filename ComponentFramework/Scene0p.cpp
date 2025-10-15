@@ -60,7 +60,7 @@ bool Scene0p::OnCreate() {
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
-    fluidGPU = new SPHFluidGPU(30000);
+    fluidGPU = new SPHFluidGPU(50000);
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
 
     lineShader = new Shader("shaders/lineVert.glsl", "shaders/lineFrag.glsl");
@@ -187,7 +187,7 @@ void Scene0p::Update(const float deltaTime) {
         fluidGPU->param_gravityY = -980.0f;
         fluidGPU->param_surfaceTension = 0.12f;
         fluidGPU->param_timeStep = 5.0e-4f;
-        fluidGPU->param_useJitter = true;
+        fluidGPU->param_useJitter = false;
         fluidGPU->param_jitterAmp = 0.06f;
         fluidGPU->param_wallRestitution = 0.05f;
         fluidGPU->param_wallFriction = 0.05f;
