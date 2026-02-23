@@ -108,4 +108,4 @@ Ghost grids: lightweight 2D bucket arrays per face to accelerate ghost activatio
 3. Enter main loop: poll events, ImGui frame, scene Update(delta), scene Render(), ImGui render.
 4. Clean up via OnDestroy().
 
-## Minimal Pseudocode
+
