@@ -140,6 +140,8 @@ void Scene0p::OnDestroy() {
     if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
     if (terrainVBO) glDeleteBuffers(1, &terrainVBO);
     if (terrainEBO) glDeleteBuffers(1, &terrainEBO);
+    if (riverBankVAO) glDeleteVertexArrays(1, &riverBankVAO);
+    if (riverBankVBO) glDeleteBuffers(1, &riverBankVBO);
 }
 
 void Scene0p::HandleEvents(const SDL_Event& e) {
@@ -346,6 +348,7 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_boxEulerDeg = Vec3(0, 0, 0);
             fluidGPU->GenerateRiverTerrain(riverSeed);
             BuildTerrainMesh();
+            BuildRiverBankLines();
             pendingReset = true;
         }
         if (fluidGPU->riverMode) {
@@ -353,6 +356,7 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Emitter vel Z", &fluidGPU->riverEmitterVel.z, 0.0f, 15.0f);
             ImGui::SliderFloat("Gravity Z (flow)", &fluidGPU->param_gravityZ, 0.0f, 400.0f);
             ImGui::SliderFloat("Gravity Y",         &fluidGPU->param_gravityY, -980.0f, -50.0f);
+            ImGui::Checkbox("Show bank lines", &showRiverLines);
         }
         if (!fluidGPU->riverMode && wasRiver) {
             // Restore box to default when river mode is turned off
@@ -739,6 +743,10 @@ void Scene0p::RenderSSFR() const {
         glBindVertexArray(0);
     }
 
+    // River bank lines (channel edges + centerline on terrain surface)
+    if (showRiverLines && fluidGPU && fluidGPU->riverMode)
+        DrawRiverBankLines();
+
     // Box wireframe (skip in river mode to reduce visual clutter)
     if (lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
         glUseProgram(lineShader->GetProgram());
@@ -871,5 +879,85 @@ void Scene0p::BuildTerrainMesh() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, terrainEBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(uint32_t), idx.data(), GL_STATIC_DRAW);
 
+    glBindVertexArray(0);
+}
+
+void Scene0p::BuildRiverBankLines() {
+    if (!fluidGPU || fluidGPU->terrainHeights.empty()) return;
+
+    const int N     = 300;
+    const float zMin  = fluidGPU->terrainWorldMinZ;
+    const float zSize = fluidGPU->terrainWorldSizeZ;
+    const float xMin  = fluidGPU->terrainWorldMinX;
+    const float xSize = fluidGPU->terrainWorldSizeX;
+    const int   TW    = fluidGPU->terrainW;
+    const int   TH    = fluidGPU->terrainH;
+
+    auto sampleH = [&](float wx, float wz) -> float {
+        float u = (wx - xMin) / xSize * float(TW - 1);
+        float v = (wz - zMin) / zSize * float(TH - 1);
+        u = std::max(0.0f, std::min(float(TW - 2), u));
+        v = std::max(0.0f, std::min(float(TH - 2), v));
+        int ix = int(u), iz = int(v);
+        float fx = u - ix, fz = v - iz;
+        float h00 = fluidGPU->terrainHeights[ ix      +  iz      * TW];
+        float h10 = fluidGPU->terrainHeights[(ix + 1) +  iz      * TW];
+        float h01 = fluidGPU->terrainHeights[ ix      + (iz + 1) * TW];
+        float h11 = fluidGPU->terrainHeights[(ix + 1) + (iz + 1) * TW];
+        return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
+    };
+
+    // 3 strips: 0=left bank, 1=right bank, 2=centerline
+    std::vector<float> verts;
+    verts.reserve(N * 3 * 3);
+    for (int strip = 0; strip < 3; ++strip) {
+        for (int i = 0; i < N; ++i) {
+            float wz = zMin + (float(i) / float(N - 1)) * zSize;
+            float cx = fluidGPU->param_boxCenter.x
+                     + fluidGPU->riverAmp * std::sinf(fluidGPU->riverFreq * wz + fluidGPU->riverPhase);
+            float wx;
+            if      (strip == 0) wx = cx - fluidGPU->riverChannelWidth;
+            else if (strip == 1) wx = cx + fluidGPU->riverChannelWidth;
+            else                 wx = cx;
+            float wy = sampleH(wx, wz) + 0.06f; // slight lift to avoid z-fighting
+            verts.push_back(wx);
+            verts.push_back(wy);
+            verts.push_back(wz);
+        }
+    }
+
+    riverBankN = N;
+    if (!riverBankVAO) { glGenVertexArrays(1, &riverBankVAO); glGenBuffers(1, &riverBankVBO); }
+    glBindVertexArray(riverBankVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, riverBankVBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+}
+
+void Scene0p::DrawRiverBankLines() const {
+    if (!lineShader || !riverBankVAO || riverBankN == 0) return;
+
+    glUseProgram(lineShader->GetProgram());
+    glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    glBindVertexArray(riverBankVAO);
+    glLineWidth(2.5f);
+
+    GLint colorLoc = lineShader->GetUniformID("uColor");
+
+    // Left bank — red
+    glUniform3f(colorLoc, 1.0f, 0.15f, 0.15f);
+    glDrawArrays(GL_LINE_STRIP, 0, riverBankN);
+
+    // Right bank — red
+    glDrawArrays(GL_LINE_STRIP, riverBankN, riverBankN);
+
+    // Centerline — warm orange (flow direction guide)
+    glUniform3f(colorLoc, 1.0f, 0.55f, 0.05f);
+    glDrawArrays(GL_LINE_STRIP, 2 * riverBankN, riverBankN);
+
+    glLineWidth(1.0f);
     glBindVertexArray(0);
 }
