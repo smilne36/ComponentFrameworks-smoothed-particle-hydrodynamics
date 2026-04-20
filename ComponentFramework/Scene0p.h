@@ -58,6 +58,48 @@ private:
     void    DrawFluidImpostors() const;
     int     CurrentViewportHeight() const;
 
+    // --- Screen-Space Fluid Rendering ---
+    Shader* ssfrDepthShader     = nullptr;
+    Shader* ssfrSmoothShader    = nullptr;
+    Shader* ssfrThickShader     = nullptr;
+    Shader* ssfrCompositeShader = nullptr;
+    GLuint  ssfrQuadVAO         = 0;
+
+    GLuint  ssfrDepthFBO        = 0;
+    GLuint  ssfrDepthTex        = 0;
+    GLuint  ssfrDepthRBO        = 0;
+
+    GLuint  ssfrSmoothFBO[2]    = {0, 0};
+    GLuint  ssfrSmoothTex[2]    = {0, 0};
+
+    GLuint  ssfrThickFBO        = 0;
+    GLuint  ssfrThickTex        = 0;
+
+    GLuint  ssfrBgFBO           = 0;
+    GLuint  ssfrBgTex           = 0;
+    GLuint  ssfrBgRBO           = 0;
+
+    int     ssfrW               = 0;
+    int     ssfrH               = 0;
+
+    bool    useWaterRendering   = true;
+    int     smoothIterations    = 5;
+    float   smoothFilterRadius  = 10.0f;
+    float   smoothDepthFalloff  = 0.1f;
+    float   waterExtinction[3]  = {0.45f, 0.15f, 0.05f};
+    float   thicknessScale      = 1.0f;
+    float   sunDirWorld[3]      = {0.4f, 1.0f, 0.5f};
+    float   sunColor[3]         = {1.0f, 0.97f, 0.9f};
+    float   deepWaterColor[3]   = {0.02f, 0.08f, 0.25f};
+    float   specularPower       = 256.0f;
+    float   specularStrength    = 0.8f;
+    float   refractionStrength  = 0.04f;
+    float   fresnelBias         = 0.02f;
+
+    void    InitSSFRBuffers(int w, int h);
+    void    RenderSSFR() const;
+    void    DestroySSFRBuffers();
+
 public:
     explicit Scene0p();
     ~Scene0p() override;
