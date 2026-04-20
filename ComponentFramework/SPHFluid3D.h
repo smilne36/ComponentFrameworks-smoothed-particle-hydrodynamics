@@ -125,10 +125,12 @@ public:
     float riverSinkZMax      =  9.0f;
 
     // Stored per-generation values (used during InitializeParticles)
-    float riverAmp   = 2.0f;
-    float riverFreq  = 0.25f;
-    float riverPhase = 0.0f;
+    float riverAmp          = 2.0f;
+    float riverFreq         = 0.25f;
+    float riverPhase        = 0.0f;
     float riverChannelWidth = 3.0f;
+    float riverChannelDepth = 3.5f;
+    float riverSlopeDrop    = 0.3f;
 
     GLuint terrainSSBO             = 0;
     GLuint terrainConstraintShader = 0;
