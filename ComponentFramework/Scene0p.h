@@ -25,9 +25,13 @@ private:
     bool    drawInWireMode = true;
     bool    mouseDown = false;
     int     mouseX = 0, mouseY = 0;
-    Vec3    cameraPos = Vec3(0.0f, 0.0f, 10.0f);
+    int     mouseButton = -1;       // -1=none, 1=left, 3=right
+    Vec3    cameraPos = Vec3(0.0f, 5.0f, 22.0f);
     Vec3    cameraTarget = Vec3(0.0f, 0.0f, 0.0f);
     Vec3    cameraUp = Vec3(0.0f, 1.0f, 0.0f);
+    float   camDist      = 22.0f;
+    float   camAzimuth   = 0.0f;   // radians, rotation around Y
+    float   camElevation = 0.22f;  // radians, pitch above horizon
 
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
