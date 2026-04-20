@@ -965,38 +965,37 @@ void Scene0p::BuildRiverBankLines() {
     const int N     = 300;
     const float zMin  = fluidGPU->terrainWorldMinZ;
     const float zSize = fluidGPU->terrainWorldSizeZ;
-    const float xMin  = fluidGPU->terrainWorldMinX;
-    const float xSize = fluidGPU->terrainWorldSizeX;
-    const int   TW    = fluidGPU->terrainW;
-    const int   TH    = fluidGPU->terrainH;
 
-    auto sampleH = [&](float wx, float wz) -> float {
-        float u = (wx - xMin) / xSize * float(TW - 1);
-        float v = (wz - zMin) / zSize * float(TH - 1);
-        u = std::max(0.0f, std::min(float(TW - 2), u));
-        v = std::max(0.0f, std::min(float(TH - 2), v));
-        int ix = int(u), iz = int(v);
-        float fx = u - ix, fz = v - iz;
-        float h00 = fluidGPU->terrainHeights[ ix      +  iz      * TW];
-        float h10 = fluidGPU->terrainHeights[(ix + 1) +  iz      * TW];
-        float h01 = fluidGPU->terrainHeights[ ix      + (iz + 1) * TW];
-        float h11 = fluidGPU->terrainHeights[(ix + 1) + (iz + 1) * TW];
-        return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
-    };
+    // Analytical terrain parameters for smooth bank line heights
+    const float yBase        = fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y;
+    const float channelDepth = fluidGPU->riverChannelDepth;
+    const float slopeDrop    = fluidGPU->riverSlopeDrop;
 
     // 3 strips: 0=left bank, 1=right bank, 2=centerline
     std::vector<float> verts;
     verts.reserve(N * 3 * 3);
     for (int strip = 0; strip < 3; ++strip) {
         for (int i = 0; i < N; ++i) {
-            float wz = zMin + (float(i) / float(N - 1)) * zSize;
-            float cx = fluidGPU->param_boxCenter.x
-                     + fluidGPU->riverAmp * std::sinf(fluidGPU->riverFreq * wz + fluidGPU->riverPhase);
+            float wz    = zMin + (float(i) / float(N - 1)) * zSize;
+            float tFlow = (wz - zMin) / zSize;
+            float cx    = fluidGPU->param_boxCenter.x
+                        + fluidGPU->riverAmp * std::sinf(fluidGPU->riverFreq * wz + fluidGPU->riverPhase);
+
             float wx;
-            if      (strip == 0) wx = cx - fluidGPU->riverChannelWidth;
-            else if (strip == 1) wx = cx + fluidGPU->riverChannelWidth;
-            else                 wx = cx;
-            float wy = sampleH(wx, wz) + 0.06f; // slight lift to avoid z-fighting
+            float wy;
+            if (strip == 0 || strip == 1) {
+                // Bank edge: top of channel wall (channel floor + full depth)
+                wx = (strip == 0) ? cx - fluidGPU->riverChannelWidth
+                                  : cx + fluidGPU->riverChannelWidth;
+                float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
+                wy = riverFloor + channelDepth + 0.12f; // slight lift above wall top
+            } else {
+                // Centerline: at water surface level (near channel floor)
+                wx = cx;
+                float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
+                wy = riverFloor + 0.15f; // just above the flat channel floor
+            }
+
             verts.push_back(wx);
             verts.push_back(wy);
             verts.push_back(wz);

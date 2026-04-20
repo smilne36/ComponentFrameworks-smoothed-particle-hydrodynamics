@@ -673,17 +673,20 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     riverFreq         = 0.18f + frand() * 0.18f;
     riverPhase        = frand() * 6.2831f;
     riverChannelWidth = 1.8f + frand() * 1.2f;     // 1.8-3.0 unit half-width
-    float channelDepth = 3.5f + frand() * 1.0f;    // deep U-shape: steep parabolic walls
-    float slopeDrop    = 0.3f + frand() * 0.5f;    // gentle downstream slope
+    riverChannelDepth = 3.5f + frand() * 1.0f;
+    riverSlopeDrop    = 0.3f + frand() * 0.5f;
+    float channelDepth = riverChannelDepth;
+    float slopeDrop    = riverSlopeDrop;
 
     // Noise phase seeds for the surrounding terrain
     float ph[8];
     for (int k = 0; k < 8; ++k) ph[k] = frand() * 6.2831f;
 
-    // Match terrain footprint to simulation box (elongated for river)
-    terrainWorldMinX  = param_boxCenter.x - param_boxHalf.x;
+    // Terrain footprint: extend 4 units beyond box in X to hide cliff edges
+    const float edgeExtent = 4.0f;
+    terrainWorldMinX  = param_boxCenter.x - param_boxHalf.x - edgeExtent;
     terrainWorldMinZ  = param_boxCenter.z - param_boxHalf.z;
-    terrainWorldSizeX = 2.0f * param_boxHalf.x;
+    terrainWorldSizeX = 2.0f * param_boxHalf.x + 2.0f * edgeExtent;
     terrainWorldSizeZ = 2.0f * param_boxHalf.z;
 
     float xMin   = terrainWorldMinX;
@@ -719,18 +722,38 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
             h += 0.12f * std::sinf(wx * 1.40f + ph[4]) * std::cosf(wz * 1.20f + ph[5]);
 
             if (distToRiver < riverChannelWidth) {
-                // Inside channel: deep parabolic U-shape
-                // Near-vertical walls at edge give terrain normals with large
-                // X component → strong lateral containment from terrain constraint
+                // Trapezoidal channel: flat floor (inner 50%) + parabolic walls (outer 50%)
+                // Flat floor makes depth visible; steep walls give strong lateral containment
                 float u = distToRiver / riverChannelWidth;
-                h = riverFloor + channelDepth * u * u;
+                const float floorFrac = 0.50f;
+                if (u < floorFrac) {
+                    h = riverFloor;
+                } else {
+                    float uw = (u - floorFrac) / (1.0f - floorFrac);
+                    h = riverFloor + channelDepth * uw * uw;
+                }
             } else {
                 // Outside channel: keep plateau, ensure it's always above channel edge
                 h = std::max(h, channelEdge + 0.3f);
             }
 
-            // Don't punch through the box floor
-            h = std::max(h, yBase - 0.3f);
+            // Edge fade: terrain tapers below box floor outside box X bounds
+            // This eliminates the sharp cliff face at the terrain X boundary
+            const float boxMinX = param_boxCenter.x - param_boxHalf.x;
+            const float boxMaxX = param_boxCenter.x + param_boxHalf.x;
+            float edgeFade = 0.0f;
+            if (wx < boxMinX) {
+                float t = std::min(1.0f, (boxMinX - wx) / edgeExtent);
+                edgeFade = t * t * (3.0f - 2.0f * t); // smoothstep
+            } else if (wx > boxMaxX) {
+                float t = std::min(1.0f, (wx - boxMaxX) / edgeExtent);
+                edgeFade = t * t * (3.0f - 2.0f * t);
+            }
+            h = h * (1.0f - edgeFade) + (yBase - 0.5f) * edgeFade;
+
+            // Don't punch through the box floor (only for in-box area)
+            if (wx >= boxMinX && wx <= boxMaxX)
+                h = std::max(h, yBase - 0.3f);
 
             terrainHeights[iz * terrainW + ix] = h;
         }
