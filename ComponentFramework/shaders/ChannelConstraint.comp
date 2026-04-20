@@ -9,12 +9,12 @@ struct Particle {
 layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 
 uniform int   numParticles;
-uniform float boxCenterX;      // param_boxCenter.x
-uniform float riverAmp;        // meander amplitude
-uniform float riverFreq;       // meander frequency
-uniform float riverPhase;      // meander phase
-uniform float channelWidth;    // half-width of channel (hard wall)
-uniform float flowGravity;     // acceleration along channel tangent (units/s^2)
+uniform float boxCenterX;
+uniform float riverAmp;
+uniform float riverFreq;
+uniform float riverPhase;
+uniform float channelWidth;
+uniform float flowGravity;   // acceleration along channel tangent
 uniform float timeStep;
 
 void main() {
@@ -22,29 +22,30 @@ void main() {
     if (i >= uint(numParticles)) return;
 
     Particle p = particles[i];
-    if (p.flags.x == 1) return; // leave ghost particles alone
+    if (p.flags.x == 1) return;
 
     float wz = p.pos.z;
-
-    // Channel centreline at this Z (matches GenerateRiverTerrain formula)
     float cx  = boxCenterX + riverAmp * sin(riverFreq * wz + riverPhase);
+    float dx  = p.pos.x - cx;
 
-    // Channel tangent = d(centerX)/dz in the XZ plane, normalised
+    // --- Tangent-following flow gravity ---
+    // Instead of a straight-Z push, accelerate along the channel curve tangent
     float tdx  = riverAmp * riverFreq * cos(riverFreq * wz + riverPhase);
     float tlen = sqrt(tdx * tdx + 1.0);
-    vec2  tangXZ = vec2(tdx, 1.0) / tlen; // (X, Z) components
+    vec2  tXZ  = vec2(tdx, 1.0) / tlen;
 
-    // Apply gravitational acceleration along the channel tangent.
-    // This replaces the uniform param_gravityZ and steers particles
-    // around bends rather than straight ahead.
-    p.vel.x += tangXZ.x * flowGravity * timeStep;
-    p.vel.z += tangXZ.y * flowGravity * timeStep;
+    p.vel.x += tXZ.x * flowGravity * timeStep;
+    p.vel.z += tXZ.y * flowGravity * timeStep;
 
-    // Hard lateral channel walls — position correction + kill outward velocity
-    float dx = p.pos.x - cx;
+    // --- Strong spring: pull particle toward channel centreline ---
+    // Large enough to overcome SPH pressure spreading (which is ~100-500 s^-2)
+    float spring = 3000.0;
+    p.vel.x -= dx * spring * timeStep;
+
+    // --- Hard lateral wall at channel boundary ---
     if (abs(dx) > channelWidth) {
         p.pos.x = cx + sign(dx) * channelWidth;
-        if (dx * p.vel.x > 0.0) p.vel.x = 0.0; // inelastic: water doesn't bounce sideways
+        if (dx * p.vel.x > 0.0) p.vel.x = 0.0;
     }
 
     particles[i] = p;

@@ -9,25 +9,31 @@ struct Particle {
 layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 
 uniform int   numParticles;
-uniform float sinkY;          // recycle if below this world Y
-uniform float sinkZMax;       // recycle if past this world Z (downstream)
-uniform vec3  emitterPos;     // respawn centre (upstream)
-uniform vec3  emitterVel;     // initial velocity on respawn
-uniform float emitterRadius;  // XZ spread radius
-uniform float emitterSpreadZ; // how far downstream to spread recycled particles
+uniform float sinkY;
+uniform float sinkZMax;
+uniform vec3  emitterPos;
+uniform vec3  emitterVel;
+uniform float emitterRadius;
+uniform float emitterSpreadZ;
 uniform float restDensity;
+
+// River channel shape — needed to spawn at correct X for each Z
+uniform float boxCenterX;
+uniform float riverAmp;
+uniform float riverFreq;
+uniform float riverPhase;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= uint(numParticles)) return;
 
     Particle p = particles[i];
-    if (p.flags.x == 1) return; // keep ghost particles untouched
+    if (p.flags.x == 1) return;
 
     bool dead = (p.pos.y < sinkY) || (p.pos.z > sinkZMax);
     if (!dead) return;
 
-    // LCG hash for deterministic but spread-out positions
+    // LCG hash per particle index
     uint seed = uint(i) * 1664525u + 1013904223u;
     float r1 = float(seed & 0xFFFFu) / 65535.0;
     seed = seed * 1664525u + 1013904223u;
@@ -37,14 +43,15 @@ void main() {
     seed = seed * 1664525u + 1013904223u;
     float r4 = float(seed & 0xFFFFu) / 65535.0;
 
-    // Spread recycled particles along the full channel length so the
-    // river stays filled end-to-end rather than piling up at the emitter
-    float angle  = r4 * 6.2831853;
-    float radius = sqrt(r2) * emitterRadius;
+    // Choose Z anywhere along the channel
+    float spawnZ = emitterPos.z + r1 * emitterSpreadZ;
 
-    p.pos.x   = emitterPos.x + radius * cos(angle);
+    // Channel centreline at this Z — spawn X there, not at a fixed emitter X
+    float cx = boxCenterX + riverAmp * sin(riverFreq * spawnZ + riverPhase);
+
+    p.pos.x   = cx + (r4 - 0.5) * 2.0 * emitterRadius;
     p.pos.y   = emitterPos.y + r3 * 0.6;
-    p.pos.z   = emitterPos.z + r1 * emitterSpreadZ; // spread 0→full channel
+    p.pos.z   = spawnZ;
     p.vel     = vec4(emitterVel, 0.0);
     p.acc     = vec4(0.0);
     p.density = restDensity;
