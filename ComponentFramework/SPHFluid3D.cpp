@@ -682,11 +682,11 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     float ph[8];
     for (int k = 0; k < 8; ++k) ph[k] = frand() * 6.2831f;
 
-    // Terrain footprint: extend 4 units beyond box in X to hide cliff edges
-    const float edgeExtent = 4.0f;
-    terrainWorldMinX  = param_boxCenter.x - param_boxHalf.x - edgeExtent;
+    // Terrain footprint: exact box extent — keep 64×64 resolution concentrated inside the
+    // simulation volume so terrain normals at channel walls are sharp (good lateral containment)
+    terrainWorldMinX  = param_boxCenter.x - param_boxHalf.x;
     terrainWorldMinZ  = param_boxCenter.z - param_boxHalf.z;
-    terrainWorldSizeX = 2.0f * param_boxHalf.x + 2.0f * edgeExtent;
+    terrainWorldSizeX = 2.0f * param_boxHalf.x;
     terrainWorldSizeZ = 2.0f * param_boxHalf.z;
 
     float xMin   = terrainWorldMinX;
@@ -713,9 +713,10 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
             float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
             float channelEdge = riverFloor + channelDepth;
 
-            // Flat plateau background with gentle rolling noise
-            // Plateau sits ABOVE the channel edge so the carved channel is visible
-            float plateau = yBase + 5.5f;
+            // Plateau: always 3 units above channel rim so the carved gorge is clearly visible.
+            // With channelDepth ~4 and 3 units of bank, total relief from box floor to
+            // plateau top is ~8 units — looks like a proper river canyon.
+            float plateau = channelEdge + 3.0f;
             float h = plateau;
             h += 0.5f * std::sinf(wx * 0.35f + ph[0]) * std::cosf(wz * 0.28f + ph[1]);
             h += 0.25f * std::sinf(wx * 0.70f + ph[2]) * std::sinf(wz * 0.60f + ph[3]);
@@ -737,23 +738,8 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
                 h = std::max(h, channelEdge + 0.3f);
             }
 
-            // Edge fade: terrain tapers below box floor outside box X bounds
-            // This eliminates the sharp cliff face at the terrain X boundary
-            const float boxMinX = param_boxCenter.x - param_boxHalf.x;
-            const float boxMaxX = param_boxCenter.x + param_boxHalf.x;
-            float edgeFade = 0.0f;
-            if (wx < boxMinX) {
-                float t = std::min(1.0f, (boxMinX - wx) / edgeExtent);
-                edgeFade = t * t * (3.0f - 2.0f * t); // smoothstep
-            } else if (wx > boxMaxX) {
-                float t = std::min(1.0f, (wx - boxMaxX) / edgeExtent);
-                edgeFade = t * t * (3.0f - 2.0f * t);
-            }
-            h = h * (1.0f - edgeFade) + (yBase - 0.5f) * edgeFade;
-
-            // Don't punch through the box floor (only for in-box area)
-            if (wx >= boxMinX && wx <= boxMaxX)
-                h = std::max(h, yBase - 0.3f);
+            // Don't punch through the box floor
+            h = std::max(h, yBase - 0.3f);
 
             terrainHeights[iz * terrainW + ix] = h;
         }
