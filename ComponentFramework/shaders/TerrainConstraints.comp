@@ -1,0 +1,81 @@
+#version 450
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 pos; vec4 vel; vec4 acc;
+    float density; float pressure; float padA; float padB;
+    ivec4 flags;
+};
+layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
+layout(std430, binding=7) readonly buffer TerrainBuf { float terrainH[]; };
+
+uniform int   numParticles;
+uniform ivec2 terrainGrid;        // (W, H) cells
+uniform vec2  terrainMin;         // (xMin, zMin) world space
+uniform vec2  terrainSize;        // (xSize, zSize) world space
+uniform float terrainRestitution; // bounce coefficient
+uniform float terrainFriction;    // tangential friction
+
+// Bilinear height sample
+float sampleHeight(float wx, float wz) {
+    float u = (wx - terrainMin.x) / terrainSize.x * float(terrainGrid.x - 1);
+    float v = (wz - terrainMin.y) / terrainSize.y * float(terrainGrid.y - 1);
+    u = clamp(u, 0.0, float(terrainGrid.x - 2));
+    v = clamp(v, 0.0, float(terrainGrid.y - 2));
+    int ix = int(u), iz = int(v);
+    float fx = u - float(ix), fz = v - float(iz);
+    int W = terrainGrid.x;
+    float h00 = terrainH[ ix      +  iz      * W];
+    float h10 = terrainH[(ix + 1) +  iz      * W];
+    float h01 = terrainH[ ix      + (iz + 1) * W];
+    float h11 = terrainH[(ix + 1) + (iz + 1) * W];
+    return mix(mix(h00, h10, fx), mix(h01, h11, fx), fz);
+}
+
+// Finite-difference surface normal (outward = upward)
+vec3 terrainNormal(float wx, float wz) {
+    float dx = terrainSize.x / float(terrainGrid.x - 1);
+    float dz = terrainSize.y / float(terrainGrid.y - 1);
+    float hR = sampleHeight(wx + dx, wz);
+    float hL = sampleHeight(wx - dx, wz);
+    float hF = sampleHeight(wx, wz + dz);
+    float hB = sampleHeight(wx, wz - dz);
+    return normalize(vec3(hL - hR, 2.0 * dx, hB - hF));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(numParticles)) return;
+
+    Particle p = particles[i];
+    if (p.flags.x == 1) return; // skip ghosts
+
+    float wx = p.pos.x, wz = p.pos.z;
+
+    // Only resolve within terrain XZ footprint
+    if (wx < terrainMin.x || wx > terrainMin.x + terrainSize.x ||
+        wz < terrainMin.y || wz > terrainMin.y + terrainSize.y) {
+        return;
+    }
+
+    float ty = sampleHeight(wx, wz);
+
+    if (p.pos.y < ty) {
+        vec3 N = terrainNormal(wx, wz);
+
+        // Push particle above terrain surface
+        p.pos.y = ty + 0.001;
+
+        // Velocity response
+        vec3 v  = p.vel.xyz;
+        float vN = dot(v, N);
+        if (vN < 0.0) { // moving into terrain
+            vec3 vNormal   = vN * N;
+            vec3 vTangent  = v - vNormal;
+            p.vel.xyz = -terrainRestitution * vNormal
+                        + (1.0 - terrainFriction) * vTangent;
+        }
+    }
+
+    particles[i] = p;
+}

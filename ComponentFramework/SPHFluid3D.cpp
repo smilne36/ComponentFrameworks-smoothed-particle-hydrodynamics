@@ -37,7 +37,9 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     sphGridShader = LoadComputeShader("shaders/SPHFluid.comp");
     radixSortShader = LoadComputeShader("shaders/RadixSort.comp");
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
-    waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp"); // NEW
+    waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
+    terrainConstraintShader = LoadComputeShader("shaders/TerrainConstraints.comp");
+    streamEmitShader = LoadComputeShader("shaders/StreamEmit.comp");
 
     // 1) Build particle array (also sets 'box' from OBB half)
     InitializeParticles();
@@ -66,6 +68,9 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(radixSortShader);
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
+    if (terrainConstraintShader) glDeleteProgram(terrainConstraintShader);
+    if (streamEmitShader)        glDeleteProgram(streamEmitShader);
+    if (terrainSSBO)             glDeleteBuffers(1, &terrainSSBO);
 }
 
 void SPHFluidGPU::InitializeParticles() {
@@ -90,20 +95,77 @@ void SPHFluidGPU::InitializeParticles() {
         +spacing * param_jitterAmp);
     auto j = [&]() -> float { return param_useJitter ? jitterDist(rng) : 0.0f; };
 
-    // Fill a block at the bottom
-    for (int x = 0; x < fluidSide && count < (int)numParticles; ++x)
-        for (int y = 0; y < fluidLayersY && count < (int)numParticles; ++y)
-            for (int z = 0; z < fluidSide && count < (int)numParticles; ++z) {
-                SPHParticle p{};
-                p.pos = Vec4(-box * 0.7f + x * spacing + j(),
-                    -box + spacing + y * spacing + j(),
-                    -box * 0.7f + z * spacing + j(), 0.0f);
-                p.vel = Vec4(0, 0, 0, 0);
-                p.acc = Vec4(0, 0, 0, 0);
-                p.density = p.pressure = 0.0f;
-                p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
-                particles.push_back(p); ++count;
+    if (riverMode && !terrainHeights.empty()) {
+        // Distribute particles along the river channel
+        float xMin  = terrainWorldMinX;
+        float zMin  = terrainWorldMinZ;
+        float xSize = terrainWorldSizeX;
+        float zSize = terrainWorldSizeZ;
+        float yBase = param_boxCenter.y - param_boxHalf.y;
+
+        // Sample terrain height at (wx, wz)
+        auto sampleH = [&](float wx, float wz) -> float {
+            float u = (wx - xMin) / xSize * float(terrainW - 1);
+            float v = (wz - zMin) / zSize * float(terrainH - 1);
+            u = std::max(0.0f, std::min(float(terrainW - 2), u));
+            v = std::max(0.0f, std::min(float(terrainH - 2), v));
+            int ix = int(u), iz = int(v);
+            float fx = u - ix, fz = v - iz;
+            int W = terrainW;
+            float h00 = terrainHeights[ ix      +  iz      * W];
+            float h10 = terrainHeights[(ix + 1) +  iz      * W];
+            float h01 = terrainHeights[ ix      + (iz + 1) * W];
+            float h11 = terrainHeights[(ix + 1) + (iz + 1) * W];
+            return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
+        };
+
+        // Walk along the channel and pack particles in
+        for (float wz = zMin + spacing; wz < zMin + zSize - spacing && count < (int)numParticles; wz += spacing) {
+            float centerX = param_boxCenter.x + riverAmp * std::sinf(riverFreq * wz + riverPhase);
+            for (float wx = centerX - riverChannelWidth; wx <= centerX + riverChannelWidth && count < (int)numParticles; wx += spacing) {
+                float ty = sampleH(wx, wz);
+                for (float wy = ty + spacing; wy <= ty + 2.5f && count < (int)numParticles; wy += spacing) {
+                    SPHParticle p{};
+                    p.pos = Vec4(wx + j(), wy + j(), wz + j(), 0.0f);
+                    p.vel = Vec4(0, 0, 2.0f, 0); // initial flow velocity
+                    p.acc = Vec4(0, 0, 0, 0);
+                    p.density = p.pressure = 0.0f;
+                    p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    particles.push_back(p); ++count;
+                }
             }
+        }
+        // Fill remaining particle slots at emitter if channel wasn't enough
+        while (count < (int)numParticles) {
+            std::uniform_real_distribution<float> rx(-riverChannelWidth * 0.5f, riverChannelWidth * 0.5f);
+            std::uniform_real_distribution<float> ry(0.0f, 1.5f);
+            float wx = riverEmitterPos.x + rx(rng);
+            float wz = riverEmitterPos.z + rx(rng);
+            float ty = sampleH(wx, wz);
+            SPHParticle p{};
+            p.pos = Vec4(wx, ty + ry(rng), wz, 0.0f);
+            p.vel = Vec4(0, 0, 2.0f, 0);
+            p.acc = Vec4(0, 0, 0, 0);
+            p.density = p.pressure = 0.0f;
+            p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+            particles.push_back(p); ++count;
+        }
+    } else {
+        // Standard box fill
+        for (int x = 0; x < fluidSide && count < (int)numParticles; ++x)
+            for (int y = 0; y < fluidLayersY && count < (int)numParticles; ++y)
+                for (int z = 0; z < fluidSide && count < (int)numParticles; ++z) {
+                    SPHParticle p{};
+                    p.pos = Vec4(-box * 0.7f + x * spacing + j(),
+                        -box + spacing + y * spacing + j(),
+                        -box * 0.7f + z * spacing + j(), 0.0f);
+                    p.vel = Vec4(0, 0, 0, 0);
+                    p.acc = Vec4(0, 0, 0, 0);
+                    p.density = p.pressure = 0.0f;
+                    p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    particles.push_back(p); ++count;
+                }
+    }
 
     // Create axis-aligned ghost shell (used if param_enableGhosts is true)
     auto add_ghost = [&](float x, float y, float z) {
@@ -392,7 +454,7 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform1f(glGetUniformLocation(sphGridShader, "restDensity"), param_restDensity);
     glUniform1f(glGetUniformLocation(sphGridShader, "gasConstant"), param_gasConstant);
     glUniform1f(glGetUniformLocation(sphGridShader, "viscosity"), param_viscosity);
-    glUniform3f(glGetUniformLocation(sphGridShader, "gravity"), 0.0f, param_gravityY, 0.0f);
+    glUniform3f(glGetUniformLocation(sphGridShader, "gravity"), param_gravityX, param_gravityY, param_gravityZ);
     glUniform1f(glGetUniformLocation(sphGridShader, "surfaceTension"), param_surfaceTension);
     glUniform1f(glGetUniformLocation(sphGridShader, "box"), box);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
@@ -414,7 +476,45 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
+    // 5) River mode: terrain collision + particle recycling
+    if (riverMode && !terrainHeights.empty()) {
+        DispatchTerrainConstraints();
+        DispatchStreamEmit();
+    }
+
     glUseProgram(0);
+}
+
+void SPHFluidGPU::DispatchTerrainConstraints() {
+    if (!terrainConstraintShader || !terrainSSBO) return;
+
+    glUseProgram(terrainConstraintShader);
+    glUniform1i(glGetUniformLocation(terrainConstraintShader, "numParticles"), int(particles.size()));
+    glUniform2i(glGetUniformLocation(terrainConstraintShader, "terrainGrid"),  terrainW, terrainH);
+    glUniform2f(glGetUniformLocation(terrainConstraintShader, "terrainMin"),   terrainWorldMinX, terrainWorldMinZ);
+    glUniform2f(glGetUniformLocation(terrainConstraintShader, "terrainSize"),  terrainWorldSizeX, terrainWorldSizeZ);
+    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainRestitution"), 0.1f);
+    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainFriction"),    0.35f);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, terrainSSBO);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
+void SPHFluidGPU::DispatchStreamEmit() {
+    if (!streamEmitShader) return;
+
+    glUseProgram(streamEmitShader);
+    glUniform1i(glGetUniformLocation(streamEmitShader, "numParticles"),  int(particles.size()));
+    glUniform1f(glGetUniformLocation(streamEmitShader, "sinkY"),         riverSinkY);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "sinkZMax"),      riverSinkZMax);
+    glUniform3f(glGetUniformLocation(streamEmitShader, "emitterPos"),    riverEmitterPos.x, riverEmitterPos.y, riverEmitterPos.z);
+    glUniform3f(glGetUniformLocation(streamEmitShader, "emitterVel"),    riverEmitterVel.x, riverEmitterVel.y, riverEmitterVel.z);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "emitterRadius"), riverEmitterRadius);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "restDensity"),   param_restDensity);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
 GLuint SPHFluidGPU::GetFluidVBO() const { return fluidVBO; }
@@ -533,4 +633,99 @@ GLuint SPHFluidGPU::LoadComputeShader(const char* filePath) {
         Debug::FatalError("Compute link failed:\n" + log, __FILE__, __LINE__);
     }
     return prog;
+}
+
+// ---------------------------------------------------------------------------
+// River / terrain generation
+// ---------------------------------------------------------------------------
+
+void SPHFluidGPU::GenerateRiverTerrain(int seed) {
+    std::srand(static_cast<unsigned>(seed));
+    auto frand = []() { return std::rand() / float(RAND_MAX); };
+
+    // Randomised river channel parameters
+    riverAmp          = 1.5f + frand() * 2.5f;     // meander amplitude
+    riverFreq         = 0.15f + frand() * 0.20f;   // meander frequency
+    riverPhase        = frand() * 6.2831f;
+    riverChannelWidth = 2.5f + frand() * 2.0f;
+    float channelDepth = 1.2f + frand() * 1.5f;    // how deep the channel is carved
+    float slopeDrop    = 4.0f + frand() * 4.0f;    // terrain drop from upstream to downstream
+
+    // Noise phase seeds for the surrounding terrain
+    float ph[8];
+    for (int k = 0; k < 8; ++k) ph[k] = frand() * 6.2831f;
+
+    // Match terrain footprint to simulation box (elongated for river)
+    terrainWorldMinX  = param_boxCenter.x - param_boxHalf.x;
+    terrainWorldMinZ  = param_boxCenter.z - param_boxHalf.z;
+    terrainWorldSizeX = 2.0f * param_boxHalf.x;
+    terrainWorldSizeZ = 2.0f * param_boxHalf.z;
+
+    float xMin   = terrainWorldMinX;
+    float zMin   = terrainWorldMinZ;
+    float xSize  = terrainWorldSizeX;
+    float zSize  = terrainWorldSizeZ;
+    float yBase  = param_boxCenter.y - param_boxHalf.y; // box floor in world Y
+
+    terrainHeights.resize(terrainW * terrainH);
+
+    for (int iz = 0; iz < terrainH; ++iz) {
+        for (int ix = 0; ix < terrainW; ++ix) {
+            float wx = xMin + (float(ix) / float(terrainW - 1)) * xSize;
+            float wz = zMin + (float(iz) / float(terrainH - 1)) * zSize;
+
+            // Normalized downstream position [0,1]
+            float tFlow = (wz - zMin) / zSize;
+
+            // River centerline sinusoidal path (in X)
+            float centerX = param_boxCenter.x + riverAmp * std::sinf(riverFreq * wz + riverPhase);
+            float distToRiver = std::fabsf(wx - centerX);
+
+            // Background terrain from stacked sine noise
+            float h = yBase + 2.5f;
+            h += 1.2f * std::sinf(wx * 0.40f + ph[0]) * std::cosf(wz * 0.30f + ph[1]);
+            h += 0.70f * std::sinf(wx * 0.80f + ph[2]) * std::sinf(wz * 0.70f + ph[3]);
+            h += 0.35f * std::sinf(wx * 1.50f + ph[4]) * std::cosf(wz * 1.30f + ph[5]);
+            h += 0.18f * std::sinf(wx * 2.60f + ph[6]) * std::sinf(wz * 2.20f + ph[7]);
+
+            // River floor slopes downhill (tFlow=0 → upstream, tFlow=1 → downstream)
+            float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
+
+            // Carve parabolic channel cross-section
+            if (distToRiver < riverChannelWidth) {
+                float u = distToRiver / riverChannelWidth; // 0=centre, 1=bank
+                float carved = riverFloor + channelDepth * u * u;
+                h = std::min(h, carved);
+            }
+
+            // Don't punch through the box floor
+            h = std::max(h, yBase - 0.3f);
+
+            terrainHeights[iz * terrainW + ix] = h;
+        }
+    }
+
+    // Position emitter at the upstream mouth of the channel
+    float startX = param_boxCenter.x + riverAmp * std::sinf(riverPhase);
+    riverEmitterPos    = Vec3(startX, yBase + 2.5f, zMin + 0.4f);
+    riverEmitterVel    = Vec3(0.0f, -0.3f, 4.0f);   // launch into the channel
+    riverEmitterRadius = riverChannelWidth * 0.35f;
+    riverSinkY         = yBase - 1.5f;               // below terrain floor
+    riverSinkZMax      = param_boxCenter.z + param_boxHalf.z - 0.5f; // at downstream edge
+
+    // Gravity: mostly downward, gentle push along +Z for river flow
+    param_gravityY = -400.0f;   // reduced to keep water in shallow channel
+    param_gravityZ =  120.0f;   // push along river direction
+
+    // Upload heightfield to GPU
+    if (terrainSSBO == 0) glGenBuffers(1, &terrainSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, terrainSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 terrainHeights.size() * sizeof(float),
+                 terrainHeights.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    std::cout << "[River] seed=" << seed
+              << " amp=" << riverAmp << " freq=" << riverFreq
+              << " width=" << riverChannelWidth << " slope=" << slopeDrop << "\n";
 }

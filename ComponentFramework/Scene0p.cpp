@@ -94,6 +94,12 @@ bool Scene0p::OnCreate() {
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
+    terrainShader = new Shader("shaders/terrainVert.glsl", "shaders/terrainFrag.glsl");
+    if (!terrainShader->OnCreate()) { std::cerr << "terrain shader failed\n"; return false; }
+    glGenVertexArrays(1, &terrainVAO);
+    glGenBuffers(1, &terrainVBO);
+    glGenBuffers(1, &terrainEBO);
+
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
@@ -130,6 +136,10 @@ void Scene0p::OnDestroy() {
     if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
     DestroySSFRBuffers();
+    if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
+    if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
+    if (terrainVBO) glDeleteBuffers(1, &terrainVBO);
+    if (terrainEBO) glDeleteBuffers(1, &terrainEBO);
 }
 
 void Scene0p::HandleEvents(const SDL_Event& e) {
@@ -322,6 +332,37 @@ void Scene0p::Update(const float deltaTime) {
     ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
     ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
     ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
+
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("River / Stream Mode")) {
+        bool wasRiver = fluidGPU->riverMode;
+        ImGui::Checkbox("Enable River Mode", &fluidGPU->riverMode);
+        ImGui::SliderInt("River Seed", &riverSeed, 1, 999);
+        if (ImGui::Button("Generate New River")) {
+            if (!fluidGPU->riverMode) fluidGPU->riverMode = true;
+            // Elongate box in Z for a longer channel
+            fluidGPU->param_boxHalf = Vec3(7.0f, 8.0f, 10.0f);
+            fluidGPU->param_boxCenter = Vec3(0.0f, 0.0f, 0.0f);
+            fluidGPU->param_boxEulerDeg = Vec3(0, 0, 0);
+            fluidGPU->GenerateRiverTerrain(riverSeed);
+            BuildTerrainMesh();
+            pendingReset = true;
+        }
+        if (fluidGPU->riverMode) {
+            ImGui::Text("Emitter: (%.1f, %.1f, %.1f)", fluidGPU->riverEmitterPos.x, fluidGPU->riverEmitterPos.y, fluidGPU->riverEmitterPos.z);
+            ImGui::SliderFloat("Emitter vel Z", &fluidGPU->riverEmitterVel.z, 0.0f, 15.0f);
+            ImGui::SliderFloat("Gravity Z (flow)", &fluidGPU->param_gravityZ, 0.0f, 400.0f);
+            ImGui::SliderFloat("Gravity Y",         &fluidGPU->param_gravityY, -980.0f, -50.0f);
+        }
+        if (!fluidGPU->riverMode && wasRiver) {
+            // Restore box to default when river mode is turned off
+            fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+            fluidGPU->param_boxCenter = Vec3(0, 0, 0);
+            fluidGPU->param_gravityY = -980.0f;
+            fluidGPU->param_gravityZ =    0.0f;
+            pendingReset = true;
+        }
+    }
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Water Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -676,15 +717,30 @@ void Scene0p::RenderSSFR() const {
     glDrawArrays(GL_POINTS, 0, nFluid);
 
     // -----------------------------------------------------------------------
-    // Pass 4 — Background scene (box wireframe on black sky)
+    // Pass 4 — Background scene (terrain + box wireframe on sky)
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
-    glClearColor(0.03f, 0.05f, 0.08f, 1.0f); // dark night sky
+    glClearColor(0.40f, 0.55f, 0.65f, 1.0f); // sky colour (nicer with terrain)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
     glDisable(GL_BLEND);
 
-    if (lineShader && boxVAO) {
+    // Terrain mesh (when river mode is active and terrain has been built)
+    if (terrainShader && terrainVAO && terrainIndexCount > 0 &&
+        fluidGPU && fluidGPU->riverMode) {
+        glUseProgram(terrainShader->GetProgram());
+        glUniformMatrix4fv(terrainShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(terrainShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+        glUniform3fv(terrainShader->GetUniformID("sunDirWorld"), 1, sunDirWorld);
+        glUniform3fv(terrainShader->GetUniformID("sunColor"),    1, sunColor);
+        glBindVertexArray(terrainVAO);
+        glDrawElements(GL_TRIANGLES, terrainIndexCount, GL_UNSIGNED_INT, nullptr);
+        glBindVertexArray(0);
+    }
+
+    // Box wireframe (skip in river mode to reduce visual clutter)
+    if (lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
         glUseProgram(lineShader->GetProgram());
         glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
@@ -746,4 +802,74 @@ void Scene0p::RenderSSFR() const {
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glActiveTexture(GL_TEXTURE0);
+}
+
+void Scene0p::BuildTerrainMesh() {
+    if (!fluidGPU || fluidGPU->terrainHeights.empty()) return;
+
+    const int W = fluidGPU->terrainW;
+    const int H = fluidGPU->terrainH;
+    const float xMin  = fluidGPU->terrainWorldMinX;
+    const float zMin  = fluidGPU->terrainWorldMinZ;
+    const float xSize = fluidGPU->terrainWorldSizeX;
+    const float zSize = fluidGPU->terrainWorldSizeZ;
+    const auto& ht    = fluidGPU->terrainHeights;
+
+    struct TV { float x, y, z, nx, ny, nz; };
+    std::vector<TV>       verts(W * H);
+    std::vector<uint32_t> idx;
+    idx.reserve((W - 1) * (H - 1) * 6);
+
+    float dx = xSize / float(W - 1);
+    float dz = zSize / float(H - 1);
+
+    for (int iz = 0; iz < H; ++iz) {
+        for (int ix = 0; ix < W; ++ix) {
+            float wx = xMin + ix * dx;
+            float wz = zMin + iz * dz;
+            float wy = ht[iz * W + ix];
+
+            // Finite-difference normal
+            float hR = (ix < W-1) ? ht[iz*W+(ix+1)] : wy;
+            float hL = (ix > 0)   ? ht[iz*W+(ix-1)] : wy;
+            float hF = (iz < H-1) ? ht[(iz+1)*W+ix] : wy;
+            float hB = (iz > 0)   ? ht[(iz-1)*W+ix] : wy;
+            float nx = (hL - hR) / (2.0f * dx);
+            float ny = 1.0f;
+            float nz = (hB - hF) / (2.0f * dz);
+            float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+            if (len > 1e-6f) { nx/=len; ny/=len; nz/=len; }
+
+            verts[iz * W + ix] = {wx, wy, wz, nx, ny, nz};
+        }
+    }
+
+    for (int iz = 0; iz < H - 1; ++iz) {
+        for (int ix = 0; ix < W - 1; ++ix) {
+            uint32_t base = uint32_t(iz * W + ix);
+            idx.push_back(base);
+            idx.push_back(base + 1);
+            idx.push_back(base + W);
+            idx.push_back(base + 1);
+            idx.push_back(base + W + 1);
+            idx.push_back(base + W);
+        }
+    }
+    terrainIndexCount = int(idx.size());
+
+    glBindVertexArray(terrainVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, terrainVBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(TV), verts.data(), GL_STATIC_DRAW);
+
+    // position (loc=0), normal (loc=1)
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(TV), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(TV), (void*)(3*sizeof(float)));
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, terrainEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(uint32_t), idx.data(), GL_STATIC_DRAW);
+
+    glBindVertexArray(0);
 }
