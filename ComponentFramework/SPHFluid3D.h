@@ -130,13 +130,15 @@ public:
     float riverPhase = 0.0f;
     float riverChannelWidth = 3.0f;
 
-    GLuint terrainSSBO           = 0;
+    GLuint terrainSSBO             = 0;
     GLuint terrainConstraintShader = 0;
     GLuint streamEmitShader        = 0;
+    GLuint channelConstraintShader = 0;
 
     void GenerateRiverTerrain(int seed);
     void DispatchTerrainConstraints();
     void DispatchStreamEmit();
+    void DispatchChannelConstraint();
 
 private:
     GLuint LoadComputeShader(const char* filePath);

@@ -38,8 +38,9 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     radixSortShader = LoadComputeShader("shaders/RadixSort.comp");
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
-    terrainConstraintShader = LoadComputeShader("shaders/TerrainConstraints.comp");
-    streamEmitShader = LoadComputeShader("shaders/StreamEmit.comp");
+    terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
+    streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
+    channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
 
     // 1) Build particle array (also sets 'box' from OBB half)
     InitializeParticles();
@@ -68,9 +69,10 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(radixSortShader);
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
-    if (terrainConstraintShader) glDeleteProgram(terrainConstraintShader);
-    if (streamEmitShader)        glDeleteProgram(streamEmitShader);
-    if (terrainSSBO)             glDeleteBuffers(1, &terrainSSBO);
+    if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
+    if (streamEmitShader)         glDeleteProgram(streamEmitShader);
+    if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
+    if (terrainSSBO)              glDeleteBuffers(1, &terrainSSBO);
 }
 
 void SPHFluidGPU::InitializeParticles() {
@@ -127,7 +129,7 @@ void SPHFluidGPU::InitializeParticles() {
                 for (float wy = ty + spacing; wy <= ty + 2.5f && count < (int)numParticles; wy += spacing) {
                     SPHParticle p{};
                     p.pos = Vec4(wx + j(), wy + j(), wz + j(), 0.0f);
-                    p.vel = Vec4(0, 0, 1.5f, 0); // initial downstream velocity
+                    p.vel = Vec4(0, 0, 0.5f, 0); // channel constraint drives flow
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
                     p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
@@ -476,9 +478,10 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 5) River mode: terrain collision + particle recycling
+    // 5) River mode: terrain collision, channel confinement, particle recycling
     if (riverMode && !terrainHeights.empty()) {
         DispatchTerrainConstraints();
+        DispatchChannelConstraint();
         DispatchStreamEmit();
     }
 
@@ -497,6 +500,23 @@ void SPHFluidGPU::DispatchTerrainConstraints() {
     glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainFriction"),    0.05f);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, terrainSSBO);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
+
+void SPHFluidGPU::DispatchChannelConstraint() {
+    if (!channelConstraintShader) return;
+
+    glUseProgram(channelConstraintShader);
+    glUniform1i(glGetUniformLocation(channelConstraintShader, "numParticles"),  int(particles.size()));
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "boxCenterX"),    param_boxCenter.x);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "riverAmp"),      riverAmp);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "riverFreq"),     riverFreq);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "riverPhase"),    riverPhase);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "channelWidth"),  riverChannelWidth);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "flowGravity"),   40.0f);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "timeStep"),      param_timeStep);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
@@ -709,15 +729,14 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     // Position emitter at the upstream mouth of the channel
     float startX = param_boxCenter.x + riverAmp * std::sinf(riverPhase);
     riverEmitterPos    = Vec3(startX, yBase + 2.5f, zMin + 0.4f);
-    riverEmitterVel    = Vec3(0.0f, -0.5f, 1.5f);   // gentle launch — slope drives the rest
+    riverEmitterVel    = Vec3(0.0f, -0.5f, 0.5f);   // channel constraint steers flow
     riverEmitterRadius = riverChannelWidth * 0.35f;
     riverSinkY         = yBase + 0.3f;               // just above box floor — recycled when they hit bottom
     riverSinkZMax      = param_boxCenter.z + param_boxHalf.z - 0.5f; // at downstream edge
 
-    // Gentle Z push — slope does most of the work; high Z gravity causes
-    // particles to accelerate to a trickle at the downstream end
+    // Channel constraint handles flow along the meander; no straight Z gravity needed
     param_gravityY = -120.0f;
-    param_gravityZ =  25.0f;
+    param_gravityZ =   0.0f;
 
     // Upload heightfield to GPU
     if (terrainSSBO == 0) glGenBuffers(1, &terrainSSBO);
