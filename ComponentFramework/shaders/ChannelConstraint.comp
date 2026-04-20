@@ -28,27 +28,20 @@ void main() {
     float cx  = boxCenterX + riverAmp * sin(riverFreq * wz + riverPhase);
     float dx  = p.pos.x - cx;
 
-    // Tangent-following gravity — steer around bends
+    // Tangent-following gravity: push along the channel curve, not straight Z
     float tdx  = riverAmp * riverFreq * cos(riverFreq * wz + riverPhase);
     float tlen = sqrt(tdx * tdx + 1.0);
     vec2  tXZ  = vec2(tdx, 1.0) / tlen;
     p.vel.x += tXZ.x * flowGravity * timeStep;
     p.vel.z += tXZ.y * flowGravity * timeStep;
 
-    // Direct position correction toward centreline (unconditionally stable,
-    // analogous to terrain/OBB position snaps — no spring oscillation)
-    float corrRate = 0.20; // pull 20% of lateral error toward centre each step
-    p.pos.x -= dx * corrRate;
-
-    // Kill velocity component pointing away from centreline
-    // so pressure forces can't continually drive particles outward
-    if (dx * p.vel.x > 0.0) p.vel.x *= 0.05;
-
-    // Hard wall at exact bank edge (absolute containment)
-    float dxNew = p.pos.x - cx;
-    if (abs(dxNew) > channelWidth) {
-        p.pos.x = cx + sign(dxNew) * channelWidth;
-        p.vel.x = 0.0;
+    // Hard lateral wall at channel boundary ONLY.
+    // No centering spring — that collapsed all particles to a line.
+    // SPH pressure naturally distributes particles across the channel width.
+    // The parabolic terrain walls provide physical containment inside the channel.
+    if (abs(dx) > channelWidth) {
+        p.pos.x = cx + sign(dx) * channelWidth;
+        if (dx * p.vel.x > 0.0) p.vel.x = 0.0;
     }
 
     particles[i] = p;

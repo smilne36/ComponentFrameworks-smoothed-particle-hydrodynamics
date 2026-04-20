@@ -669,12 +669,12 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     auto frand = []() { return std::rand() / float(RAND_MAX); };
 
     // Randomised river channel parameters
-    riverAmp          = 1.5f + frand() * 2.5f;     // meander amplitude
-    riverFreq         = 0.15f + frand() * 0.20f;   // meander frequency
+    riverAmp          = 0.5f + frand() * 1.5f;     // moderate meander — stays inside box
+    riverFreq         = 0.18f + frand() * 0.18f;
     riverPhase        = frand() * 6.2831f;
-    riverChannelWidth = 2.5f + frand() * 2.0f;
-    float channelDepth = 3.0f + frand() * 1.0f;    // deep channel so walls have real height
-    float slopeDrop    = 0.6f + frand() * 0.8f;    // terrain drop: keep inside box bounds
+    riverChannelWidth = 1.8f + frand() * 1.2f;     // 1.8-3.0 unit half-width
+    float channelDepth = 3.5f + frand() * 1.0f;    // deep U-shape: steep parabolic walls
+    float slopeDrop    = 0.3f + frand() * 0.5f;    // gentle downstream slope
 
     // Noise phase seeds for the surrounding terrain
     float ph[8];
@@ -706,28 +706,27 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
             float centerX = param_boxCenter.x + riverAmp * std::sinf(riverFreq * wz + riverPhase);
             float distToRiver = std::fabsf(wx - centerX);
 
-            // Background terrain from stacked sine noise
-            float h = yBase + 2.5f;
-            h += 1.2f * std::sinf(wx * 0.40f + ph[0]) * std::cosf(wz * 0.30f + ph[1]);
-            h += 0.70f * std::sinf(wx * 0.80f + ph[2]) * std::sinf(wz * 0.70f + ph[3]);
-            h += 0.35f * std::sinf(wx * 1.50f + ph[4]) * std::cosf(wz * 1.30f + ph[5]);
-            h += 0.18f * std::sinf(wx * 2.60f + ph[6]) * std::sinf(wz * 2.20f + ph[7]);
-
-            // River floor slopes downhill (tFlow=0 → upstream, tFlow=1 → downstream)
+            // River floor slopes gently downstream
             float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
+            float channelEdge = riverFloor + channelDepth;
 
-            // Carve parabolic channel cross-section
-            float channelEdge = riverFloor + channelDepth; // height at bank top
+            // Flat plateau background with gentle rolling noise
+            // Plateau sits ABOVE the channel edge so the carved channel is visible
+            float plateau = yBase + 5.5f;
+            float h = plateau;
+            h += 0.5f * std::sinf(wx * 0.35f + ph[0]) * std::cosf(wz * 0.28f + ph[1]);
+            h += 0.25f * std::sinf(wx * 0.70f + ph[2]) * std::sinf(wz * 0.60f + ph[3]);
+            h += 0.12f * std::sinf(wx * 1.40f + ph[4]) * std::cosf(wz * 1.20f + ph[5]);
+
             if (distToRiver < riverChannelWidth) {
-                float u = distToRiver / riverChannelWidth; // 0=centre, 1=bank
-                h = riverFloor + channelDepth * u * u;     // set exactly, don't min
+                // Inside channel: deep parabolic U-shape
+                // Near-vertical walls at edge give terrain normals with large
+                // X component → strong lateral containment from terrain constraint
+                float u = distToRiver / riverChannelWidth;
+                h = riverFloor + channelDepth * u * u;
             } else {
-                // Outside channel: raise terrain to create a genuine physical wall.
-                // Without this, noise dips can make the bank lower than the channel
-                // edge and the terrain constraint provides zero lateral containment.
-                float wallBase = channelEdge + 1.5f;
-                float pastBank = std::min((distToRiver - riverChannelWidth) * 1.5f, 2.0f);
-                h = std::max(h, wallBase + pastBank);
+                // Outside channel: keep plateau, ensure it's always above channel edge
+                h = std::max(h, channelEdge + 0.3f);
             }
 
             // Don't punch through the box floor
@@ -737,9 +736,11 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
         }
     }
 
-    // Position emitter at the upstream mouth of the channel
-    float startX = param_boxCenter.x + riverAmp * std::sinf(riverPhase);
-    riverEmitterPos    = Vec3(startX, yBase + 2.5f, zMin + 0.4f);
+    // Position emitter at the upstream mouth of the channel, above the floor
+    float emitterZ  = zMin + 0.5f;
+    float startX    = param_boxCenter.x + riverAmp * std::sinf(riverFreq * emitterZ + riverPhase);
+    float floorUp   = yBase + 1.0f; // upstream floor
+    riverEmitterPos = Vec3(startX, floorUp + channelDepth * 0.5f, emitterZ);
     riverEmitterVel    = Vec3(0.0f, -0.5f, 0.5f);   // channel constraint steers flow
     riverEmitterRadius = riverChannelWidth * 0.35f;
     riverSinkY         = yBase + 0.3f;               // just above box floor — recycled when they hit bottom
