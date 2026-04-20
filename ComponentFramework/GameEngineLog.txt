@@ -1,4 +1,4 @@
-Mon Apr 20 15:32:10 2026
+Mon Apr 20 16:24:57 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -62,5 +62,11 @@ Mon Apr 20 15:32:10 2026
 "thicknessScale" loc:12
 "thicknessTex" loc:13
 "viewMatrix" loc:14
+
+[INFO]: Uniforms:
+"projectionMatrix" loc:0
+"sunColor" loc:1
+"sunDirWorld" loc:2
+"viewMatrix" loc:3
 
 [INFO]: Deleting the SceneManager
