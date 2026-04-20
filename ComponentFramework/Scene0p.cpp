@@ -78,6 +78,29 @@ bool Scene0p::OnCreate() {
     if (!impostorShader->OnCreate()) { std::cerr << "impostor shader failed\n"; return false; }
     SetupImpostorVAO();
 
+    // SSFR shaders
+    ssfrDepthShader = new Shader("shaders/fluidDepth.vert", "shaders/fluidDepth.frag");
+    if (!ssfrDepthShader->OnCreate()) { std::cerr << "ssfrDepth shader failed\n"; return false; }
+
+    ssfrSmoothShader = new Shader("shaders/screenQuad.vert", "shaders/depthSmooth.frag");
+    if (!ssfrSmoothShader->OnCreate()) { std::cerr << "depthSmooth shader failed\n"; return false; }
+
+    ssfrThickShader = new Shader("shaders/fluidDepth.vert", "shaders/fluidThickness.frag");
+    if (!ssfrThickShader->OnCreate()) { std::cerr << "fluidThickness shader failed\n"; return false; }
+
+    ssfrCompositeShader = new Shader("shaders/screenQuad.vert", "shaders/fluidComposite.frag");
+    if (!ssfrCompositeShader->OnCreate()) { std::cerr << "fluidComposite shader failed\n"; return false; }
+
+    glGenVertexArrays(1, &ssfrQuadVAO);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    {
+        GLint vp[4] = {0,0,0,0};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        if (vp[2] > 0 && vp[3] > 0)
+            InitSSFRBuffers(vp[2], vp[3]);
+    }
+
     UpdateBoxWireframe();
     lastBoxCenter = fluidGPU->param_boxCenter;
     lastBoxHalf = fluidGPU->param_boxHalf;
@@ -100,6 +123,13 @@ void Scene0p::OnDestroy() {
     if (boxVAO)   glDeleteVertexArrays(1, &boxVAO);
     if (lineShader) { lineShader->OnDestroy(); delete lineShader; lineShader = nullptr; }
     if (impostorVAO) glDeleteVertexArrays(1, &impostorVAO);
+
+    if (ssfrDepthShader)     { ssfrDepthShader->OnDestroy();     delete ssfrDepthShader;     ssfrDepthShader     = nullptr; }
+    if (ssfrSmoothShader)    { ssfrSmoothShader->OnDestroy();    delete ssfrSmoothShader;    ssfrSmoothShader    = nullptr; }
+    if (ssfrThickShader)     { ssfrThickShader->OnDestroy();     delete ssfrThickShader;     ssfrThickShader     = nullptr; }
+    if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
+    if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
+    DestroySSFRBuffers();
 }
 
 void Scene0p::HandleEvents(const SDL_Event& e) {
@@ -159,6 +189,14 @@ void Scene0p::Update(const float deltaTime) {
     float ballX = std::sin(ballAnimTime) * 3.0f;
     if (sphere) sphere->SetPosition(Vec3(ballX, 0.0f, 0.0f));
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
+
+    // Resize SSFR FBOs if viewport changed
+    {
+        GLint vp[4] = {0,0,0,0};
+        glGetIntegerv(GL_VIEWPORT, vp);
+        if (vp[2] > 0 && vp[3] > 0 && (vp[2] != ssfrW || vp[3] != ssfrH))
+            InitSSFRBuffers(vp[2], vp[3]);
+    }
 
     if (!fluidGPU) return;
 
@@ -284,6 +322,27 @@ void Scene0p::Update(const float deltaTime) {
     ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
     ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
     ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
+
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Water Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable Water Surface Rendering", &useWaterRendering);
+        if (useWaterRendering) {
+            ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
+            ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 1.0f, 30.0f);
+            ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
+            ImGui::Separator();
+            ImGui::ColorEdit3("Water Extinction",   waterExtinction);
+            ImGui::SliderFloat("Thickness Scale",   &thicknessScale,      0.01f, 20.0f);
+            ImGui::ColorEdit3("Deep Water Color",   deepWaterColor);
+            ImGui::Separator();
+            ImGui::SliderFloat3("Sun Dir (World)",  sunDirWorld,         -1.0f,  1.0f);
+            ImGui::ColorEdit3("Sun Color",          sunColor);
+            ImGui::SliderFloat("Specular Power",    &specularPower,       8.0f,  1024.0f);
+            ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
+            ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
+            ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+        }
+    }
     ImGui::End();
 
     if (lastBoxCenter.x != fluidGPU->param_boxCenter.x ||
@@ -331,6 +390,13 @@ void Scene0p::Update(const float deltaTime) {
 }
 
 void Scene0p::Render() const {
+    // Water surface rendering: all 5 passes handled inside RenderSSFR()
+    if (useWaterRendering && ssfrW > 0 && ssfrDepthShader && fluidGPU) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        RenderSSFR();
+        return;
+    }
+
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -419,4 +485,265 @@ void Scene0p::DrawFluidImpostors() const {
     glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
     glBindVertexArray(0);
     glUseProgram(0);
+}
+
+// ---------------------------------------------------------------------------
+// SSFR helpers
+// ---------------------------------------------------------------------------
+
+static GLuint MakeR32FFBO(GLuint& texOut, int w, int h) {
+    glGenTextures(1, &texOut);
+    glBindTexture(GL_TEXTURE_2D, texOut);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texOut, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fbo;
+}
+
+void Scene0p::InitSSFRBuffers(int w, int h) {
+    DestroySSFRBuffers();
+    ssfrW = w; ssfrH = h;
+
+    // --- Pass 1: depth FBO (R32F color + depth renderbuffer) ---
+    glGenTextures(1, &ssfrDepthTex);
+    glBindTexture(GL_TEXTURE_2D, ssfrDepthTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &ssfrDepthRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, ssfrDepthRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+
+    glGenFramebuffers(1, &ssfrDepthFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssfrDepthTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ssfrDepthRBO);
+
+    // --- Pass 2: ping-pong smooth FBOs (R32F) ---
+    for (int i = 0; i < 2; ++i)
+        ssfrSmoothFBO[i] = MakeR32FFBO(ssfrSmoothTex[i], w, h);
+
+    // --- Pass 3: thickness FBO (R32F, additive) ---
+    ssfrThickFBO = MakeR32FFBO(ssfrThickTex, w, h);
+
+    // --- Pass 4: background FBO (RGBA8 + depth) ---
+    glGenTextures(1, &ssfrBgTex);
+    glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &ssfrBgRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, ssfrBgRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+
+    glGenFramebuffers(1, &ssfrBgFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssfrBgTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ssfrBgRBO);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+}
+
+void Scene0p::DestroySSFRBuffers() {
+    if (ssfrDepthFBO)    { glDeleteFramebuffers(1, &ssfrDepthFBO);    ssfrDepthFBO = 0; }
+    if (ssfrDepthTex)    { glDeleteTextures(1, &ssfrDepthTex);        ssfrDepthTex = 0; }
+    if (ssfrDepthRBO)    { glDeleteRenderbuffers(1, &ssfrDepthRBO);   ssfrDepthRBO = 0; }
+    for (int i = 0; i < 2; ++i) {
+        if (ssfrSmoothFBO[i]) { glDeleteFramebuffers(1, &ssfrSmoothFBO[i]); ssfrSmoothFBO[i] = 0; }
+        if (ssfrSmoothTex[i]) { glDeleteTextures(1, &ssfrSmoothTex[i]);     ssfrSmoothTex[i] = 0; }
+    }
+    if (ssfrThickFBO)    { glDeleteFramebuffers(1, &ssfrThickFBO);    ssfrThickFBO = 0; }
+    if (ssfrThickTex)    { glDeleteTextures(1, &ssfrThickTex);        ssfrThickTex = 0; }
+    if (ssfrBgFBO)       { glDeleteFramebuffers(1, &ssfrBgFBO);       ssfrBgFBO = 0; }
+    if (ssfrBgTex)       { glDeleteTextures(1, &ssfrBgTex);           ssfrBgTex = 0; }
+    if (ssfrBgRBO)       { glDeleteRenderbuffers(1, &ssfrBgRBO);      ssfrBgRBO = 0; }
+    ssfrW = ssfrH = 0;
+}
+
+void Scene0p::RenderSSFR() const {
+    if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
+
+    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h);
+    const auto  nFluid = static_cast<GLsizei>(fluidGPU->GetNumFluids());
+
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    // -----------------------------------------------------------------------
+    // Pass 1 — Sphere depth: render spherical impostors, write view-space Z
+    // -----------------------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
+    glViewport(0, 0, ssfrW, ssfrH);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_BLEND);
+
+    glUseProgram(ssfrDepthShader->GetProgram());
+    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    if (GLint r = ssfrDepthShader->GetUniformID("particleRadius"); r != -1)
+        glUniform1f(r, radius);
+    if (GLint r = ssfrDepthShader->GetUniformID("viewportH"); r != -1)
+        glUniform1f(r, static_cast<float>(ssfrH));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
+    glBindVertexArray(impostorVAO);
+    glDrawArrays(GL_POINTS, 0, nFluid);
+
+    // -----------------------------------------------------------------------
+    // Pass 2 — Bilateral depth smoothing (ping-pong, N iterations)
+    // -----------------------------------------------------------------------
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+
+    // Initial source is the raw depth texture
+    GLuint srcTex = ssfrDepthTex;
+    int    pingPong = 0;
+
+    glUseProgram(ssfrSmoothShader->GetProgram());
+    glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
+    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius);
+    glUniform1f(ssfrSmoothShader->GetUniformID("depthFalloff"),  smoothDepthFalloff);
+
+    glBindVertexArray(ssfrQuadVAO);
+
+    for (int iter = 0; iter < smoothIterations; ++iter) {
+        // Horizontal pass
+        glBindFramebuffer(GL_FRAMEBUFFER, ssfrSmoothFBO[pingPong]);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, srcTex);
+        glUniform1i(ssfrSmoothShader->GetUniformID("depthTex"), 0);
+        glUniform2f(ssfrSmoothShader->GetUniformID("filterDir"), 1.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        srcTex   = ssfrSmoothTex[pingPong];
+        pingPong = 1 - pingPong;
+
+        // Vertical pass
+        glBindFramebuffer(GL_FRAMEBUFFER, ssfrSmoothFBO[pingPong]);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, srcTex);
+        glUniform1i(ssfrSmoothShader->GetUniformID("depthTex"), 0);
+        glUniform2f(ssfrSmoothShader->GetUniformID("filterDir"), 0.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        srcTex   = ssfrSmoothTex[pingPong];
+        pingPong = 1 - pingPong;
+    }
+
+    // After all iterations, srcTex holds the final smoothed depth
+    GLuint finalSmooth = srcTex;
+
+    // -----------------------------------------------------------------------
+    // Pass 3 — Thickness accumulation (additive blending, no depth test)
+    // -----------------------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrThickFBO);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE); // additive
+
+    glUseProgram(ssfrThickShader->GetProgram());
+    glUniformMatrix4fv(ssfrThickShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrThickShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    if (GLint r = ssfrThickShader->GetUniformID("particleRadius"); r != -1)
+        glUniform1f(r, radius);
+    if (GLint r = ssfrThickShader->GetUniformID("viewportH"); r != -1)
+        glUniform1f(r, static_cast<float>(ssfrH));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
+    glBindVertexArray(impostorVAO);
+    glDrawArrays(GL_POINTS, 0, nFluid);
+
+    // -----------------------------------------------------------------------
+    // Pass 4 — Background scene (box wireframe on black sky)
+    // -----------------------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
+    glClearColor(0.03f, 0.05f, 0.08f, 1.0f); // dark night sky
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+
+    if (lineShader && boxVAO) {
+        glUseProgram(lineShader->GetProgram());
+        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+        if (GLint c = lineShader->GetUniformID("uColor"); c != -1)
+            glUniform3f(c, 0.6f, 0.75f, 1.0f);
+        glBindVertexArray(boxVAO);
+        glLineWidth(1.5f);
+        glDrawArrays(GL_LINES, 0, 24);
+        glBindVertexArray(0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 5 — Composite: normals + Fresnel + specular + refraction + tint
+    // -----------------------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, ssfrW, ssfrH);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+
+    glUseProgram(ssfrCompositeShader->GetProgram());
+
+    // Bind textures
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, finalSmooth);
+    glUniform1i(ssfrCompositeShader->GetUniformID("smoothDepthTex"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, ssfrThickTex);
+    glUniform1i(ssfrCompositeShader->GetUniformID("thicknessTex"), 1);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
+    glUniform1i(ssfrCompositeShader->GetUniformID("backgroundTex"), 2);
+
+    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
+                static_cast<float>(ssfrW), static_cast<float>(ssfrH));
+
+    // Lighting & water appearance
+    glUniform3fv(ssfrCompositeShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("sunColor"),        1, sunColor);
+    glUniform1f(ssfrCompositeShader->GetUniformID("specularPower"),    specularPower);
+    glUniform1f(ssfrCompositeShader->GetUniformID("specularStrength"), specularStrength);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("extinction"),      1, waterExtinction);
+    glUniform1f(ssfrCompositeShader->GetUniformID("thicknessScale"),   thicknessScale);
+    glUniform1f(ssfrCompositeShader->GetUniformID("refractionStrength"), refractionStrength);
+    glUniform1f(ssfrCompositeShader->GetUniformID("fresnelBias"),      fresnelBias);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("deepWaterColor"),  1, deepWaterColor);
+
+    glBindVertexArray(ssfrQuadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    // Restore state
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glActiveTexture(GL_TEXTURE0);
 }
