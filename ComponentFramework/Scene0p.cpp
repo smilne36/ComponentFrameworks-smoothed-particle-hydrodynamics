@@ -145,19 +145,81 @@ void Scene0p::OnDestroy() {
 }
 
 void Scene0p::HandleEvents(const SDL_Event& e) {
+    // Let ImGui consume mouse events first
+    bool imguiWantsMouse = ImGui::GetIO().WantCaptureMouse;
+
     switch (e.type) {
     case SDL_KEYDOWN:
         switch (e.key.keysym.scancode) {
-        case SDL_SCANCODE_W: cameraPos.y += 0.2f; break;
-        case SDL_SCANCODE_S: cameraPos.y -= 0.2f; break;
-        case SDL_SCANCODE_A: cameraPos.x -= 0.2f; break;
-        case SDL_SCANCODE_D: cameraPos.x += 0.2f; break;
-        case SDL_SCANCODE_R: cameraPos.z += 0.2f; break;
-        case SDL_SCANCODE_E: cameraPos.z -= 0.2f; break;
+        // Pan target with WASD/QE (unchanged)
+        case SDL_SCANCODE_W: cameraTarget.y += 0.3f; break;
+        case SDL_SCANCODE_S: cameraTarget.y -= 0.3f; break;
+        case SDL_SCANCODE_A: cameraTarget.x -= 0.3f; break;
+        case SDL_SCANCODE_D: cameraTarget.x += 0.3f; break;
+        case SDL_SCANCODE_Q: cameraTarget.z += 0.3f; break;
+        case SDL_SCANCODE_E: cameraTarget.z -= 0.3f; break;
         case SDL_SCANCODE_Z: drawInWireMode = !drawInWireMode; break;
+        // R resets to default view
+        case SDL_SCANCODE_R:
+            cameraTarget  = Vec3(0, 0, 0);
+            camDist       = 22.0f;
+            camAzimuth    = 0.0f;
+            camElevation  = 0.22f;
+            break;
         default: break;
         }
         break;
+
+    case SDL_MOUSEBUTTONDOWN:
+        if (!imguiWantsMouse) {
+            mouseButton = e.button.button;
+            mouseX = e.button.x;
+            mouseY = e.button.y;
+            mouseDown = true;
+        }
+        break;
+
+    case SDL_MOUSEBUTTONUP:
+        mouseDown = false;
+        mouseButton = -1;
+        break;
+
+    case SDL_MOUSEMOTION:
+        if (mouseDown && !imguiWantsMouse) {
+            int dx = e.motion.x - mouseX;
+            int dy = e.motion.y - mouseY;
+            mouseX = e.motion.x;
+            mouseY = e.motion.y;
+
+            if (mouseButton == SDL_BUTTON_LEFT) {
+                // Left drag — orbit
+                camAzimuth   -= dx * 0.005f;
+                camElevation += dy * 0.005f;
+                // Clamp elevation so camera doesn't flip over
+                const float maxEl = 1.55f; // ~89 degrees
+                if (camElevation >  maxEl) camElevation =  maxEl;
+                if (camElevation < -maxEl) camElevation = -maxEl;
+            } else if (mouseButton == SDL_BUTTON_RIGHT) {
+                // Right drag — pan target in the camera's right/up plane
+                float speed = camDist * 0.0015f;
+                // Camera right vector
+                float cosEl = std::cos(camElevation);
+                Vec3 right(std::cos(camAzimuth), 0.0f, -std::sin(camAzimuth));
+                Vec3 up(0.0f, 1.0f, 0.0f);
+                cameraTarget = cameraTarget - right * (dx * speed) + up * (dy * speed);
+            }
+        }
+        break;
+
+    case SDL_MOUSEWHEEL:
+        if (!imguiWantsMouse) {
+            // Scroll to zoom: exponential feel
+            camDist *= std::pow(0.90f, (float)e.wheel.y);
+            if (camDist < 1.0f)  camDist = 1.0f;
+            if (camDist > 120.0f) camDist = 120.0f;
+        }
+        break;
+
     default: break;
     }
 }
@@ -200,6 +262,16 @@ void Scene0p::Update(const float deltaTime) {
     ballAnimTime += deltaTime;
     float ballX = std::sin(ballAnimTime) * 3.0f;
     if (sphere) sphere->SetPosition(Vec3(ballX, 0.0f, 0.0f));
+
+    // Rebuild camera position from spherical orbit parameters
+    {
+        float cosEl = std::cos(camElevation);
+        float sinEl = std::sin(camElevation);
+        cameraPos = cameraTarget + Vec3(
+            std::sin(camAzimuth) * cosEl,
+            sinEl,
+            std::cos(camAzimuth) * cosEl) * camDist;
+    }
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 
     // Resize SSFR FBOs if viewport changed
@@ -350,6 +422,11 @@ void Scene0p::Update(const float deltaTime) {
             BuildTerrainMesh();
             BuildRiverBankLines();
             pendingReset = true;
+            // Auto-position camera for a clear river view
+            cameraTarget  = Vec3(fluidGPU->param_boxCenter.x, 0.0f, fluidGPU->param_boxCenter.z);
+            camDist       = 28.0f;
+            camAzimuth    = 0.0f;
+            camElevation  = 0.75f; // ~43 degrees — nice angled top-down
         }
         if (fluidGPU->riverMode) {
             ImGui::Text("Emitter: (%.1f, %.1f, %.1f)", fluidGPU->riverEmitterPos.x, fluidGPU->riverEmitterPos.y, fluidGPU->riverEmitterPos.z);
