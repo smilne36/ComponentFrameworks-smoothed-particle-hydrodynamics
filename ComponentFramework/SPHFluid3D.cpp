@@ -127,7 +127,7 @@ void SPHFluidGPU::InitializeParticles() {
                 for (float wy = ty + spacing; wy <= ty + 2.5f && count < (int)numParticles; wy += spacing) {
                     SPHParticle p{};
                     p.pos = Vec4(wx + j(), wy + j(), wz + j(), 0.0f);
-                    p.vel = Vec4(0, 0, 2.0f, 0); // initial flow velocity
+                    p.vel = Vec4(0, 0, 6.0f, 0); // initial downstream velocity
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
                     p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
@@ -493,8 +493,8 @@ void SPHFluidGPU::DispatchTerrainConstraints() {
     glUniform2i(glGetUniformLocation(terrainConstraintShader, "terrainGrid"),  terrainW, terrainH);
     glUniform2f(glGetUniformLocation(terrainConstraintShader, "terrainMin"),   terrainWorldMinX, terrainWorldMinZ);
     glUniform2f(glGetUniformLocation(terrainConstraintShader, "terrainSize"),  terrainWorldSizeX, terrainWorldSizeZ);
-    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainRestitution"), 0.1f);
-    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainFriction"),    0.35f);
+    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainRestitution"), 0.02f);
+    glUniform1f(glGetUniformLocation(terrainConstraintShader, "terrainFriction"),    0.05f);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, terrainSSBO);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
@@ -649,7 +649,7 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     riverPhase        = frand() * 6.2831f;
     riverChannelWidth = 2.5f + frand() * 2.0f;
     float channelDepth = 1.2f + frand() * 1.5f;    // how deep the channel is carved
-    float slopeDrop    = 4.0f + frand() * 4.0f;    // terrain drop from upstream to downstream
+    float slopeDrop    = 0.6f + frand() * 0.8f;    // terrain drop: keep inside box bounds
 
     // Noise phase seeds for the surrounding terrain
     float ph[8];
@@ -708,14 +708,14 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     // Position emitter at the upstream mouth of the channel
     float startX = param_boxCenter.x + riverAmp * std::sinf(riverPhase);
     riverEmitterPos    = Vec3(startX, yBase + 2.5f, zMin + 0.4f);
-    riverEmitterVel    = Vec3(0.0f, -0.3f, 4.0f);   // launch into the channel
+    riverEmitterVel    = Vec3(0.0f, -0.5f, 6.0f);   // launch into the channel
     riverEmitterRadius = riverChannelWidth * 0.35f;
-    riverSinkY         = yBase - 1.5f;               // below terrain floor
+    riverSinkY         = yBase + 0.3f;               // just above box floor — recycled when they hit bottom
     riverSinkZMax      = param_boxCenter.z + param_boxHalf.z - 0.5f; // at downstream edge
 
-    // Gravity: mostly downward, gentle push along +Z for river flow
-    param_gravityY = -400.0f;   // reduced to keep water in shallow channel
-    param_gravityZ =  120.0f;   // push along river direction
+    // Gravity: gentle Y so particles stay on terrain slope, Z pushes downstream
+    param_gravityY = -120.0f;
+    param_gravityZ =  180.0f;
 
     // Upload heightfield to GPU
     if (terrainSSBO == 0) glGenBuffers(1, &terrainSSBO);
