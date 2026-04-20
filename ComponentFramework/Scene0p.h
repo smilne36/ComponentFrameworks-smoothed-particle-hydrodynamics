@@ -100,6 +100,18 @@ private:
     void    RenderSSFR() const;
     void    DestroySSFRBuffers();
 
+    // --- Terrain mesh ---
+    Shader* terrainShader     = nullptr;
+    GLuint  terrainVAO        = 0;
+    GLuint  terrainVBO        = 0;
+    GLuint  terrainEBO        = 0;
+    int     terrainIndexCount = 0;
+    void    BuildTerrainMesh();
+
+    // River generation UI state
+    int     riverSeed         = 1;
+    bool    pendingRiverRegen = false;
+
 public:
     explicit Scene0p();
     ~Scene0p() override;

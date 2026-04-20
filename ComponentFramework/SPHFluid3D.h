@@ -87,6 +87,8 @@ public:
     float param_gasConstant = 2000.0f;
     float param_viscosity = 3.5f;
     float param_gravityY = -980.0f;
+    float param_gravityX = 0.0f;
+    float param_gravityZ = 0.0f;
     float param_surfaceTension = 0.0728f;
     float param_timeStep = 0.001f;
     bool  param_pause = false;
@@ -102,6 +104,39 @@ public:
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
+
+    // --- River / Stream mode ---
+    bool  riverMode = false;
+
+    // Terrain heightfield (CPU copy; GPU SSBO at binding 7)
+    std::vector<float> terrainHeights;
+    int   terrainW          = 64;
+    int   terrainH          = 64;
+    float terrainWorldMinX  = -7.0f;
+    float terrainWorldMinZ  = -10.0f;
+    float terrainWorldSizeX = 14.0f;
+    float terrainWorldSizeZ = 20.0f;
+
+    // Emitter / sink parameters (set by GenerateRiverTerrain)
+    Vec3  riverEmitterPos    = Vec3(0,  3.0f, -9.0f);
+    Vec3  riverEmitterVel    = Vec3(0, -0.5f,  4.0f);
+    float riverEmitterRadius = 1.5f;
+    float riverSinkY         = -8.5f;
+    float riverSinkZMax      =  9.0f;
+
+    // Stored per-generation values (used during InitializeParticles)
+    float riverAmp   = 2.0f;
+    float riverFreq  = 0.25f;
+    float riverPhase = 0.0f;
+    float riverChannelWidth = 3.0f;
+
+    GLuint terrainSSBO           = 0;
+    GLuint terrainConstraintShader = 0;
+    GLuint streamEmitShader        = 0;
+
+    void GenerateRiverTerrain(int seed);
+    void DispatchTerrainConstraints();
+    void DispatchStreamEmit();
 
 private:
     GLuint LoadComputeShader(const char* filePath);
