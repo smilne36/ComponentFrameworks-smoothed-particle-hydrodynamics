@@ -1,6 +1,6 @@
-Wed Oct 15 13:50:35 2025
+Mon Apr 20 15:32:10 2026
 [INFO]: Starting the SceneManager
-[INFO]: OpenGL version: 4.5.0 NVIDIA 581.42
+[INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
 [INFO]: Graphics card name: NVIDIA GeForce RTX 3060 Ti/PCIe/SSE2
 [INFO]: GLSL version: 4.50 NVIDIA
@@ -26,5 +26,41 @@ Wed Oct 15 13:50:35 2025
 "projectionMatrix" loc:3
 "viewMatrix" loc:4
 "vizRange" loc:5
+
+[INFO]: Uniforms:
+"particleRadius" loc:0
+"projectionMatrix" loc:1
+"viewMatrix" loc:2
+"viewportH" loc:3
+
+[INFO]: Uniforms:
+"depthFalloff" loc:0
+"depthTex" loc:1
+"filterDir" loc:2
+"filterRadius" loc:3
+"screenSize" loc:4
+
+[INFO]: Uniforms:
+"particleRadius" loc:0
+"projectionMatrix" loc:1
+"viewMatrix" loc:2
+"viewportH" loc:3
+
+[INFO]: Uniforms:
+"backgroundTex" loc:0
+"deepWaterColor" loc:1
+"extinction" loc:2
+"fresnelBias" loc:3
+"projectionMatrix" loc:4
+"refractionStrength" loc:5
+"screenSize" loc:6
+"smoothDepthTex" loc:7
+"specularPower" loc:8
+"specularStrength" loc:9
+"sunColor" loc:10
+"sunDirWorld" loc:11
+"thicknessScale" loc:12
+"thicknessTex" loc:13
+"viewMatrix" loc:14
 
 [INFO]: Deleting the SceneManager

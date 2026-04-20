@@ -171,12 +171,6 @@
     <None Include="OBBConstraints.comp">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="lineVert.glsl">
-      <Filter>Resource Files</Filter>
-    </None>
-    <None Include="lineFrag.glsl">
-      <Filter>Resource Files</Filter>
-    </None>
     <None Include="shaders\particleImpostor.frag">
       <Filter>Resource Files</Filter>
     </None>
@@ -184,6 +178,12 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="shaders\WaveImpulse.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\lineFrag.glsl">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\lineVert.glsl">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>
