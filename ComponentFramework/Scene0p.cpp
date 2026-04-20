@@ -450,7 +450,7 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Checkbox("Enable Water Surface Rendering", &useWaterRendering);
         if (useWaterRendering) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
-            ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 1.0f, 30.0f);
+            ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
             ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
             ImGui::Separator();
             ImGui::ColorEdit3("Water Extinction",   waterExtinction);
@@ -899,45 +899,65 @@ void Scene0p::BuildTerrainMesh() {
     const float xSize = fluidGPU->terrainWorldSizeX;
     const float zSize = fluidGPU->terrainWorldSizeZ;
     const auto& ht    = fluidGPU->terrainHeights;
-
-    struct TV { float x, y, z, nx, ny, nz; };
-    std::vector<TV>       verts(W * H);
-    std::vector<uint32_t> idx;
-    idx.reserve((W - 1) * (H - 1) * 6);
+    const float yBase = fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y;
 
     float dx = xSize / float(W - 1);
     float dz = zSize / float(H - 1);
 
-    for (int iz = 0; iz < H; ++iz) {
-        for (int ix = 0; ix < W; ++ix) {
-            float wx = xMin + ix * dx;
-            float wz = zMin + iz * dz;
-            float wy = ht[iz * W + ix];
+    // Extend the visual mesh N_ext columns on each X side, fading to below the box floor.
+    // Physics terrain stays box-exact (full 64×64 resolution for normal quality).
+    const int N_ext = 20;
+    const int RW    = W + 2 * N_ext;
+    const float rxMin = xMin - N_ext * dx;
 
-            // Finite-difference normal
-            float hR = (ix < W-1) ? ht[iz*W+(ix+1)] : wy;
-            float hL = (ix > 0)   ? ht[iz*W+(ix-1)] : wy;
-            float hF = (iz < H-1) ? ht[(iz+1)*W+ix] : wy;
-            float hB = (iz > 0)   ? ht[(iz-1)*W+ix] : wy;
+    // Height at a render column index (rix) and terrain row (iz)
+    auto renderY = [&](int rix, int iz) -> float {
+        if (rix >= N_ext && rix < N_ext + W) {
+            return ht[(rix - N_ext) + iz * W];     // physics terrain
+        }
+        // Extended left or right: blend from box-edge height to below floor
+        float hEdge = (rix < N_ext) ? ht[0 + iz * W] : ht[(W - 1) + iz * W];
+        float steps  = (rix < N_ext) ? float(N_ext - rix) : float(rix - (N_ext + W - 1));
+        float t      = std::min(1.0f, steps / float(N_ext));
+        float fade   = t * t * (3.0f - 2.0f * t); // smoothstep
+        return hEdge * (1.0f - fade) + (yBase - 1.0f) * fade;
+    };
+
+    struct TV { float x, y, z, nx, ny, nz; };
+    std::vector<TV>       verts(RW * H);
+    std::vector<uint32_t> idx;
+    idx.reserve((RW - 1) * (H - 1) * 6);
+
+    for (int iz = 0; iz < H; ++iz) {
+        for (int rix = 0; rix < RW; ++rix) {
+            float wx = rxMin + rix * dx;
+            float wz = zMin  + iz  * dz;
+            float wy = renderY(rix, iz);
+
+            // Finite-difference normal using renderY neighbours
+            float hR = renderY(std::min(rix + 1, RW - 1), iz);
+            float hL = renderY(std::max(rix - 1, 0),       iz);
+            float hF = (iz < H - 1) ? renderY(rix, iz + 1) : wy;
+            float hB = (iz > 0)     ? renderY(rix, iz - 1) : wy;
             float nx = (hL - hR) / (2.0f * dx);
             float ny = 1.0f;
             float nz = (hB - hF) / (2.0f * dz);
             float len = std::sqrt(nx*nx + ny*ny + nz*nz);
             if (len > 1e-6f) { nx/=len; ny/=len; nz/=len; }
 
-            verts[iz * W + ix] = {wx, wy, wz, nx, ny, nz};
+            verts[iz * RW + rix] = {wx, wy, wz, nx, ny, nz};
         }
     }
 
     for (int iz = 0; iz < H - 1; ++iz) {
-        for (int ix = 0; ix < W - 1; ++ix) {
-            uint32_t base = uint32_t(iz * W + ix);
+        for (int rix = 0; rix < RW - 1; ++rix) {
+            uint32_t base = uint32_t(iz * RW + rix);
             idx.push_back(base);
             idx.push_back(base + 1);
-            idx.push_back(base + W);
+            idx.push_back(base + RW);
             idx.push_back(base + 1);
-            idx.push_back(base + W + 1);
-            idx.push_back(base + W);
+            idx.push_back(base + RW + 1);
+            idx.push_back(base + RW);
         }
     }
     terrainIndexCount = int(idx.size());
@@ -965,35 +985,49 @@ void Scene0p::BuildRiverBankLines() {
     const int N     = 300;
     const float zMin  = fluidGPU->terrainWorldMinZ;
     const float zSize = fluidGPU->terrainWorldSizeZ;
+    const float xMin  = fluidGPU->terrainWorldMinX;
+    const float xSize = fluidGPU->terrainWorldSizeX;
+    const int   TW    = fluidGPU->terrainW;
+    const int   TH    = fluidGPU->terrainH;
 
-    // Analytical terrain parameters for smooth bank line heights
-    const float yBase        = fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y;
-    const float channelDepth = fluidGPU->riverChannelDepth;
-    const float slopeDrop    = fluidGPU->riverSlopeDrop;
+    // Bilinear sample of the physics terrain (box footprint, full resolution)
+    auto sampleH = [&](float wx, float wz) -> float {
+        float u = (wx - xMin) / xSize * float(TW - 1);
+        float v = (wz - zMin) / zSize * float(TH - 1);
+        u = std::max(0.0f, std::min(float(TW - 2), u));
+        v = std::max(0.0f, std::min(float(TH - 2), v));
+        int ix = int(u), iz = int(v);
+        float fx = u - ix, fz = v - iz;
+        float h00 = fluidGPU->terrainHeights[ ix      +  iz      * TW];
+        float h10 = fluidGPU->terrainHeights[(ix + 1) +  iz      * TW];
+        float h01 = fluidGPU->terrainHeights[ ix      + (iz + 1) * TW];
+        float h11 = fluidGPU->terrainHeights[(ix + 1) + (iz + 1) * TW];
+        return h00*(1-fx)*(1-fz) + h10*fx*(1-fz) + h01*(1-fx)*fz + h11*fx*fz;
+    };
 
     // 3 strips: 0=left bank, 1=right bank, 2=centerline
     std::vector<float> verts;
     verts.reserve(N * 3 * 3);
     for (int strip = 0; strip < 3; ++strip) {
         for (int i = 0; i < N; ++i) {
-            float wz    = zMin + (float(i) / float(N - 1)) * zSize;
-            float tFlow = (wz - zMin) / zSize;
-            float cx    = fluidGPU->param_boxCenter.x
-                        + fluidGPU->riverAmp * std::sinf(fluidGPU->riverFreq * wz + fluidGPU->riverPhase);
+            float wz = zMin + (float(i) / float(N - 1)) * zSize;
+            float cx = fluidGPU->param_boxCenter.x
+                     + fluidGPU->riverAmp * std::sinf(fluidGPU->riverFreq * wz + fluidGPU->riverPhase);
 
-            float wx;
-            float wy;
+            float wx, wy;
             if (strip == 0 || strip == 1) {
-                // Bank edge: top of channel wall (channel floor + full depth)
+                // Sample terrain 10% OUTSIDE the channel edge so we're on the plateau surface.
+                // plateau = channelEdge + 3.0, so this gives the terrain height on the bank top.
+                const float sample_mult = 1.10f;
                 wx = (strip == 0) ? cx - fluidGPU->riverChannelWidth
                                   : cx + fluidGPU->riverChannelWidth;
-                float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
-                wy = riverFloor + channelDepth + 0.12f; // slight lift above wall top
+                float sampleX = (strip == 0) ? cx - fluidGPU->riverChannelWidth * sample_mult
+                                             : cx + fluidGPU->riverChannelWidth * sample_mult;
+                wy = sampleH(sampleX, wz) + 0.18f; // sit on top of the bank surface
             } else {
-                // Centerline: at water surface level (near channel floor)
+                // Centerline: sample at channel center, height = riverFloor ≈ terrain at cx
                 wx = cx;
-                float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
-                wy = riverFloor + 0.15f; // just above the flat channel floor
+                wy = sampleH(cx, wz) + 0.15f;
             }
 
             verts.push_back(wx);
