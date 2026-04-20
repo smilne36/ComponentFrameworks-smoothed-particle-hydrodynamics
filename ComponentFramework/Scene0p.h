@@ -112,6 +112,14 @@ private:
     int     riverSeed         = 1;
     bool    pendingRiverRegen = false;
 
+    // --- River bank / flow lines ---
+    GLuint  riverBankVAO      = 0;
+    GLuint  riverBankVBO      = 0;
+    int     riverBankN        = 0; // vertices per strip (3 strips: left, right, center)
+    bool    showRiverLines    = true;
+    void    BuildRiverBankLines();
+    void    DrawRiverBankLines() const;
+
 public:
     explicit Scene0p();
     ~Scene0p() override;
