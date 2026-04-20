@@ -127,7 +127,7 @@ void SPHFluidGPU::InitializeParticles() {
                 for (float wy = ty + spacing; wy <= ty + 2.5f && count < (int)numParticles; wy += spacing) {
                     SPHParticle p{};
                     p.pos = Vec4(wx + j(), wy + j(), wz + j(), 0.0f);
-                    p.vel = Vec4(0, 0, 6.0f, 0); // initial downstream velocity
+                    p.vel = Vec4(0, 0, 1.5f, 0); // initial downstream velocity
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
                     p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
@@ -510,8 +510,9 @@ void SPHFluidGPU::DispatchStreamEmit() {
     glUniform1f(glGetUniformLocation(streamEmitShader, "sinkZMax"),      riverSinkZMax);
     glUniform3f(glGetUniformLocation(streamEmitShader, "emitterPos"),    riverEmitterPos.x, riverEmitterPos.y, riverEmitterPos.z);
     glUniform3f(glGetUniformLocation(streamEmitShader, "emitterVel"),    riverEmitterVel.x, riverEmitterVel.y, riverEmitterVel.z);
-    glUniform1f(glGetUniformLocation(streamEmitShader, "emitterRadius"), riverEmitterRadius);
-    glUniform1f(glGetUniformLocation(streamEmitShader, "restDensity"),   param_restDensity);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "emitterRadius"),  riverEmitterRadius);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "emitterSpreadZ"), riverSinkZMax - riverEmitterPos.z);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "restDensity"),    param_restDensity);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -708,14 +709,15 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     // Position emitter at the upstream mouth of the channel
     float startX = param_boxCenter.x + riverAmp * std::sinf(riverPhase);
     riverEmitterPos    = Vec3(startX, yBase + 2.5f, zMin + 0.4f);
-    riverEmitterVel    = Vec3(0.0f, -0.5f, 6.0f);   // launch into the channel
+    riverEmitterVel    = Vec3(0.0f, -0.5f, 1.5f);   // gentle launch — slope drives the rest
     riverEmitterRadius = riverChannelWidth * 0.35f;
     riverSinkY         = yBase + 0.3f;               // just above box floor — recycled when they hit bottom
     riverSinkZMax      = param_boxCenter.z + param_boxHalf.z - 0.5f; // at downstream edge
 
-    // Gravity: gentle Y so particles stay on terrain slope, Z pushes downstream
+    // Gentle Z push — slope does most of the work; high Z gravity causes
+    // particles to accelerate to a trickle at the downstream end
     param_gravityY = -120.0f;
-    param_gravityZ =  180.0f;
+    param_gravityZ =  25.0f;
 
     // Upload heightfield to GPU
     if (terrainSSBO == 0) glGenBuffers(1, &terrainSSBO);
