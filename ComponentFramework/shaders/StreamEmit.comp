@@ -11,9 +11,10 @@ layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 uniform int   numParticles;
 uniform float sinkY;          // recycle if below this world Y
 uniform float sinkZMax;       // recycle if past this world Z (downstream)
-uniform vec3  emitterPos;     // respawn centre
+uniform vec3  emitterPos;     // respawn centre (upstream)
 uniform vec3  emitterVel;     // initial velocity on respawn
 uniform float emitterRadius;  // XZ spread radius
+uniform float emitterSpreadZ; // how far downstream to spread recycled particles
 uniform float restDensity;
 
 void main() {
@@ -33,13 +34,17 @@ void main() {
     float r2 = float(seed & 0xFFFFu) / 65535.0;
     seed = seed * 1664525u + 1013904223u;
     float r3 = float(seed & 0xFFFFu) / 65535.0;
+    seed = seed * 1664525u + 1013904223u;
+    float r4 = float(seed & 0xFFFFu) / 65535.0;
 
-    float angle  = r1 * 6.2831853;
+    // Spread recycled particles along the full channel length so the
+    // river stays filled end-to-end rather than piling up at the emitter
+    float angle  = r4 * 6.2831853;
     float radius = sqrt(r2) * emitterRadius;
 
     p.pos.x   = emitterPos.x + radius * cos(angle);
-    p.pos.y   = emitterPos.y + r3 * 0.4;
-    p.pos.z   = emitterPos.z + r2 * 0.4;
+    p.pos.y   = emitterPos.y + r3 * 0.6;
+    p.pos.z   = emitterPos.z + r1 * emitterSpreadZ; // spread 0→full channel
     p.vel     = vec4(emitterVel, 0.0);
     p.acc     = vec4(0.0);
     p.density = restDensity;
