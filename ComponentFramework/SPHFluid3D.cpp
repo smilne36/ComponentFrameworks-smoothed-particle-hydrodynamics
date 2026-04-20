@@ -514,7 +514,7 @@ void SPHFluidGPU::DispatchChannelConstraint() {
     glUniform1f(glGetUniformLocation(channelConstraintShader, "riverFreq"),     riverFreq);
     glUniform1f(glGetUniformLocation(channelConstraintShader, "riverPhase"),    riverPhase);
     glUniform1f(glGetUniformLocation(channelConstraintShader, "channelWidth"),  riverChannelWidth);
-    glUniform1f(glGetUniformLocation(channelConstraintShader, "flowGravity"),   40.0f);
+    glUniform1f(glGetUniformLocation(channelConstraintShader, "flowGravity"),   80.0f);
     glUniform1f(glGetUniformLocation(channelConstraintShader, "timeStep"),      param_timeStep);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
@@ -533,6 +533,10 @@ void SPHFluidGPU::DispatchStreamEmit() {
     glUniform1f(glGetUniformLocation(streamEmitShader, "emitterRadius"),  riverEmitterRadius);
     glUniform1f(glGetUniformLocation(streamEmitShader, "emitterSpreadZ"), riverSinkZMax - riverEmitterPos.z);
     glUniform1f(glGetUniformLocation(streamEmitShader, "restDensity"),    param_restDensity);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "boxCenterX"),     param_boxCenter.x);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "riverAmp"),       riverAmp);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "riverFreq"),      riverFreq);
+    glUniform1f(glGetUniformLocation(streamEmitShader, "riverPhase"),     riverPhase);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -669,7 +673,7 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
     riverFreq         = 0.15f + frand() * 0.20f;   // meander frequency
     riverPhase        = frand() * 6.2831f;
     riverChannelWidth = 2.5f + frand() * 2.0f;
-    float channelDepth = 1.2f + frand() * 1.5f;    // how deep the channel is carved
+    float channelDepth = 3.0f + frand() * 1.0f;    // deep channel so walls have real height
     float slopeDrop    = 0.6f + frand() * 0.8f;    // terrain drop: keep inside box bounds
 
     // Noise phase seeds for the surrounding terrain
@@ -713,10 +717,17 @@ void SPHFluidGPU::GenerateRiverTerrain(int seed) {
             float riverFloor = yBase + 1.0f - tFlow * slopeDrop;
 
             // Carve parabolic channel cross-section
+            float channelEdge = riverFloor + channelDepth; // height at bank top
             if (distToRiver < riverChannelWidth) {
                 float u = distToRiver / riverChannelWidth; // 0=centre, 1=bank
-                float carved = riverFloor + channelDepth * u * u;
-                h = std::min(h, carved);
+                h = riverFloor + channelDepth * u * u;     // set exactly, don't min
+            } else {
+                // Outside channel: raise terrain to create a genuine physical wall.
+                // Without this, noise dips can make the bank lower than the channel
+                // edge and the terrain constraint provides zero lateral containment.
+                float wallBase = channelEdge + 1.5f;
+                float pastBank = std::min((distToRiver - riverChannelWidth) * 1.5f, 2.0f);
+                h = std::max(h, wallBase + pastBank);
             }
 
             // Don't punch through the box floor
