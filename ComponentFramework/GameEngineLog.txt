@@ -1,4 +1,4 @@
-Mon Jun  8 13:40:57 2026
+Wed Jul  8 17:02:02 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -6,13 +6,27 @@ Mon Jun  8 13:40:57 2026
 [INFO]: GLSL version: 4.50 NVIDIA
 [INFO]: Loading assets Scene0p
 [INFO]: Uniforms:
-"colorMode" loc:0
-"heightMinMax" loc:1
-"modelMatrix" loc:2
-"projectionMatrix" loc:3
-"useSSBO" loc:4
-"viewMatrix" loc:5
-"vizRange" loc:6
+"boxCenter" loc:0
+"brightMul" loc:1
+"colorDrive" loc:2
+"contrastMul" loc:3
+"duoColorA" loc:4
+"duoColorB" loc:5
+"heightMinMax" loc:6
+"hueShift" loc:7
+"invertColor" loc:8
+"iridFreq" loc:9
+"iridShift" loc:10
+"litSphere" loc:11
+"modelMatrix" loc:12
+"paletteId" loc:13
+"projectionMatrix" loc:14
+"satMul" loc:15
+"sunColor" loc:16
+"sunDirWorld" loc:17
+"useSSBO" loc:18
+"viewMatrix" loc:19
+"vizRange" loc:20
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
@@ -20,12 +34,27 @@ Mon Jun  8 13:40:57 2026
 "viewMatrix" loc:2
 
 [INFO]: Uniforms:
-"colorMode" loc:0
-"heightMinMax" loc:1
-"particleRadius" loc:2
-"projectionMatrix" loc:3
-"viewMatrix" loc:4
-"vizRange" loc:5
+"boxCenter" loc:0
+"brightMul" loc:1
+"colorDrive" loc:2
+"contrastMul" loc:3
+"duoColorA" loc:4
+"duoColorB" loc:5
+"heightMinMax" loc:6
+"hueShift" loc:7
+"invertColor" loc:8
+"iridFreq" loc:9
+"iridShift" loc:10
+"litSphere" loc:11
+"paletteId" loc:12
+"particleRadius" loc:13
+"projectionMatrix" loc:14
+"satMul" loc:15
+"sunColor" loc:16
+"sunDirWorld" loc:17
+"viewMatrix" loc:18
+"viewportH" loc:19
+"vizRange" loc:20
 
 [INFO]: Uniforms:
 "particleRadius" loc:0
@@ -48,20 +77,26 @@ Mon Jun  8 13:40:57 2026
 
 [INFO]: Uniforms:
 "backgroundTex" loc:0
-"deepWaterColor" loc:1
-"extinction" loc:2
-"fresnelBias" loc:3
-"projectionMatrix" loc:4
-"refractionStrength" loc:5
-"screenSize" loc:6
-"smoothDepthTex" loc:7
-"specularPower" loc:8
-"specularStrength" loc:9
-"sunColor" loc:10
-"sunDirWorld" loc:11
-"thicknessScale" loc:12
-"thicknessTex" loc:13
-"viewMatrix" loc:14
+"brightMul" loc:1
+"contrastMul" loc:2
+"deepWaterColor" loc:3
+"envReflectColor" loc:4
+"extinction" loc:5
+"fresnelBias" loc:6
+"hueShift" loc:7
+"invertColor" loc:8
+"projectionMatrix" loc:9
+"refractionStrength" loc:10
+"satMul" loc:11
+"screenSize" loc:12
+"smoothDepthTex" loc:13
+"specularPower" loc:14
+"specularStrength" loc:15
+"sunColor" loc:16
+"sunDirWorld" loc:17
+"thicknessScale" loc:18
+"thicknessTex" loc:19
+"viewMatrix" loc:20
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
