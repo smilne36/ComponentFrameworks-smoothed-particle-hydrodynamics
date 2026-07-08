@@ -2,8 +2,13 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <vector>
 #include <SDL.h>
 #include <MMath.h>
+#include "stb_image_write.h"
 
 #include "Scene0p.h"
 #include "Debug.h"
@@ -159,6 +164,10 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
         case SDL_SCANCODE_Q: cameraTarget.z += 0.3f; break;
         case SDL_SCANCODE_E: cameraTarget.z -= 0.3f; break;
         case SDL_SCANCODE_Z: drawInWireMode = !drawInWireMode; break;
+        // P captures a screenshot (unless typing in the UI)
+        case SDL_SCANCODE_P:
+            if (!ImGui::GetIO().WantCaptureKeyboard) captureRequested = true;
+            break;
         // R resets to default view
         case SDL_SCANCODE_R:
             cameraTarget  = Vec3(0, 0, 0);
@@ -274,47 +283,27 @@ void Scene0p::Update(const float deltaTime) {
     }
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 
-    // Resize SSFR FBOs if viewport changed
+    // Resize SSFR FBOs if viewport changed; remember the on-screen size for captures
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
-        if (vp[2] > 0 && vp[3] > 0 && (vp[2] != ssfrW || vp[3] != ssfrH))
-            InitSSFRBuffers(vp[2], vp[3]);
+        if (vp[2] > 0 && vp[3] > 0) {
+            windowW = vp[2];
+            windowH = vp[3];
+            if (vp[2] != ssfrW || vp[3] != ssfrH)
+                InitSSFRBuffers(vp[2], vp[3]);
+        }
     }
 
     if (!fluidGPU) return;
 
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 940.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Fluid Controls");
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Particles: %zu (fluids: %zu)", fluidGPU->particles.size(), fluidGPU->GetNumFluids());
-    ImGui::Separator();
-
-    if (ImGui::Button("Preset: Stable Water")) {
-        fluidGPU->param_pause = false;
-        fluidGPU->param_h = 0.28f;
-        fluidGPU->param_restDensity = 1000.0f;
-        fluidGPU->param_gasConstant = 2000.0f;
-        fluidGPU->param_viscosity = 3.5f;
-        fluidGPU->param_gravityY = -980.0f;
-        fluidGPU->param_surfaceTension = 0.0f;
-        fluidGPU->param_timeStep = 1.0e-3f;
-        pendingReset = true;
-    }
-    if (ImGui::Button("Preset: Splashy Water")) {
-        fluidGPU->param_pause = false;
-        fluidGPU->param_h = 0.22f;
-        fluidGPU->param_restDensity = 1000.0f;
-        fluidGPU->param_gasConstant = 6000.0f;
-        fluidGPU->param_viscosity = 1.2f;
-        fluidGPU->param_gravityY = -980.0f;
-        fluidGPU->param_surfaceTension = 0.12f;
-        fluidGPU->param_timeStep = 5.0e-4f;
-        fluidGPU->param_useJitter = false;
-        fluidGPU->param_jitterAmp = 0.06f;
-        fluidGPU->param_wallRestitution = 0.05f;
-        fluidGPU->param_wallFriction = 0.05f;
-        pendingReset = true;
-    }
+    ImGui::Checkbox("Pause simulation", &fluidGPU->param_pause);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Simulation")) pendingReset = true;
     ImGui::SameLine();
     if (ImGui::Button("Fit Camera")) {
         Vec3 minV(FLT_MAX, FLT_MAX, FLT_MAX);
@@ -341,74 +330,95 @@ void Scene0p::Update(const float deltaTime) {
             cameraPos = Vec3(center.x, center.y, center.z + dist);
         }
     }
-
-    ImGui::Checkbox("Pause simulation", &fluidGPU->param_pause);
-    ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
-    ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
-    ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
-    ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
-    ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
-    ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
-    ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
-    ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
-
-    ImGui::Separator(); ImGui::Text("Performance");
-    ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
-    ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
-    ImGui::SameLine();
-    ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
-    ImGui::Checkbox("Use point impostors", &useImpostors);
-
-    ImGui::Separator(); ImGui::Text("Box Transform (OBB)");
-    ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
-    ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-    ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
-    ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
-    ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-    if (ImGui::Button("Rebuild Grid for Box")) {
-        fluidGPU->RecreateGridForBox();
-        UpdateBoxWireframe();
-    }
-
-    ImGui::Separator(); ImGui::Text("Spawn Layout");
-    ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
-    ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
-    if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
-
-    ImGui::Separator(); ImGui::Text("Waves");
-    static float waveAmplitude = 1.5f;
-    static float waveWavelength = 3.0f;
-    static float wavePhaseSpeed = 4.0f;
-    static int   waveDirIdx = 1;
-    static float yBandMin = -std::numeric_limits<float>::infinity();
-    static float yBandMax = std::numeric_limits<float>::infinity();
-    static bool  continuousWave = false;
-    static float wavePhase = 0.0f;
-
-    ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
-    ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
-    ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
-    ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
-    ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
-    ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
-    ImGui::InputFloat("Band Y min", &yBandMin);
-    ImGui::InputFloat("Band Y max", &yBandMax);
-    ImGui::Checkbox("Continuous wave", &continuousWave);
-    if (ImGui::Button("Impulse Now")) {
-        Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
-        fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset Simulation")) pendingReset = true;
-
-    ImGui::Separator(); ImGui::Text("Visualization");
-    ImGui::Combo("Color by", &vizMode, "Height\0Speed\0Pressure\0Density\0InstanceColor\0");
-    ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
-    ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
-    ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
-
     ImGui::Separator();
+
+    if (ImGui::CollapsingHeader("Presets")) {
+        ImGui::PushID("Presets");
+        if (ImGui::Button("Preset: Stable Water")) {
+            fluidGPU->param_pause = false;
+            fluidGPU->param_h = 0.28f;
+            fluidGPU->param_restDensity = 1000.0f;
+            fluidGPU->param_gasConstant = 2000.0f;
+            fluidGPU->param_viscosity = 3.5f;
+            fluidGPU->param_gravityY = -980.0f;
+            fluidGPU->param_surfaceTension = 0.0f;
+            fluidGPU->param_timeStep = 1.0e-3f;
+            pendingReset = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Preset: Splashy Water")) {
+            fluidGPU->param_pause = false;
+            fluidGPU->param_h = 0.22f;
+            fluidGPU->param_restDensity = 1000.0f;
+            fluidGPU->param_gasConstant = 6000.0f;
+            fluidGPU->param_viscosity = 1.2f;
+            fluidGPU->param_gravityY = -980.0f;
+            fluidGPU->param_surfaceTension = 0.12f;
+            fluidGPU->param_timeStep = 5.0e-4f;
+            fluidGPU->param_useJitter = false;
+            fluidGPU->param_jitterAmp = 0.06f;
+            fluidGPU->param_wallRestitution = 0.05f;
+            fluidGPU->param_wallFriction = 0.05f;
+            pendingReset = true;
+        }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Simulation");
+        ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
+        ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
+        ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
+        ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
+        ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
+        ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
+        ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
+        ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Container Box")) {
+        ImGui::PushID("ContainerBox");
+        ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
+        ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
+        ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
+        ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
+        if (ImGui::Button("Rebuild Grid for Box")) {
+            fluidGPU->RecreateGridForBox();
+            UpdateBoxWireframe();
+        }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Spawn Layout")) {
+        ImGui::PushID("SpawnLayout");
+        ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
+        ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
+        if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Waves")) {
+        ImGui::PushID("Waves");
+        ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
+        ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
+        ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
+        ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
+        ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
+        ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
+        ImGui::InputFloat("Band Y min", &yBandMin);
+        ImGui::InputFloat("Band Y max", &yBandMax);
+        ImGui::Checkbox("Continuous wave", &continuousWave);
+        if (ImGui::Button("Impulse Now")) {
+            Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
+            fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
+        }
+        ImGui::PopID();
+    }
+
     if (ImGui::CollapsingHeader("River / Stream Mode")) {
+        ImGui::PushID("River");
         bool wasRiver = fluidGPU->riverMode;
         ImGui::Checkbox("Enable River Mode", &fluidGPU->riverMode);
         ImGui::SliderInt("River Seed", &riverSeed, 1, 999);
@@ -443,12 +453,48 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_gravityZ =    0.0f;
             pendingReset = true;
         }
+        ImGui::PopID();
     }
 
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader("Water Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable Water Surface Rendering", &useWaterRendering);
+    if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Appearance");
+        int renderMode = useWaterRendering ? 0 : (useImpostors ? 1 : 2);
+        if (ImGui::Combo("Render Mode", &renderMode, "Water Surface\0Point Impostors\0Mesh Spheres\0")) {
+            useWaterRendering = (renderMode == 0);
+            useImpostors      = (renderMode == 1);
+        }
+        ImGui::Separator(); ImGui::Text("Color");
+        ImGui::Combo("Palette", &paletteId,
+            "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0");
+        ImGui::Combo("Color Drive", &vizMode,
+            "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0Instance Color\0");
+        ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
+        ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
+        ImGui::TextDisabled("Height drive uses box Y extents, not Range. Palette & drive\ncolor the Impostor/Mesh modes; Adjustments grade every mode.");
+        if (paletteId == 8) {
+            ImGui::ColorEdit3("Duotone A", duoColorA);
+            ImGui::ColorEdit3("Duotone B", duoColorB);
+        }
+        if (paletteId == 4) {
+            ImGui::SliderFloat("Irid Frequency", &iridFreq, 0.0f, 8.0f);
+            ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
+        }
+        ImGui::Checkbox("Lit particles", &litParticles);
+
+        ImGui::Separator(); ImGui::Text("Adjustments");
+        ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
+        ImGui::SliderFloat("Saturation", &satMul,      0.0f, 2.0f);
+        ImGui::SliderFloat("Brightness", &brightMul,   0.0f, 2.0f);
+        ImGui::SliderFloat("Contrast",   &contrastMul, 0.0f, 2.0f);
+        ImGui::Checkbox("Invert", &invertColor);
+
+        ImGui::Separator(); ImGui::Text("Background");
+        ImGui::ColorEdit3("Background", bgColor);
         if (useWaterRendering) {
+            ImGui::ColorEdit3("Sky", skyColor);
+            ImGui::ColorEdit3("Env Reflect", envReflectColor);
+        }
+        if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
             ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
             ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
@@ -463,7 +509,28 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
             ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
             ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+            ImGui::TreePop();
         }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Performance")) {
+        ImGui::PushID("Performance");
+        ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
+        ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
+        ImGui::SameLine();
+        ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Screenshot", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Screenshot");
+        ImGui::Combo("Resolution", &captureResIdx,
+            "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
+        if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
+        ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.");
+        if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
+        ImGui::PopID();
     }
     ImGui::End();
 
@@ -509,24 +576,43 @@ void Scene0p::Update(const float deltaTime) {
     if (didSteps == cap && dtAccumulator > fixedDt) {
         dtAccumulator = fmodf(dtAccumulator, fixedDt);
     }
+
+    // Service screenshot requests after the sim step; the capture renders
+    // entirely offscreen so the on-screen frame that follows is unaffected.
+    if (captureRequested) {
+        captureRequested = false;
+        DoCapture();
+    }
 }
 
 void Scene0p::Render() const {
+    RenderSceneTo(0, windowW, windowH, projectionMatrix);
+}
+
+// Renders the full scene (whichever render path is active) into targetFBO at
+// outW x outH with the given projection. targetFBO 0 = the window; the
+// screenshot capture passes its own FBO, size, and aspect-corrected projection.
+void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
+    if (outW <= 0 || outH <= 0) return;
+
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
     if (useWaterRendering && ssfrW > 0 && ssfrDepthShader && fluidGPU) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        RenderSSFR();
+        const float pixelScale = (windowH > 0) ? static_cast<float>(outH) / static_cast<float>(windowH) : 1.0f;
+        RenderSSFR(targetFBO, proj, pixelScale);
         return;
     }
 
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
+    glViewport(0, 0, outW, outH);
+    glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glPolygonMode(GL_FRONT_AND_BACK, drawInWireMode ? GL_LINE : GL_FILL);
 
     if (lineShader && boxVAO) {
         glUseProgram(lineShader->GetProgram());
-        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
         if (GLint col = lineShader->GetUniformID("uColor"); col != -1) glUniform3f(col, 0.85f, 0.95f, 1.0f);
         glBindVertexArray(boxVAO);
@@ -539,7 +625,7 @@ void Scene0p::Render() const {
     if (!fluidGPU) return;
 
     if (useImpostors && impostorShader) {
-        DrawFluidImpostors();
+        DrawFluidImpostors(proj, outH);
         return;
     }
 
@@ -548,22 +634,12 @@ void Scene0p::Render() const {
     }
 
     glUseProgram(shader->GetProgram());
-    glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
-
-    // Height range (box Y extents)
-    if (GLint hLoc = shader->GetUniformID("heightMinMax"); hLoc != -1) {
-        glUniform2f(hLoc,
-            fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
-            fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
-    }
 
     if (GLint useLoc = shader->GetUniformID("useSSBO"); useLoc != -1)
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
-    if (GLint cmLoc = shader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, vizMode);
-    if (GLint vrLoc = shader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
+    SetColorUniforms(shader);
 
     float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h);
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
@@ -584,23 +660,48 @@ int Scene0p::CurrentViewportHeight() const {
     return vp[3] > 0 ? vp[3] : 1080;
 }
 
-void Scene0p::DrawFluidImpostors() const {
-    glUseProgram(impostorShader->GetProgram());
-    glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
-    glUniformMatrix4fv(impostorShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
-
-    if (GLint hLoc = impostorShader->GetUniformID("heightMinMax"); hLoc != -1) {
-        glUniform2f(hLoc,
+// Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
+void Scene0p::SetColorUniforms(Shader* s) const {
+    if (GLint loc = s->GetUniformID("colorDrive"); loc != -1) glUniform1i(loc, vizMode);
+    if (GLint loc = s->GetUniformID("paletteId");  loc != -1) glUniform1i(loc, paletteId);
+    if (GLint loc = s->GetUniformID("vizRange");   loc != -1) glUniform2f(loc, vizRangeMin, vizRangeMax);
+    if (GLint loc = s->GetUniformID("heightMinMax"); loc != -1) {
+        glUniform2f(loc,
             fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
             fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
     }
-    if (GLint cmLoc = impostorShader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, vizMode);
-    if (GLint vrLoc = impostorShader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
+    if (GLint loc = s->GetUniformID("boxCenter"); loc != -1)
+        glUniform3f(loc, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z);
+    if (GLint loc = s->GetUniformID("duoColorA");   loc != -1) glUniform3fv(loc, 1, duoColorA);
+    if (GLint loc = s->GetUniformID("duoColorB");   loc != -1) glUniform3fv(loc, 1, duoColorB);
+    if (GLint loc = s->GetUniformID("iridFreq");    loc != -1) glUniform1f(loc, iridFreq);
+    if (GLint loc = s->GetUniformID("iridShift");   loc != -1) glUniform1f(loc, iridShift);
+    if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
+    if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
+    if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
+    SetGradeUniforms(s);
+}
+
+// Uploads only the color-adjustment uniforms (shared with fluidComposite.frag)
+void Scene0p::SetGradeUniforms(Shader* s) const {
+    if (GLint loc = s->GetUniformID("hueShift");    loc != -1) glUniform1f(loc, hueShiftDeg);
+    if (GLint loc = s->GetUniformID("satMul");      loc != -1) glUniform1f(loc, satMul);
+    if (GLint loc = s->GetUniformID("brightMul");   loc != -1) glUniform1f(loc, brightMul);
+    if (GLint loc = s->GetUniformID("contrastMul"); loc != -1) glUniform1f(loc, contrastMul);
+    if (GLint loc = s->GetUniformID("invertColor"); loc != -1) glUniform1i(loc, invertColor ? 1 : 0);
+}
+
+void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
+    glUseProgram(impostorShader->GetProgram());
+    glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
+    glUniformMatrix4fv(impostorShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
+
+    SetColorUniforms(impostorShader);
 
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
+    if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
+        glUniform1f(r, static_cast<float>(outH));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -698,7 +799,7 @@ void Scene0p::DestroySSFRBuffers() {
     ssfrW = ssfrH = 0;
 }
 
-void Scene0p::RenderSSFR() const {
+void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
     const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h);
@@ -718,7 +819,7 @@ void Scene0p::RenderSSFR() const {
     glDisable(GL_BLEND);
 
     glUseProgram(ssfrDepthShader->GetProgram());
-    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrDepthShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     if (GLint r = ssfrDepthShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
@@ -741,7 +842,7 @@ void Scene0p::RenderSSFR() const {
 
     glUseProgram(ssfrSmoothShader->GetProgram());
     glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
-    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius);
+    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius * pixelScale);
     glUniform1f(ssfrSmoothShader->GetUniformID("depthFalloff"),  smoothDepthFalloff);
 
     glBindVertexArray(ssfrQuadVAO);
@@ -786,7 +887,7 @@ void Scene0p::RenderSSFR() const {
     glBlendFunc(GL_ONE, GL_ONE); // additive
 
     glUseProgram(ssfrThickShader->GetProgram());
-    glUniformMatrix4fv(ssfrThickShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrThickShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrThickShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     if (GLint r = ssfrThickShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
@@ -801,7 +902,7 @@ void Scene0p::RenderSSFR() const {
     // Pass 4 — Background scene (terrain + box wireframe on sky)
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
-    glClearColor(0.40f, 0.55f, 0.65f, 1.0f); // sky colour (nicer with terrain)
+    glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -811,7 +912,7 @@ void Scene0p::RenderSSFR() const {
     if (terrainShader && terrainVAO && terrainIndexCount > 0 &&
         fluidGPU && fluidGPU->riverMode) {
         glUseProgram(terrainShader->GetProgram());
-        glUniformMatrix4fv(terrainShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(terrainShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(terrainShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
         glUniform3fv(terrainShader->GetUniformID("sunDirWorld"), 1, sunDirWorld);
         glUniform3fv(terrainShader->GetUniformID("sunColor"),    1, sunColor);
@@ -822,12 +923,12 @@ void Scene0p::RenderSSFR() const {
 
     // River bank lines (channel edges + centerline on terrain surface)
     if (showRiverLines && fluidGPU && fluidGPU->riverMode)
-        DrawRiverBankLines();
+        DrawRiverBankLines(proj);
 
     // Box wireframe (skip in river mode to reduce visual clutter)
     if (lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
         glUseProgram(lineShader->GetProgram());
-        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
         if (GLint c = lineShader->GetUniformID("uColor"); c != -1)
             glUniform3f(c, 0.6f, 0.75f, 1.0f);
@@ -840,7 +941,7 @@ void Scene0p::RenderSSFR() const {
     // -----------------------------------------------------------------------
     // Pass 5 — Composite: normals + Fresnel + specular + refraction + tint
     // -----------------------------------------------------------------------
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
     glViewport(0, 0, ssfrW, ssfrH);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -862,7 +963,7 @@ void Scene0p::RenderSSFR() const {
     glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
     glUniform1i(ssfrCompositeShader->GetUniformID("backgroundTex"), 2);
 
-    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
                 static_cast<float>(ssfrW), static_cast<float>(ssfrH));
@@ -877,6 +978,8 @@ void Scene0p::RenderSSFR() const {
     glUniform1f(ssfrCompositeShader->GetUniformID("refractionStrength"), refractionStrength);
     glUniform1f(ssfrCompositeShader->GetUniformID("fresnelBias"),      fresnelBias);
     glUniform3fv(ssfrCompositeShader->GetUniformID("deepWaterColor"),  1, deepWaterColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("envReflectColor"), 1, envReflectColor);
+    SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1046,11 +1149,11 @@ void Scene0p::BuildRiverBankLines() {
     glBindVertexArray(0);
 }
 
-void Scene0p::DrawRiverBankLines() const {
+void Scene0p::DrawRiverBankLines(const Matrix4& proj) const {
     if (!lineShader || !riverBankVAO || riverBankN == 0) return;
 
     glUseProgram(lineShader->GetProgram());
-    glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glBindVertexArray(riverBankVAO);
     glLineWidth(2.5f);
@@ -1070,4 +1173,100 @@ void Scene0p::DrawRiverBankLines() const {
 
     glLineWidth(1.0f);
     glBindVertexArray(0);
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot capture
+// ---------------------------------------------------------------------------
+
+void Scene0p::DoCapture() {
+    int capW = 3000, capH = 3000;
+    switch (captureResIdx) {
+        case 0:  capW = 3000; capH = 3000; break;   // SoundCloud cover art
+        case 1:  capW = 3840; capH = 2160; break;   // 4K UHD
+        default: capW = windowW; capH = windowH; break;
+    }
+    if (capW <= 0 || capH <= 0) {
+        lastScreenshotPath = "FAILED: window size unknown";
+        return;
+    }
+
+    GLint maxTex = 0, maxRb = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+    glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &maxRb);
+    const GLint maxSide = std::min(maxTex, maxRb);
+    if (capW > maxSide || capH > maxSide) {
+        lastScreenshotPath = "FAILED: resolution exceeds GPU limits";
+        return;
+    }
+
+    // Capture target: RGBA8 color texture + 24-bit depth renderbuffer
+    GLuint capTex = 0, capRBO = 0, capFBO = 0;
+    glGenTextures(1, &capTex);
+    glBindTexture(GL_TEXTURE_2D, capTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenRenderbuffers(1, &capRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, capRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, capW, capH);
+
+    glGenFramebuffers(1, &capFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, capRBO);
+    const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    if (!fboOK) {
+        glDeleteFramebuffers(1, &capFBO);
+        glDeleteTextures(1, &capTex);
+        glDeleteRenderbuffers(1, &capRBO);
+        lastScreenshotPath = "FAILED: could not create capture framebuffer";
+        return;
+    }
+
+    // Render one frame at capture resolution with a matching aspect ratio.
+    // The SSFR intermediate buffers must match the target size, so resize
+    // them for the capture and restore afterwards.
+    if (useWaterRendering) InitSSFRBuffers(capW, capH);
+    const Matrix4 capProj = MMath::perspective(
+        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, 100.0f);
+    RenderSceneTo(capFBO, capW, capH, capProj);
+
+    std::vector<unsigned char> pixels(static_cast<size_t>(capW) * static_cast<size_t>(capH) * 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, capW, capH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glDeleteFramebuffers(1, &capFBO);
+    glDeleteTextures(1, &capTex);
+    glDeleteRenderbuffers(1, &capRBO);
+
+    // Restore the on-screen render state
+    if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+    glViewport(0, 0, windowW, windowH);
+
+    std::error_code ec;
+    std::filesystem::create_directories("screenshots", ec);
+
+    time_t now = time(nullptr);
+    tm local{};
+    localtime_s(&local, &now);
+    char name[128];
+    snprintf(name, sizeof(name), "screenshots/sph_%04d%02d%02d_%02d%02d%02d_%dx%d.png",
+             local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+             local.tm_hour, local.tm_min, local.tm_sec, capW, capH);
+
+    stbi_flip_vertically_on_write(1);   // GL reads rows bottom-up
+    if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3))
+        lastScreenshotPath = name;
+    else
+        lastScreenshotPath = "FAILED: could not write PNG";
 }

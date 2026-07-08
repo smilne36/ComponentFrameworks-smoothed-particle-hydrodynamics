@@ -240,16 +240,16 @@ bool Shader::Link() {
 
 GLuint Shader::GetUniformID(std::string name) {
 	auto id = uniformMap.find(name);
-#ifdef _DEBUG
-	static bool writeBadUniformWarning = true;
 	if (id == uniformMap.end()) {
+#ifdef _DEBUG
+		static bool writeBadUniformWarning = true;
 		if (writeBadUniformWarning) {
 			Debug::Warning(name + " :No such uniform name", __FILE__, __LINE__);
-			writeBadUniformWarning = false;/// I already told you, don't repeat the message 
+			writeBadUniformWarning = false;/// I already told you, don't repeat the message
 		}
+#endif
 		return -1;
 	}
-#endif 
 	return id->second;
 }
 
