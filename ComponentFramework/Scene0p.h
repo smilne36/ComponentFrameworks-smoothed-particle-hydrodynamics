@@ -10,6 +10,7 @@
 #include "Mesh.h"
 #include "Shader.h"
 #include <glad.h>
+#include <limits>
 using namespace MATH;
 
 union SDL_Event;
@@ -56,6 +57,16 @@ private:
     int     vizMode = 0;          // 0=Height,1=Speed,2=Pressure,3=Density,4=InstanceColor
     float   vizRangeMin = 0.0f;
     float   vizRangeMax = 10.0f;
+
+    // Wave injection state (UI)
+    float   waveAmplitude  = 1.5f;
+    float   waveWavelength = 3.0f;
+    float   wavePhaseSpeed = 4.0f;
+    int     waveDirIdx     = 1;
+    float   yBandMin       = -std::numeric_limits<float>::infinity();
+    float   yBandMax       =  std::numeric_limits<float>::infinity();
+    bool    continuousWave = false;
+    float   wavePhase      = 0.0f;
 
     void    UpdateBoxWireframe();
     void    SetupImpostorVAO();

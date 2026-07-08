@@ -75,7 +75,7 @@ void SceneManager::Run() {
         ImGui::NewFrame();
 
         // Optional: quick sanity UI
-        static bool show_demo_window = true;
+        static bool show_demo_window = false;
         if (show_demo_window) ImGui::ShowDemoWindow(&show_demo_window);
         ImGui::Begin("Stats");
         ImGui::Text("Delta: %.3f ms (%.1f FPS)", timer->GetDeltaTime() * 1000.0f, 1.0f / timer->GetDeltaTime());

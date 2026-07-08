@@ -284,37 +284,13 @@ void Scene0p::Update(const float deltaTime) {
 
     if (!fluidGPU) return;
 
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 940.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Fluid Controls");
     ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
     ImGui::Text("Particles: %zu (fluids: %zu)", fluidGPU->particles.size(), fluidGPU->GetNumFluids());
-    ImGui::Separator();
-
-    if (ImGui::Button("Preset: Stable Water")) {
-        fluidGPU->param_pause = false;
-        fluidGPU->param_h = 0.28f;
-        fluidGPU->param_restDensity = 1000.0f;
-        fluidGPU->param_gasConstant = 2000.0f;
-        fluidGPU->param_viscosity = 3.5f;
-        fluidGPU->param_gravityY = -980.0f;
-        fluidGPU->param_surfaceTension = 0.0f;
-        fluidGPU->param_timeStep = 1.0e-3f;
-        pendingReset = true;
-    }
-    if (ImGui::Button("Preset: Splashy Water")) {
-        fluidGPU->param_pause = false;
-        fluidGPU->param_h = 0.22f;
-        fluidGPU->param_restDensity = 1000.0f;
-        fluidGPU->param_gasConstant = 6000.0f;
-        fluidGPU->param_viscosity = 1.2f;
-        fluidGPU->param_gravityY = -980.0f;
-        fluidGPU->param_surfaceTension = 0.12f;
-        fluidGPU->param_timeStep = 5.0e-4f;
-        fluidGPU->param_useJitter = false;
-        fluidGPU->param_jitterAmp = 0.06f;
-        fluidGPU->param_wallRestitution = 0.05f;
-        fluidGPU->param_wallFriction = 0.05f;
-        pendingReset = true;
-    }
+    ImGui::Checkbox("Pause simulation", &fluidGPU->param_pause);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Simulation")) pendingReset = true;
     ImGui::SameLine();
     if (ImGui::Button("Fit Camera")) {
         Vec3 minV(FLT_MAX, FLT_MAX, FLT_MAX);
@@ -341,74 +317,95 @@ void Scene0p::Update(const float deltaTime) {
             cameraPos = Vec3(center.x, center.y, center.z + dist);
         }
     }
-
-    ImGui::Checkbox("Pause simulation", &fluidGPU->param_pause);
-    ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
-    ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
-    ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
-    ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
-    ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
-    ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
-    ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
-    ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
-
-    ImGui::Separator(); ImGui::Text("Performance");
-    ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
-    ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
-    ImGui::SameLine();
-    ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
-    ImGui::Checkbox("Use point impostors", &useImpostors);
-
-    ImGui::Separator(); ImGui::Text("Box Transform (OBB)");
-    ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
-    ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-    ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
-    ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
-    ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-    if (ImGui::Button("Rebuild Grid for Box")) {
-        fluidGPU->RecreateGridForBox();
-        UpdateBoxWireframe();
-    }
-
-    ImGui::Separator(); ImGui::Text("Spawn Layout");
-    ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
-    ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
-    if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
-
-    ImGui::Separator(); ImGui::Text("Waves");
-    static float waveAmplitude = 1.5f;
-    static float waveWavelength = 3.0f;
-    static float wavePhaseSpeed = 4.0f;
-    static int   waveDirIdx = 1;
-    static float yBandMin = -std::numeric_limits<float>::infinity();
-    static float yBandMax = std::numeric_limits<float>::infinity();
-    static bool  continuousWave = false;
-    static float wavePhase = 0.0f;
-
-    ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
-    ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
-    ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
-    ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
-    ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
-    ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
-    ImGui::InputFloat("Band Y min", &yBandMin);
-    ImGui::InputFloat("Band Y max", &yBandMax);
-    ImGui::Checkbox("Continuous wave", &continuousWave);
-    if (ImGui::Button("Impulse Now")) {
-        Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
-        fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset Simulation")) pendingReset = true;
-
-    ImGui::Separator(); ImGui::Text("Visualization");
-    ImGui::Combo("Color by", &vizMode, "Height\0Speed\0Pressure\0Density\0InstanceColor\0");
-    ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
-    ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
-    ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
-
     ImGui::Separator();
+
+    if (ImGui::CollapsingHeader("Presets")) {
+        ImGui::PushID("Presets");
+        if (ImGui::Button("Preset: Stable Water")) {
+            fluidGPU->param_pause = false;
+            fluidGPU->param_h = 0.28f;
+            fluidGPU->param_restDensity = 1000.0f;
+            fluidGPU->param_gasConstant = 2000.0f;
+            fluidGPU->param_viscosity = 3.5f;
+            fluidGPU->param_gravityY = -980.0f;
+            fluidGPU->param_surfaceTension = 0.0f;
+            fluidGPU->param_timeStep = 1.0e-3f;
+            pendingReset = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Preset: Splashy Water")) {
+            fluidGPU->param_pause = false;
+            fluidGPU->param_h = 0.22f;
+            fluidGPU->param_restDensity = 1000.0f;
+            fluidGPU->param_gasConstant = 6000.0f;
+            fluidGPU->param_viscosity = 1.2f;
+            fluidGPU->param_gravityY = -980.0f;
+            fluidGPU->param_surfaceTension = 0.12f;
+            fluidGPU->param_timeStep = 5.0e-4f;
+            fluidGPU->param_useJitter = false;
+            fluidGPU->param_jitterAmp = 0.06f;
+            fluidGPU->param_wallRestitution = 0.05f;
+            fluidGPU->param_wallFriction = 0.05f;
+            pendingReset = true;
+        }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Simulation");
+        ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
+        ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
+        ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
+        ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
+        ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
+        ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
+        ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
+        ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Container Box")) {
+        ImGui::PushID("ContainerBox");
+        ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
+        ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
+        ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
+        ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
+        if (ImGui::Button("Rebuild Grid for Box")) {
+            fluidGPU->RecreateGridForBox();
+            UpdateBoxWireframe();
+        }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Spawn Layout")) {
+        ImGui::PushID("SpawnLayout");
+        ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
+        ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
+        if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Waves")) {
+        ImGui::PushID("Waves");
+        ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
+        ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
+        ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
+        ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
+        ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
+        ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
+        ImGui::InputFloat("Band Y min", &yBandMin);
+        ImGui::InputFloat("Band Y max", &yBandMax);
+        ImGui::Checkbox("Continuous wave", &continuousWave);
+        if (ImGui::Button("Impulse Now")) {
+            Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
+            fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
+        }
+        ImGui::PopID();
+    }
+
     if (ImGui::CollapsingHeader("River / Stream Mode")) {
+        ImGui::PushID("River");
         bool wasRiver = fluidGPU->riverMode;
         ImGui::Checkbox("Enable River Mode", &fluidGPU->riverMode);
         ImGui::SliderInt("River Seed", &riverSeed, 1, 999);
@@ -443,12 +440,21 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_gravityZ =    0.0f;
             pendingReset = true;
         }
+        ImGui::PopID();
     }
 
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader("Water Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable Water Surface Rendering", &useWaterRendering);
-        if (useWaterRendering) {
+    if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Appearance");
+        int renderMode = useWaterRendering ? 0 : (useImpostors ? 1 : 2);
+        if (ImGui::Combo("Render Mode", &renderMode, "Water Surface\0Point Impostors\0Mesh Spheres\0")) {
+            useWaterRendering = (renderMode == 0);
+            useImpostors      = (renderMode == 1);
+        }
+        ImGui::Combo("Color by", &vizMode, "Height\0Speed\0Pressure\0Density\0InstanceColor\0");
+        ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
+        ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
+        ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
+        if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
             ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
             ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
@@ -463,7 +469,18 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
             ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
             ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+            ImGui::TreePop();
         }
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Performance")) {
+        ImGui::PushID("Performance");
+        ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
+        ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
+        ImGui::SameLine();
+        ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
+        ImGui::PopID();
     }
     ImGui::End();
 
