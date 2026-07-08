@@ -77,6 +77,15 @@ private:
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 
+    // Screenshot capture state
+    int     windowW = 0, windowH = 0;   // last known on-screen viewport size
+    bool    captureRequested = false;
+    int     captureResIdx = 0;          // 0=3000x3000, 1=3840x2160, 2=window size
+    std::string lastScreenshotPath;
+
+    void    RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const;
+    void    DoCapture();
+
     // Wave injection state (UI)
     float   waveAmplitude  = 1.5f;
     float   waveWavelength = 3.0f;
@@ -89,7 +98,7 @@ private:
 
     void    UpdateBoxWireframe();
     void    SetupImpostorVAO();
-    void    DrawFluidImpostors() const;
+    void    DrawFluidImpostors(const Matrix4& proj, int outH) const;
     int     CurrentViewportHeight() const;
 
     // --- Screen-Space Fluid Rendering ---
@@ -131,7 +140,7 @@ private:
     float   fresnelBias         = 0.02f;
 
     void    InitSSFRBuffers(int w, int h);
-    void    RenderSSFR() const;
+    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const;
     void    DestroySSFRBuffers();
 
     // --- Terrain mesh ---
@@ -152,7 +161,7 @@ private:
     int     riverBankN        = 0; // vertices per strip (3 strips: left, right, center)
     bool    showRiverLines    = true;
     void    BuildRiverBankLines();
-    void    DrawRiverBankLines() const;
+    void    DrawRiverBankLines(const Matrix4& proj) const;
 
 public:
     explicit Scene0p();

@@ -2,8 +2,13 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <vector>
 #include <SDL.h>
 #include <MMath.h>
+#include "stb_image_write.h"
 
 #include "Scene0p.h"
 #include "Debug.h"
@@ -159,6 +164,10 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
         case SDL_SCANCODE_Q: cameraTarget.z += 0.3f; break;
         case SDL_SCANCODE_E: cameraTarget.z -= 0.3f; break;
         case SDL_SCANCODE_Z: drawInWireMode = !drawInWireMode; break;
+        // P captures a screenshot (unless typing in the UI)
+        case SDL_SCANCODE_P:
+            if (!ImGui::GetIO().WantCaptureKeyboard) captureRequested = true;
+            break;
         // R resets to default view
         case SDL_SCANCODE_R:
             cameraTarget  = Vec3(0, 0, 0);
@@ -274,12 +283,16 @@ void Scene0p::Update(const float deltaTime) {
     }
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 
-    // Resize SSFR FBOs if viewport changed
+    // Resize SSFR FBOs if viewport changed; remember the on-screen size for captures
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
-        if (vp[2] > 0 && vp[3] > 0 && (vp[2] != ssfrW || vp[3] != ssfrH))
-            InitSSFRBuffers(vp[2], vp[3]);
+        if (vp[2] > 0 && vp[3] > 0) {
+            windowW = vp[2];
+            windowH = vp[3];
+            if (vp[2] != ssfrW || vp[3] != ssfrH)
+                InitSSFRBuffers(vp[2], vp[3]);
+        }
     }
 
     if (!fluidGPU) return;
@@ -509,6 +522,16 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
         ImGui::PopID();
     }
+
+    if (ImGui::CollapsingHeader("Screenshot", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::PushID("Screenshot");
+        ImGui::Combo("Resolution", &captureResIdx,
+            "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
+        if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
+        ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.");
+        if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
+        ImGui::PopID();
+    }
     ImGui::End();
 
     if (lastBoxCenter.x != fluidGPU->param_boxCenter.x ||
@@ -553,16 +576,35 @@ void Scene0p::Update(const float deltaTime) {
     if (didSteps == cap && dtAccumulator > fixedDt) {
         dtAccumulator = fmodf(dtAccumulator, fixedDt);
     }
+
+    // Service screenshot requests after the sim step; the capture renders
+    // entirely offscreen so the on-screen frame that follows is unaffected.
+    if (captureRequested) {
+        captureRequested = false;
+        DoCapture();
+    }
 }
 
 void Scene0p::Render() const {
+    RenderSceneTo(0, windowW, windowH, projectionMatrix);
+}
+
+// Renders the full scene (whichever render path is active) into targetFBO at
+// outW x outH with the given projection. targetFBO 0 = the window; the
+// screenshot capture passes its own FBO, size, and aspect-corrected projection.
+void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
+    if (outW <= 0 || outH <= 0) return;
+
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
     if (useWaterRendering && ssfrW > 0 && ssfrDepthShader && fluidGPU) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        RenderSSFR();
+        const float pixelScale = (windowH > 0) ? static_cast<float>(outH) / static_cast<float>(windowH) : 1.0f;
+        RenderSSFR(targetFBO, proj, pixelScale);
         return;
     }
 
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
+    glViewport(0, 0, outW, outH);
     glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -570,7 +612,7 @@ void Scene0p::Render() const {
 
     if (lineShader && boxVAO) {
         glUseProgram(lineShader->GetProgram());
-        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
         if (GLint col = lineShader->GetUniformID("uColor"); col != -1) glUniform3f(col, 0.85f, 0.95f, 1.0f);
         glBindVertexArray(boxVAO);
@@ -583,7 +625,7 @@ void Scene0p::Render() const {
     if (!fluidGPU) return;
 
     if (useImpostors && impostorShader) {
-        DrawFluidImpostors();
+        DrawFluidImpostors(proj, outH);
         return;
     }
 
@@ -592,7 +634,7 @@ void Scene0p::Render() const {
     }
 
     glUseProgram(shader->GetProgram());
-    glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
     if (GLint useLoc = shader->GetUniformID("useSSBO"); useLoc != -1)
@@ -649,9 +691,9 @@ void Scene0p::SetGradeUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("invertColor"); loc != -1) glUniform1i(loc, invertColor ? 1 : 0);
 }
 
-void Scene0p::DrawFluidImpostors() const {
+void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
     glUseProgram(impostorShader->GetProgram());
-    glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(impostorShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
     SetColorUniforms(impostorShader);
@@ -659,7 +701,7 @@ void Scene0p::DrawFluidImpostors() const {
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
-        glUniform1f(r, static_cast<float>(CurrentViewportHeight()));
+        glUniform1f(r, static_cast<float>(outH));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -757,7 +799,7 @@ void Scene0p::DestroySSFRBuffers() {
     ssfrW = ssfrH = 0;
 }
 
-void Scene0p::RenderSSFR() const {
+void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
     const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h);
@@ -777,7 +819,7 @@ void Scene0p::RenderSSFR() const {
     glDisable(GL_BLEND);
 
     glUseProgram(ssfrDepthShader->GetProgram());
-    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrDepthShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrDepthShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     if (GLint r = ssfrDepthShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
@@ -800,7 +842,7 @@ void Scene0p::RenderSSFR() const {
 
     glUseProgram(ssfrSmoothShader->GetProgram());
     glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
-    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius);
+    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius * pixelScale);
     glUniform1f(ssfrSmoothShader->GetUniformID("depthFalloff"),  smoothDepthFalloff);
 
     glBindVertexArray(ssfrQuadVAO);
@@ -845,7 +887,7 @@ void Scene0p::RenderSSFR() const {
     glBlendFunc(GL_ONE, GL_ONE); // additive
 
     glUseProgram(ssfrThickShader->GetProgram());
-    glUniformMatrix4fv(ssfrThickShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrThickShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrThickShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     if (GLint r = ssfrThickShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
@@ -870,7 +912,7 @@ void Scene0p::RenderSSFR() const {
     if (terrainShader && terrainVAO && terrainIndexCount > 0 &&
         fluidGPU && fluidGPU->riverMode) {
         glUseProgram(terrainShader->GetProgram());
-        glUniformMatrix4fv(terrainShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(terrainShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(terrainShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
         glUniform3fv(terrainShader->GetUniformID("sunDirWorld"), 1, sunDirWorld);
         glUniform3fv(terrainShader->GetUniformID("sunColor"),    1, sunColor);
@@ -881,12 +923,12 @@ void Scene0p::RenderSSFR() const {
 
     // River bank lines (channel edges + centerline on terrain surface)
     if (showRiverLines && fluidGPU && fluidGPU->riverMode)
-        DrawRiverBankLines();
+        DrawRiverBankLines(proj);
 
     // Box wireframe (skip in river mode to reduce visual clutter)
     if (lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
         glUseProgram(lineShader->GetProgram());
-        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+        glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
         if (GLint c = lineShader->GetUniformID("uColor"); c != -1)
             glUniform3f(c, 0.6f, 0.75f, 1.0f);
@@ -899,7 +941,7 @@ void Scene0p::RenderSSFR() const {
     // -----------------------------------------------------------------------
     // Pass 5 — Composite: normals + Fresnel + specular + refraction + tint
     // -----------------------------------------------------------------------
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
     glViewport(0, 0, ssfrW, ssfrH);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -921,7 +963,7 @@ void Scene0p::RenderSSFR() const {
     glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
     glUniform1i(ssfrCompositeShader->GetUniformID("backgroundTex"), 2);
 
-    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
                 static_cast<float>(ssfrW), static_cast<float>(ssfrH));
@@ -1107,11 +1149,11 @@ void Scene0p::BuildRiverBankLines() {
     glBindVertexArray(0);
 }
 
-void Scene0p::DrawRiverBankLines() const {
+void Scene0p::DrawRiverBankLines(const Matrix4& proj) const {
     if (!lineShader || !riverBankVAO || riverBankN == 0) return;
 
     glUseProgram(lineShader->GetProgram());
-    glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
+    glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glBindVertexArray(riverBankVAO);
     glLineWidth(2.5f);
@@ -1131,4 +1173,100 @@ void Scene0p::DrawRiverBankLines() const {
 
     glLineWidth(1.0f);
     glBindVertexArray(0);
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot capture
+// ---------------------------------------------------------------------------
+
+void Scene0p::DoCapture() {
+    int capW = 3000, capH = 3000;
+    switch (captureResIdx) {
+        case 0:  capW = 3000; capH = 3000; break;   // SoundCloud cover art
+        case 1:  capW = 3840; capH = 2160; break;   // 4K UHD
+        default: capW = windowW; capH = windowH; break;
+    }
+    if (capW <= 0 || capH <= 0) {
+        lastScreenshotPath = "FAILED: window size unknown";
+        return;
+    }
+
+    GLint maxTex = 0, maxRb = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+    glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &maxRb);
+    const GLint maxSide = std::min(maxTex, maxRb);
+    if (capW > maxSide || capH > maxSide) {
+        lastScreenshotPath = "FAILED: resolution exceeds GPU limits";
+        return;
+    }
+
+    // Capture target: RGBA8 color texture + 24-bit depth renderbuffer
+    GLuint capTex = 0, capRBO = 0, capFBO = 0;
+    glGenTextures(1, &capTex);
+    glBindTexture(GL_TEXTURE_2D, capTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glGenRenderbuffers(1, &capRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, capRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, capW, capH);
+
+    glGenFramebuffers(1, &capFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, capRBO);
+    const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    if (!fboOK) {
+        glDeleteFramebuffers(1, &capFBO);
+        glDeleteTextures(1, &capTex);
+        glDeleteRenderbuffers(1, &capRBO);
+        lastScreenshotPath = "FAILED: could not create capture framebuffer";
+        return;
+    }
+
+    // Render one frame at capture resolution with a matching aspect ratio.
+    // The SSFR intermediate buffers must match the target size, so resize
+    // them for the capture and restore afterwards.
+    if (useWaterRendering) InitSSFRBuffers(capW, capH);
+    const Matrix4 capProj = MMath::perspective(
+        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, 100.0f);
+    RenderSceneTo(capFBO, capW, capH, capProj);
+
+    std::vector<unsigned char> pixels(static_cast<size_t>(capW) * static_cast<size_t>(capH) * 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, capW, capH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glDeleteFramebuffers(1, &capFBO);
+    glDeleteTextures(1, &capTex);
+    glDeleteRenderbuffers(1, &capRBO);
+
+    // Restore the on-screen render state
+    if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+    glViewport(0, 0, windowW, windowH);
+
+    std::error_code ec;
+    std::filesystem::create_directories("screenshots", ec);
+
+    time_t now = time(nullptr);
+    tm local{};
+    localtime_s(&local, &now);
+    char name[128];
+    snprintf(name, sizeof(name), "screenshots/sph_%04d%02d%02d_%02d%02d%02d_%dx%d.png",
+             local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+             local.tm_hour, local.tm_min, local.tm_sec, capW, capH);
+
+    stbi_flip_vertically_on_write(1);   // GL reads rows bottom-up
+    if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3))
+        lastScreenshotPath = name;
+    else
+        lastScreenshotPath = "FAILED: could not write PNG";
 }
