@@ -146,6 +146,7 @@
     <ClCompile Include="Scene0g.cpp" />
     <ClCompile Include="Shader.cpp" />
     <ClCompile Include="SPHFluid3D.cpp" />
+    <ClCompile Include="stb_image_write_impl.cpp" />
     <ClCompile Include="Timer.cpp" />
     <ClCompile Include="Window.cpp" />
   </ItemGroup>
@@ -165,6 +166,7 @@
     <ClInclude Include="Scene0g.h" />
     <ClInclude Include="Shader.h" />
     <ClInclude Include="SPHFluid3D.h" />
+    <ClInclude Include="stb_image_write.h" />
     <ClInclude Include="Timer.h" />
     <ClInclude Include="tiny_obj_loader.h" />
     <ClInclude Include="Window.h" />

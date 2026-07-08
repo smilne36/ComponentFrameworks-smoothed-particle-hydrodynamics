@@ -10,6 +10,7 @@
 #include "Mesh.h"
 #include "Shader.h"
 #include <glad.h>
+#include <limits>
 using namespace MATH;
 
 union SDL_Event;
@@ -53,13 +54,51 @@ private:
     GLuint  impostorVAO = 0;
 
     // Visualization state
-    int     vizMode = 0;          // 0=Height,1=Speed,2=Pressure,3=Density,4=InstanceColor
+    int     vizMode = 0;          // color drive: 0=Height,1=Speed,2=Pressure,3=Density,4=ViewDepth,5=VelocityDir,6=RadialDist,7=InstanceColor
     float   vizRangeMin = 0.0f;
     float   vizRangeMax = 10.0f;
 
+    // Artistic color state (palette + adjustments, see shared palette block in the frag shaders)
+    int     paletteId    = 0;     // 0=Classic,1=Turbo,2=Neon,3=Fire,4=Iridescent,5=Ice,6=Vaporwave,7=Toxic,8=Duotone
+    float   hueShiftDeg  = 0.0f;
+    float   satMul       = 1.0f;
+    float   brightMul    = 1.0f;
+    float   contrastMul  = 1.0f;
+    bool    invertColor  = false;
+    bool    litParticles = true;
+    float   iridFreq     = 3.0f;
+    float   iridShift    = 0.0f;
+    float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
+    float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
+    float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // clear color, impostor/mesh paths
+    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // SSFR background clear
+    float   envReflectColor[3] = {0.05f, 0.12f, 0.28f};     // SSFR environment reflection tint
+
+    void    SetColorUniforms(Shader* s) const;
+    void    SetGradeUniforms(Shader* s) const;
+
+    // Screenshot capture state
+    int     windowW = 0, windowH = 0;   // last known on-screen viewport size
+    bool    captureRequested = false;
+    int     captureResIdx = 0;          // 0=3000x3000, 1=3840x2160, 2=window size
+    std::string lastScreenshotPath;
+
+    void    RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const;
+    void    DoCapture();
+
+    // Wave injection state (UI)
+    float   waveAmplitude  = 1.5f;
+    float   waveWavelength = 3.0f;
+    float   wavePhaseSpeed = 4.0f;
+    int     waveDirIdx     = 1;
+    float   yBandMin       = -std::numeric_limits<float>::infinity();
+    float   yBandMax       =  std::numeric_limits<float>::infinity();
+    bool    continuousWave = false;
+    float   wavePhase      = 0.0f;
+
     void    UpdateBoxWireframe();
     void    SetupImpostorVAO();
-    void    DrawFluidImpostors() const;
+    void    DrawFluidImpostors(const Matrix4& proj, int outH) const;
     int     CurrentViewportHeight() const;
 
     // --- Screen-Space Fluid Rendering ---
@@ -101,7 +140,7 @@ private:
     float   fresnelBias         = 0.02f;
 
     void    InitSSFRBuffers(int w, int h);
-    void    RenderSSFR() const;
+    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const;
     void    DestroySSFRBuffers();
 
     // --- Terrain mesh ---
@@ -122,7 +161,7 @@ private:
     int     riverBankN        = 0; // vertices per strip (3 strips: left, right, center)
     bool    showRiverLines    = true;
     void    BuildRiverBankLines();
-    void    DrawRiverBankLines() const;
+    void    DrawRiverBankLines(const Matrix4& proj) const;
 
 public:
     explicit Scene0p();
