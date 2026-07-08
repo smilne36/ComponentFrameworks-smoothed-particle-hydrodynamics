@@ -450,10 +450,37 @@ void Scene0p::Update(const float deltaTime) {
             useWaterRendering = (renderMode == 0);
             useImpostors      = (renderMode == 1);
         }
-        ImGui::Combo("Color by", &vizMode, "Height\0Speed\0Pressure\0Density\0InstanceColor\0");
+        ImGui::Separator(); ImGui::Text("Color");
+        ImGui::Combo("Palette", &paletteId,
+            "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0");
+        ImGui::Combo("Color Drive", &vizMode,
+            "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0Instance Color\0");
         ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
         ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
-        ImGui::TextDisabled("Height mode ignores Range Min/Max and uses box Y extents.");
+        ImGui::TextDisabled("Height drive uses box Y extents, not Range. Palette & drive\ncolor the Impostor/Mesh modes; Adjustments grade every mode.");
+        if (paletteId == 8) {
+            ImGui::ColorEdit3("Duotone A", duoColorA);
+            ImGui::ColorEdit3("Duotone B", duoColorB);
+        }
+        if (paletteId == 4) {
+            ImGui::SliderFloat("Irid Frequency", &iridFreq, 0.0f, 8.0f);
+            ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
+        }
+        ImGui::Checkbox("Lit particles", &litParticles);
+
+        ImGui::Separator(); ImGui::Text("Adjustments");
+        ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
+        ImGui::SliderFloat("Saturation", &satMul,      0.0f, 2.0f);
+        ImGui::SliderFloat("Brightness", &brightMul,   0.0f, 2.0f);
+        ImGui::SliderFloat("Contrast",   &contrastMul, 0.0f, 2.0f);
+        ImGui::Checkbox("Invert", &invertColor);
+
+        ImGui::Separator(); ImGui::Text("Background");
+        ImGui::ColorEdit3("Background", bgColor);
+        if (useWaterRendering) {
+            ImGui::ColorEdit3("Sky", skyColor);
+            ImGui::ColorEdit3("Env Reflect", envReflectColor);
+        }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
             ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
@@ -536,7 +563,7 @@ void Scene0p::Render() const {
         return;
     }
 
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glPolygonMode(GL_FRONT_AND_BACK, drawInWireMode ? GL_LINE : GL_FILL);
@@ -568,19 +595,9 @@ void Scene0p::Render() const {
     glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
-    // Height range (box Y extents)
-    if (GLint hLoc = shader->GetUniformID("heightMinMax"); hLoc != -1) {
-        glUniform2f(hLoc,
-            fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
-            fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
-    }
-
     if (GLint useLoc = shader->GetUniformID("useSSBO"); useLoc != -1)
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
-    if (GLint cmLoc = shader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, vizMode);
-    if (GLint vrLoc = shader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
+    SetColorUniforms(shader);
 
     float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h);
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
@@ -601,23 +618,48 @@ int Scene0p::CurrentViewportHeight() const {
     return vp[3] > 0 ? vp[3] : 1080;
 }
 
+// Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
+void Scene0p::SetColorUniforms(Shader* s) const {
+    if (GLint loc = s->GetUniformID("colorDrive"); loc != -1) glUniform1i(loc, vizMode);
+    if (GLint loc = s->GetUniformID("paletteId");  loc != -1) glUniform1i(loc, paletteId);
+    if (GLint loc = s->GetUniformID("vizRange");   loc != -1) glUniform2f(loc, vizRangeMin, vizRangeMax);
+    if (GLint loc = s->GetUniformID("heightMinMax"); loc != -1) {
+        glUniform2f(loc,
+            fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
+            fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
+    }
+    if (GLint loc = s->GetUniformID("boxCenter"); loc != -1)
+        glUniform3f(loc, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z);
+    if (GLint loc = s->GetUniformID("duoColorA");   loc != -1) glUniform3fv(loc, 1, duoColorA);
+    if (GLint loc = s->GetUniformID("duoColorB");   loc != -1) glUniform3fv(loc, 1, duoColorB);
+    if (GLint loc = s->GetUniformID("iridFreq");    loc != -1) glUniform1f(loc, iridFreq);
+    if (GLint loc = s->GetUniformID("iridShift");   loc != -1) glUniform1f(loc, iridShift);
+    if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
+    if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
+    if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
+    SetGradeUniforms(s);
+}
+
+// Uploads only the color-adjustment uniforms (shared with fluidComposite.frag)
+void Scene0p::SetGradeUniforms(Shader* s) const {
+    if (GLint loc = s->GetUniformID("hueShift");    loc != -1) glUniform1f(loc, hueShiftDeg);
+    if (GLint loc = s->GetUniformID("satMul");      loc != -1) glUniform1f(loc, satMul);
+    if (GLint loc = s->GetUniformID("brightMul");   loc != -1) glUniform1f(loc, brightMul);
+    if (GLint loc = s->GetUniformID("contrastMul"); loc != -1) glUniform1f(loc, contrastMul);
+    if (GLint loc = s->GetUniformID("invertColor"); loc != -1) glUniform1i(loc, invertColor ? 1 : 0);
+}
+
 void Scene0p::DrawFluidImpostors() const {
     glUseProgram(impostorShader->GetProgram());
     glUniformMatrix4fv(impostorShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, projectionMatrix);
     glUniformMatrix4fv(impostorShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
-    if (GLint hLoc = impostorShader->GetUniformID("heightMinMax"); hLoc != -1) {
-        glUniform2f(hLoc,
-            fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
-            fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
-    }
-    if (GLint cmLoc = impostorShader->GetUniformID("colorMode"); cmLoc != -1)
-        glUniform1i(cmLoc, vizMode);
-    if (GLint vrLoc = impostorShader->GetUniformID("vizRange"); vrLoc != -1)
-        glUniform2f(vrLoc, vizRangeMin, vizRangeMax);
+    SetColorUniforms(impostorShader);
 
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
+    if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
+        glUniform1f(r, static_cast<float>(CurrentViewportHeight()));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -818,7 +860,7 @@ void Scene0p::RenderSSFR() const {
     // Pass 4 — Background scene (terrain + box wireframe on sky)
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
-    glClearColor(0.40f, 0.55f, 0.65f, 1.0f); // sky colour (nicer with terrain)
+    glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -894,6 +936,8 @@ void Scene0p::RenderSSFR() const {
     glUniform1f(ssfrCompositeShader->GetUniformID("refractionStrength"), refractionStrength);
     glUniform1f(ssfrCompositeShader->GetUniformID("fresnelBias"),      fresnelBias);
     glUniform3fv(ssfrCompositeShader->GetUniformID("deepWaterColor"),  1, deepWaterColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("envReflectColor"), 1, envReflectColor);
+    SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);

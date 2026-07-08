@@ -54,9 +54,28 @@ private:
     GLuint  impostorVAO = 0;
 
     // Visualization state
-    int     vizMode = 0;          // 0=Height,1=Speed,2=Pressure,3=Density,4=InstanceColor
+    int     vizMode = 0;          // color drive: 0=Height,1=Speed,2=Pressure,3=Density,4=ViewDepth,5=VelocityDir,6=RadialDist,7=InstanceColor
     float   vizRangeMin = 0.0f;
     float   vizRangeMax = 10.0f;
+
+    // Artistic color state (palette + adjustments, see shared palette block in the frag shaders)
+    int     paletteId    = 0;     // 0=Classic,1=Turbo,2=Neon,3=Fire,4=Iridescent,5=Ice,6=Vaporwave,7=Toxic,8=Duotone
+    float   hueShiftDeg  = 0.0f;
+    float   satMul       = 1.0f;
+    float   brightMul    = 1.0f;
+    float   contrastMul  = 1.0f;
+    bool    invertColor  = false;
+    bool    litParticles = true;
+    float   iridFreq     = 3.0f;
+    float   iridShift    = 0.0f;
+    float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
+    float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
+    float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // clear color, impostor/mesh paths
+    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // SSFR background clear
+    float   envReflectColor[3] = {0.05f, 0.12f, 0.28f};     // SSFR environment reflection tint
+
+    void    SetColorUniforms(Shader* s) const;
+    void    SetGradeUniforms(Shader* s) const;
 
     // Wave injection state (UI)
     float   waveAmplitude  = 1.5f;
