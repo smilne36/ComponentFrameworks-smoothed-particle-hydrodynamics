@@ -548,9 +548,11 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Separator(); ImGui::Text("Background");
         ImGui::ColorEdit3("Background", bgColor);
         if (useWaterRendering) {
+            ImGui::Checkbox("Sky Background", &showSkyBackground);
             ImGui::ColorEdit3("Sky Horizon", skyColor);
             ImGui::ColorEdit3("Sky Zenith", skyZenith);
             ImGui::ColorEdit3("Reflect Tint", envReflectColor);
+            ImGui::TextDisabled("Sky colors always drive the water's reflections;\nthe checkbox only draws them as the backdrop.");
         }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
@@ -999,12 +1001,17 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
     glViewport(0, 0, ssfrW, ssfrH);
-    glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
+    // Backdrop: flat color by default (fluid reads much better on black);
+    // the sky gradient stays available for reflections either way.
+    if (showSkyBackground)
+        glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
+    else
+        glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDisable(GL_BLEND);
 
     // Procedural sky gradient behind everything (no depth writes)
-    if (skyShader) {
+    if (showSkyBackground && skyShader) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
         glUseProgram(skyShader->GetProgram());
