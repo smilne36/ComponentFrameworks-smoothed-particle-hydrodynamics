@@ -138,11 +138,11 @@ private:
 
     bool    useWaterRendering   = true;
     int     smoothIterations    = 5;
-    float   worldFilterScale    = 4.0f;   // smoothing kernel width, in particle radii
-    float   surfaceMerge        = 2.0f;   // narrow-range band, in particle radii
+    float   worldFilterScale    = 6.0f;   // smoothing kernel width, in particle radii
+    float   surfaceMerge        = 3.0f;   // narrow-range band, in particle radii
     float   thicknessStrength   = 0.05f;
     float   thicknessFalloff    = 4.0f;
-    float   renderRadiusScale   = 1.0f;   // visual particle size multiplier (physics untouched)
+    float   renderRadiusScale   = 1.3f;   // visual particle size multiplier (physics untouched)
     float   waterExtinction[3]  = {0.45f, 0.15f, 0.05f};
     float   thicknessScale      = 1.0f;
     float   sunDirWorld[3]      = {0.4f, 1.0f, 0.5f};

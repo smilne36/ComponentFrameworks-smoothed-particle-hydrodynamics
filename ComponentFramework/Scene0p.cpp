@@ -576,8 +576,10 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
             ImGui::Separator();
             ImGui::SliderFloat("Foam Generation",   &fluidGPU->param_foamGen, 0.0f, 2.0f);
+            ImGui::SliderFloat("Foam Threshold",    &fluidGPU->param_foamVelRef, 1.0f, 30.0f);
             ImGui::SliderFloat("Foam Amount",       &foamAmount,          0.0f,  4.0f);
             ImGui::SliderFloat("Exposure",          &exposure,            0.25f, 4.0f);
+            ImGui::TextDisabled("Lower Foam Threshold = foam appears at gentler motion.");
             ImGui::TreePop();
         }
         ImGui::PopID();
