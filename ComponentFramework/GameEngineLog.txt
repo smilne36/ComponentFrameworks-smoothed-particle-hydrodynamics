@@ -1,4 +1,4 @@
-Wed Jul  8 19:12:09 2026
+Wed Jul  8 22:15:38 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -63,17 +63,21 @@ Wed Jul  8 19:12:09 2026
 "viewportH" loc:3
 
 [INFO]: Uniforms:
-"depthFalloff" loc:0
-"depthTex" loc:1
-"filterDir" loc:2
-"filterRadius" loc:3
+"depthTex" loc:0
+"filterDir" loc:1
+"particleRadius" loc:2
+"projScaleY" loc:3
 "screenSize" loc:4
+"surfaceMerge" loc:5
+"worldFilterScale" loc:6
 
 [INFO]: Uniforms:
 "particleRadius" loc:0
 "projectionMatrix" loc:1
-"viewMatrix" loc:2
-"viewportH" loc:3
+"thicknessFalloff" loc:2
+"thicknessStrength" loc:3
+"viewMatrix" loc:4
+"viewportH" loc:5
 
 [INFO]: Uniforms:
 "backgroundTex" loc:0
@@ -81,22 +85,35 @@ Wed Jul  8 19:12:09 2026
 "contrastMul" loc:2
 "deepWaterColor" loc:3
 "envReflectColor" loc:4
-"extinction" loc:5
-"fresnelBias" loc:6
-"hueShift" loc:7
-"invertColor" loc:8
-"projectionMatrix" loc:9
-"refractionStrength" loc:10
-"satMul" loc:11
-"screenSize" loc:12
-"smoothDepthTex" loc:13
-"specularPower" loc:14
-"specularStrength" loc:15
-"sunColor" loc:16
-"sunDirWorld" loc:17
-"thicknessScale" loc:18
-"thicknessTex" loc:19
-"viewMatrix" loc:20
+"exposure" loc:5
+"extinction" loc:6
+"foamAmount" loc:7
+"foamTex" loc:8
+"fresnelBias" loc:9
+"hueShift" loc:10
+"invertColor" loc:11
+"projectionMatrix" loc:12
+"refractionStrength" loc:13
+"satMul" loc:14
+"screenSize" loc:15
+"skyHorizonColor" loc:16
+"skyZenithColor" loc:17
+"smoothDepthTex" loc:18
+"specularPower" loc:19
+"specularStrength" loc:20
+"sunColor" loc:21
+"sunDirWorld" loc:22
+"thicknessScale" loc:23
+"thicknessTex" loc:24
+"viewMatrix" loc:25
+
+[INFO]: Uniforms:
+"projectionMatrix" loc:0
+"skyHorizonColor" loc:1
+"skyZenithColor" loc:2
+"sunColor" loc:3
+"sunDirWorld" loc:4
+"viewMatrix" loc:5
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
