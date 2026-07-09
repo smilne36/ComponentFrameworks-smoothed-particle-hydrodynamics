@@ -37,6 +37,8 @@ private:
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
     int     containerWireVerts = 24;   // vertex count currently in boxVBO
+    bool    showContainerOutline = true;
+    float   containerOutlineColor[3] = {0.85f, 0.95f, 1.0f};
 
     bool    pendingReset = false;
     float   ballAnimTime = 0.0f;

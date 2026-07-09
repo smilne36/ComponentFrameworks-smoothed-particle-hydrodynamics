@@ -444,6 +444,10 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
         ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
         ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
+        ImGui::Separator();
+        ImGui::Checkbox("Show Outline", &showContainerOutline);
+        if (showContainerOutline)
+            ImGui::ColorEdit3("Outline Color", containerOutlineColor);
         ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
         ImGui::PopID();
     }
@@ -522,7 +526,8 @@ void Scene0p::Update(const float deltaTime) {
         }
         ImGui::Separator(); ImGui::Text("Color");
         ImGui::Combo("Palette", &paletteId,
-            "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0");
+            "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
+            "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0");
         ImGui::Combo("Color Drive", &vizMode,
             "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0Instance Color\0");
         ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
@@ -532,7 +537,7 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::ColorEdit3("Duotone A", duoColorA);
             ImGui::ColorEdit3("Duotone B", duoColorB);
         }
-        if (paletteId == 4) {
+        if (paletteId == 4 || paletteId == 13) {
             ImGui::SliderFloat("Irid Frequency", &iridFreq, 0.0f, 8.0f);
             ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
         }
@@ -682,11 +687,12 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
 
     glPolygonMode(GL_FRONT_AND_BACK, drawInWireMode ? GL_LINE : GL_FILL);
 
-    if (lineShader && boxVAO) {
+    if (showContainerOutline && lineShader && boxVAO) {
         glUseProgram(lineShader->GetProgram());
         glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
-        if (GLint col = lineShader->GetUniformID("uColor"); col != -1) glUniform3f(col, 0.85f, 0.95f, 1.0f);
+        if (GLint col = lineShader->GetUniformID("uColor"); col != -1)
+            glUniform3fv(col, 1, containerOutlineColor);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
         glDrawArrays(GL_LINES, 0, containerWireVerts);
@@ -748,6 +754,7 @@ void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("duoColorB");   loc != -1) glUniform3fv(loc, 1, duoColorB);
     if (GLint loc = s->GetUniformID("iridFreq");    loc != -1) glUniform1f(loc, iridFreq);
     if (GLint loc = s->GetUniformID("iridShift");   loc != -1) glUniform1f(loc, iridShift);
+    if (GLint loc = s->GetUniformID("animTime");    loc != -1) glUniform1f(loc, ballAnimTime);
     if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
     if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
     if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
@@ -1050,12 +1057,12 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
         DrawRiverBankLines(proj);
 
     // Box wireframe (skip in river mode to reduce visual clutter)
-    if (lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
+    if (showContainerOutline && lineShader && boxVAO && fluidGPU && !fluidGPU->riverMode) {
         glUseProgram(lineShader->GetProgram());
         glUniformMatrix4fv(lineShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
         glUniformMatrix4fv(lineShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
         if (GLint c = lineShader->GetUniformID("uColor"); c != -1)
-            glUniform3f(c, 0.6f, 0.75f, 1.0f);
+            glUniform3fv(c, 1, containerOutlineColor);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
         glDrawArrays(GL_LINES, 0, containerWireVerts);
