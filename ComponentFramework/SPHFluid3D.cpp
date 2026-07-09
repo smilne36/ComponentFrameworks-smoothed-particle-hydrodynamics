@@ -88,9 +88,6 @@ void SPHFluidGPU::InitializeParticles() {
     int count = 0;
 
     float fillFraction = 0.4f;
-    float fluidHeight = (2.0f * box) * fillFraction;
-    int   fluidLayersY = int(fluidHeight / spacing);
-    int   fluidSide = int((box * 1.7f) / spacing);
 
     std::default_random_engine rng(static_cast<unsigned>(time(nullptr)));
     std::uniform_real_distribution<float> jitterDist(-spacing * param_jitterAmp,
@@ -153,14 +150,38 @@ void SPHFluidGPU::InitializeParticles() {
             particles.push_back(p); ++count;
         }
     } else {
-        // Standard box fill
-        for (int x = 0; x < fluidSide && count < (int)numParticles; ++x)
-            for (int y = 0; y < fluidLayersY && count < (int)numParticles; ++y)
-                for (int z = 0; z < fluidSide && count < (int)numParticles; ++z) {
+        // Standard fill: a bottom-anchored block centered on the container,
+        // sized per axis, with lattice points outside the shape rejected.
+        const Vec3 c  = param_boxCenter;
+        const Vec3 hf = EffectiveHalf();
+        const float margin = spacing * 0.5f;
+        // Offsets are relative to the container center (rotation is ignored at
+        // spawn, as before; the constraint pass settles particles afterwards).
+        auto insideShape = [&](float lx, float ly, float lz) -> bool {
+            switch (param_shapeType) {
+            case 1: {
+                float r = hf.x - margin;
+                return lx * lx + ly * ly + lz * lz <= r * r;
+            }
+            case 2: {
+                float r = hf.x - margin;
+                return lx * lx + lz * lz <= r * r && std::fabs(ly) <= hf.y - margin;
+            }
+            default: return true;
+            }
+        };
+        int   layersY = std::max(1, int((2.0f * hf.y * fillFraction) / spacing));
+        int   sideX   = std::max(1, int((hf.x * 1.7f) / spacing));
+        int   sideZ   = std::max(1, int((hf.z * 1.7f) / spacing));
+        for (int x = 0; x < sideX && count < (int)numParticles; ++x)
+            for (int y = 0; y < layersY && count < (int)numParticles; ++y)
+                for (int z = 0; z < sideZ && count < (int)numParticles; ++z) {
+                    float lx = -hf.x * 0.85f + x * spacing + j();
+                    float ly = -hf.y + spacing + y * spacing + j();
+                    float lz = -hf.z * 0.85f + z * spacing + j();
+                    if (!insideShape(lx, ly, lz)) continue;
                     SPHParticle p{};
-                    p.pos = Vec4(-box * 0.7f + x * spacing + j(),
-                        -box + spacing + y * spacing + j(),
-                        -box * 0.7f + z * spacing + j(), 0.0f);
+                    p.pos = Vec4(c.x + lx, c.y + ly, c.z + lz, 0.0f);
                     p.vel = Vec4(0, 0, 0, 0);
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
@@ -169,16 +190,19 @@ void SPHFluidGPU::InitializeParticles() {
                 }
     }
 
-    // Create axis-aligned ghost shell (used if param_enableGhosts is true)
-    auto add_ghost = [&](float x, float y, float z) {
-        SPHParticle p{};
-        p.pos = Vec4(x, y, z, 0); p.vel = Vec4(0, 0, 0, 0); p.acc = Vec4(0, 0, 0, 0);
-        p.density = p.pressure = 0.0f; p.isGhost = 1; p.isActive = 0; p.pad0 = 0;
-        particles.push_back(p);
-        };
-    for (float y = -box; y <= box; y += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
-    for (float x = -box; x <= box; x += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
-    for (float x = -box; x <= box; x += spacing) for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
+    // Create axis-aligned ghost shell (used if param_enableGhosts is true).
+    // Box-only: the shell is an axis-aligned cube, meaningless for other shapes.
+    if (param_shapeType == 0) {
+        auto add_ghost = [&](float x, float y, float z) {
+            SPHParticle p{};
+            p.pos = Vec4(x, y, z, 0); p.vel = Vec4(0, 0, 0, 0); p.acc = Vec4(0, 0, 0, 0);
+            p.density = p.pressure = 0.0f; p.isGhost = 1; p.isActive = 0; p.pad0 = 0;
+            particles.push_back(p);
+            };
+        for (float y = -box; y <= box; y += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
+        for (float x = -box; x <= box; x += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
+        for (float x = -box; x <= box; x += spacing) for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
+    }
 
     std::cout << "Fluid particles: " << count
         << ", ghosts: " << (particles.size() - count) << std::endl;
@@ -329,17 +353,36 @@ void SPHFluidGPU::UpdateFluidVBOFromGPU() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-void SPHFluidGPU::InitializeGridAndBuffers() {
-    float h = param_h;
-    cellSize = h;
+// Sizes the spatial hash grid to the world-space AABB of the (possibly
+// rotated) container, with one cell of padding per side. Cheap enough to run
+// every dispatch; buffers are only reallocated when numCells actually changes.
+void SPHFluidGPU::ComputeGridExtents() {
+    cellSize = param_h;
 
-    Vec3 half = param_boxHalf;
-    gridSizeX = std::max(1, int(std::ceil((2.0f * half.x) / cellSize)));
-    gridSizeY = std::max(1, int(std::ceil((2.0f * half.y) / cellSize)));
-    gridSizeZ = std::max(1, int(std::ceil((2.0f * half.z) / cellSize)));
+    float R[9];
+    MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
+    const Vec3 half = EffectiveHalf();
+    // World AABB extent of the rotated container: ext_i = sum_j |R[i][j]| * half_j
+    // (R is column-major world_from_box, so world axis i reads R[i], R[3+i], R[6+i].)
+    Vec3 ext(
+        std::fabs(R[0]) * half.x + std::fabs(R[3]) * half.y + std::fabs(R[6]) * half.z,
+        std::fabs(R[1]) * half.x + std::fabs(R[4]) * half.y + std::fabs(R[7]) * half.z,
+        std::fabs(R[2]) * half.x + std::fabs(R[5]) * half.y + std::fabs(R[8]) * half.z);
+    ext = Vec3(ext.x + cellSize, ext.y + cellSize, ext.z + cellSize);
+
+    gridMinV = param_boxCenter - ext;
+    auto dim = [&](float e) {
+        return std::min(160, std::max(1, int(std::ceil((2.0f * e) / cellSize))));
+    };
+    gridSizeX = dim(ext.x);
+    gridSizeY = dim(ext.y);
+    gridSizeZ = dim(ext.z);
     numCells = std::max(1, gridSizeX * gridSizeY * gridSizeZ);
+}
 
-    box = std::max(half.x, std::max(half.y, half.z));
+void SPHFluidGPU::InitializeGridAndBuffers() {
+    ComputeGridExtents();
+    box = std::max(param_boxHalf.x, std::max(param_boxHalf.y, param_boxHalf.z));
 
     const size_t N = std::max<size_t>(particles.size(), 1);
 
@@ -364,9 +407,9 @@ void SPHFluidGPU::InitializeGridAndBuffers() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, particleCellSSBO);
-}
 
-void SPHFluidGPU::RecreateGridForBox() { InitializeGridAndBuffers(); }
+    allocatedCells = numCells;
+}
 
 // --- sorting buffers
 void SPHFluidGPU::InitializeSortBuffers() {
@@ -414,6 +457,19 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
 
     const float timeStep = (overrideDt > 0.0f ? overrideDt : param_timeStep);
 
+    // Track live container edits: refresh the grid origin/dims every step and
+    // reallocate the cell-head buffer only when the cell count changed.
+    // (ClearGrid initializes the buffer contents each step, so no CPU init.)
+    ComputeGridExtents();
+    if (numCells != allocatedCells) {
+        if (cellHeadSSBO) glDeleteBuffers(1, &cellHeadSSBO);
+        glGenBuffers(1, &cellHeadSSBO);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellHeadSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * numCells, nullptr, GL_DYNAMIC_COPY);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
+        allocatedCells = numCells;
+    }
+
     // Optional ghost syncing (leave off for perf)
     if (param_enableGhosts) {
         DownloadDataFromGPU();
@@ -432,8 +488,7 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUseProgram(buildGridShader);
     glUniform3i(glGetUniformLocation(buildGridShader, "gridSize"), gridSizeX, gridSizeY, gridSizeZ);
     glUniform1f(glGetUniformLocation(buildGridShader, "cellSize"), cellSize);
-    const Vec3 gridMin = param_boxCenter - param_boxHalf;
-    glUniform3f(glGetUniformLocation(buildGridShader, "gridMin"), gridMin.x, gridMin.y, gridMin.z);
+    glUniform3f(glGetUniformLocation(buildGridShader, "gridMin"), gridMinV.x, gridMinV.y, gridMinV.z);
     glUniform1i(glGetUniformLocation(buildGridShader, "numParticles"), int(particles.size()));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
@@ -458,7 +513,9 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform1f(glGetUniformLocation(sphGridShader, "viscosity"), param_viscosity);
     glUniform3f(glGetUniformLocation(sphGridShader, "gravity"), param_gravityX, param_gravityY, param_gravityZ);
     glUniform1f(glGetUniformLocation(sphGridShader, "surfaceTension"), param_surfaceTension);
-    glUniform1f(glGetUniformLocation(sphGridShader, "box"), box);
+    glUniform3f(glGetUniformLocation(sphGridShader, "gridMin"), gridMinV.x, gridMinV.y, gridMinV.z);
+    glUniform1f(glGetUniformLocation(sphGridShader, "foamGen"), param_foamGen);
+    glUniform1f(glGetUniformLocation(sphGridShader, "foamVelRef"), 6.0f);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
@@ -474,6 +531,7 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxHalf"), param_boxHalf.x, param_boxHalf.y, param_boxHalf.z);
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uRestitution"), param_wallRestitution);
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uFriction"), param_wallFriction);
+    glUniform1i(glGetUniformLocation(obbConstraintShader, "uShapeType"), param_shapeType);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

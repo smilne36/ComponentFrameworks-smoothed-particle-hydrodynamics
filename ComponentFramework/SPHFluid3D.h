@@ -49,14 +49,16 @@ public:
     void   ApplyWaveImpulse(float amplitude, float wavelength, float phase, const Vec3& dir,
         float yMin = -FLT_MAX, float yMax = FLT_MAX);
     void   ResetSimulation();
-    void   RecreateGridForBox();
+    void   ComputeGridExtents();
 
     Vec3   ComputeAABBFittedHalf() const;
 
-    float box = 7.0f;
+    float box = 7.0f;              // legacy scalar extent (ghost shell + spawn helpers)
     float cellSize = 0.0f;
     int   gridSizeX = 1, gridSizeY = 1, gridSizeZ = 1;
     int   numCells = 1;
+    Vec3  gridMinV = Vec3(-7, -7, -7);  // world-space grid origin (rotation-aware AABB)
+    int   allocatedCells = 0;           // cellHeadSSBO capacity, for auto-rebuild
 
     std::vector<SPHParticle> particles;
     size_t numParticles;
@@ -96,14 +98,26 @@ public:
     bool  param_useJitter = true;
     float param_jitterAmp = 0.20f;
 
+    float param_foamGen = 1.0f;   // foam generation scale (0 disables)
+
     bool  param_enableGhosts = false;
     bool  param_enableSort = false;
 
     Vec3  param_boxCenter = Vec3(0, 0, 0);
-    Vec3  param_boxHalf = Vec3(7, 7, 7);
+    Vec3  param_boxHalf = Vec3(7, 7, 7);   // box: halves | sphere: x=radius | cylinder: x=radius, y=half height
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
+    int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
+
+    // Container half extents seen by the grid/spawn code, per shape
+    Vec3  EffectiveHalf() const {
+        switch (param_shapeType) {
+        case 1:  return Vec3(param_boxHalf.x, param_boxHalf.x, param_boxHalf.x);
+        case 2:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        default: return param_boxHalf;
+        }
+    }
 
     // --- River / Stream mode ---
     bool  riverMode = false;
@@ -184,8 +198,4 @@ private:
     GhostGrid2D ghostZNeg, ghostZPos;
 
     void BuildGhostGrids();
-
-    // Cached OBB rotation
-    float cachedRot3x3[9] = { 1,0,0, 0,1,0, 0,0,1 };
-    void  UpdateCachedBoxIfNeeded();
 };

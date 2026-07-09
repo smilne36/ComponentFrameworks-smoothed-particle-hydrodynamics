@@ -74,7 +74,7 @@ bool Scene0p::OnCreate() {
     glBindVertexArray(boxVAO);
     glGenBuffers(1, &boxVBO);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 24, nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 512, nullptr, GL_DYNAMIC_DRAW); // enough for sphere/cylinder wireframes
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
     glBindVertexArray(0);
@@ -96,6 +96,9 @@ bool Scene0p::OnCreate() {
     ssfrCompositeShader = new Shader("shaders/screenQuad.vert", "shaders/fluidComposite.frag");
     if (!ssfrCompositeShader->OnCreate()) { std::cerr << "fluidComposite shader failed\n"; return false; }
 
+    skyShader = new Shader("shaders/screenQuad.vert", "shaders/skyGradient.frag");
+    if (!skyShader->OnCreate()) { std::cerr << "skyGradient shader failed\n"; return false; }
+
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
@@ -112,7 +115,7 @@ bool Scene0p::OnCreate() {
             InitSSFRBuffers(vp[2], vp[3]);
     }
 
-    UpdateBoxWireframe();
+    UpdateContainerWireframe();
     lastBoxCenter = fluidGPU->param_boxCenter;
     lastBoxHalf = fluidGPU->param_boxHalf;
     lastBoxEuler = fluidGPU->param_boxEulerDeg;
@@ -139,6 +142,7 @@ void Scene0p::OnDestroy() {
     if (ssfrSmoothShader)    { ssfrSmoothShader->OnDestroy();    delete ssfrSmoothShader;    ssfrSmoothShader    = nullptr; }
     if (ssfrThickShader)     { ssfrThickShader->OnDestroy();     delete ssfrThickShader;     ssfrThickShader     = nullptr; }
     if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
+    if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
     DestroySSFRBuffers();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
@@ -233,7 +237,7 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
     }
 }
 
-void Scene0p::UpdateBoxWireframe() {
+void Scene0p::UpdateContainerWireframe() {
     if (!fluidGPU || !boxVBO) return;
 
     const Vec3 C = fluidGPU->param_boxCenter;
@@ -250,20 +254,62 @@ void Scene0p::UpdateBoxWireframe() {
             Rm[2] * x + Rm[5] * y + Rm[8] * z + C.z);
         };
 
-    Vec3 c[8]; int i = 0;
-    for (int sx = -1; sx <= 1; sx += 2)
-        for (int sy = -1; sy <= 1; sy += 2)
-            for (int sz = -1; sz <= 1; sz += 2)
-                c[i++] = xform(sx * H.x, sy * H.y, sz * H.z);
+    std::vector<float> lines;
+    lines.reserve(512 * 3);
+    auto push = [&](const Vec3& p) { lines.push_back(p.x); lines.push_back(p.y); lines.push_back(p.z); };
+    auto seg  = [&](const Vec3& a, const Vec3& b) { push(a); push(b); };
 
-    int E[24] = { 0,1, 0,2, 0,4, 3,1, 3,2, 3,7, 5,1, 5,4, 5,7, 6,2, 6,4, 6,7 };
-    float lines[24 * 3];
-    for (int e = 0; e < 24; ++e) {
-        Vec3 p = c[E[e]];
-        lines[e * 3 + 0] = p.x; lines[e * 3 + 1] = p.y; lines[e * 3 + 2] = p.z;
+    const int   shape   = fluidGPU->param_shapeType;
+    const float TWO_PI  = 6.28318530718f;
+    const int   SEGS    = 48;
+
+    if (shape == 1) {
+        // Sphere: three orthogonal great circles
+        const float r = H.x;
+        for (int axis = 0; axis < 3; ++axis) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                float ca = std::cos(a) * r, sa = std::sin(a) * r;
+                Vec3 p = (axis == 0) ? xform(0.0f, ca, sa)
+                       : (axis == 1) ? xform(ca, 0.0f, sa)
+                       :               xform(ca, sa, 0.0f);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+    } else if (shape == 2) {
+        // Cylinder: two cap circles + four vertical edges
+        const float r = H.x, hh = H.y;
+        for (int cap = 0; cap < 2; ++cap) {
+            float y = cap ? hh : -hh;
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                Vec3 p = xform(std::cos(a) * r, y, std::sin(a) * r);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+        for (int s = 0; s < 4; ++s) {
+            float a = (float(s) / 4.0f) * TWO_PI;
+            float cx = std::cos(a) * r, cz = std::sin(a) * r;
+            seg(xform(cx, -hh, cz), xform(cx, hh, cz));
+        }
+    } else {
+        // Box: 12 edges
+        Vec3 c[8]; int i = 0;
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    c[i++] = xform(sx * H.x, sy * H.y, sz * H.z);
+        int E[24] = { 0,1, 0,2, 0,4, 3,1, 3,2, 3,7, 5,1, 5,4, 5,7, 6,2, 6,4, 6,7 };
+        for (int e = 0; e < 24; ++e) push(c[E[e]]);
     }
+
+    containerWireVerts = int(lines.size() / 3);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(lines), lines);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, lines.size() * sizeof(float), lines.data());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
@@ -377,17 +423,28 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::PopID();
     }
 
-    if (ImGui::CollapsingHeader("Container Box")) {
+    if (ImGui::CollapsingHeader("Container")) {
         ImGui::PushID("ContainerBox");
+        if (fluidGPU->riverMode) {
+            fluidGPU->param_shapeType = 0;   // river terrain assumes the box
+            ImGui::TextDisabled("River mode uses the Box container.");
+        } else {
+            ImGui::Combo("Shape", &fluidGPU->param_shapeType, "Box\0Sphere\0Cylinder\0");
+        }
         ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
-        ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-        ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
+        if (fluidGPU->param_shapeType == 1) {
+            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        } else if (fluidGPU->param_shapeType == 2) {
+            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+            ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+        } else {
+            ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        }
+        if (fluidGPU->param_shapeType != 1)   // rotation is meaningless for a sphere
+            ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
         ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
         ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-        if (ImGui::Button("Rebuild Grid for Box")) {
-            fluidGPU->RecreateGridForBox();
-            UpdateBoxWireframe();
-        }
+        ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
         ImGui::PopID();
     }
 
@@ -491,16 +548,22 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Separator(); ImGui::Text("Background");
         ImGui::ColorEdit3("Background", bgColor);
         if (useWaterRendering) {
-            ImGui::ColorEdit3("Sky", skyColor);
-            ImGui::ColorEdit3("Env Reflect", envReflectColor);
+            ImGui::ColorEdit3("Sky Horizon", skyColor);
+            ImGui::ColorEdit3("Sky Zenith", skyZenith);
+            ImGui::ColorEdit3("Reflect Tint", envReflectColor);
         }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
+            if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
+                InitSSFRBuffers(windowW, windowH);
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
-            ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
-            ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
+            ImGui::SliderFloat("Smoothing Scale",   &worldFilterScale,   0.0f, 10.0f);
+            ImGui::SliderFloat("Surface Merge",     &surfaceMerge,       0.5f, 8.0f);
+            ImGui::SliderFloat("Render Radius",     &renderRadiusScale,  0.5f, 2.0f);
             ImGui::Separator();
             ImGui::ColorEdit3("Water Extinction",   waterExtinction);
             ImGui::SliderFloat("Thickness Scale",   &thicknessScale,      0.01f, 20.0f);
+            ImGui::SliderFloat("Blob Strength",     &thicknessStrength,   0.005f, 0.3f, "%.3f");
+            ImGui::SliderFloat("Blob Falloff",      &thicknessFalloff,    1.0f, 8.0f);
             ImGui::ColorEdit3("Deep Water Color",   deepWaterColor);
             ImGui::Separator();
             ImGui::SliderFloat3("Sun Dir (World)",  sunDirWorld,         -1.0f,  1.0f);
@@ -509,6 +572,10 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
             ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
             ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+            ImGui::Separator();
+            ImGui::SliderFloat("Foam Generation",   &fluidGPU->param_foamGen, 0.0f, 2.0f);
+            ImGui::SliderFloat("Foam Amount",       &foamAmount,          0.0f,  4.0f);
+            ImGui::SliderFloat("Exposure",          &exposure,            0.25f, 4.0f);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -542,11 +609,13 @@ void Scene0p::Update(const float deltaTime) {
         lastBoxHalf.z != fluidGPU->param_boxHalf.z ||
         lastBoxEuler.x != fluidGPU->param_boxEulerDeg.x ||
         lastBoxEuler.y != fluidGPU->param_boxEulerDeg.y ||
-        lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z) {
-        UpdateBoxWireframe();
+        lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z ||
+        lastShapeType != fluidGPU->param_shapeType) {
+        UpdateContainerWireframe();
         lastBoxCenter = fluidGPU->param_boxCenter;
         lastBoxHalf = fluidGPU->param_boxHalf;
         lastBoxEuler = fluidGPU->param_boxEulerDeg;
+        lastShapeType = fluidGPU->param_shapeType;
     }
 
     if (pendingReset) {
@@ -598,8 +667,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
     if (useWaterRendering && ssfrW > 0 && ssfrDepthShader && fluidGPU) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        const float pixelScale = (windowH > 0) ? static_cast<float>(outH) / static_cast<float>(windowH) : 1.0f;
-        RenderSSFR(targetFBO, proj, pixelScale);
+        RenderSSFR(targetFBO, proj);
         return;
     }
 
@@ -617,7 +685,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         if (GLint col = lineShader->GetUniformID("uColor"); col != -1) glUniform3f(col, 0.85f, 0.95f, 1.0f);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
-        glDrawArrays(GL_LINES, 0, 24);
+        glDrawArrays(GL_LINES, 0, containerWireVerts);
         glBindVertexArray(0);
         glUseProgram(0);
     }
@@ -641,7 +709,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
     SetColorUniforms(shader);
 
-    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h);
+    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
     glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
 
@@ -699,7 +767,7 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
     SetColorUniforms(impostorShader);
 
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
-        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
+        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale);
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(outH));
 
@@ -734,11 +802,16 @@ static GLuint MakeR32FFBO(GLuint& texOut, int w, int h) {
 void Scene0p::InitSSFRBuffers(int w, int h) {
     DestroySSFRBuffers();
     ssfrW = w; ssfrH = h;
+    // Fluid passes (depth/smooth/thickness/foam) can run at half resolution;
+    // the background and composite always stay full-res.
+    const int fw = ssfrHalfRes ? std::max(1, w / 2) : w;
+    const int fh = ssfrHalfRes ? std::max(1, h / 2) : h;
+    ssfrFluidW = fw; ssfrFluidH = fh;
 
     // --- Pass 1: depth FBO (R32F color + depth renderbuffer) ---
     glGenTextures(1, &ssfrDepthTex);
     glBindTexture(GL_TEXTURE_2D, ssfrDepthTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, fw, fh, 0, GL_RED, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -746,7 +819,7 @@ void Scene0p::InitSSFRBuffers(int w, int h) {
 
     glGenRenderbuffers(1, &ssfrDepthRBO);
     glBindRenderbuffer(GL_RENDERBUFFER, ssfrDepthRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, fw, fh);
 
     glGenFramebuffers(1, &ssfrDepthFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
@@ -755,10 +828,23 @@ void Scene0p::InitSSFRBuffers(int w, int h) {
 
     // --- Pass 2: ping-pong smooth FBOs (R32F) ---
     for (int i = 0; i < 2; ++i)
-        ssfrSmoothFBO[i] = MakeR32FFBO(ssfrSmoothTex[i], w, h);
+        ssfrSmoothFBO[i] = MakeR32FFBO(ssfrSmoothTex[i], fw, fh);
 
     // --- Pass 3: thickness FBO (R32F, additive) ---
-    ssfrThickFBO = MakeR32FFBO(ssfrThickTex, w, h);
+    ssfrThickFBO = MakeR32FFBO(ssfrThickTex, fw, fh);
+    // Second attachment: foam accumulation (same additive blend, MRT)
+    glGenTextures(1, &ssfrFoamTex);
+    glBindTexture(GL_TEXTURE_2D, ssfrFoamTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, fw, fh, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrThickFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, ssfrFoamTex, 0);
+    const GLenum thickBufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, thickBufs);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // --- Pass 4: background FBO (RGBA8 + depth) ---
     glGenTextures(1, &ssfrBgTex);
@@ -793,16 +879,17 @@ void Scene0p::DestroySSFRBuffers() {
     }
     if (ssfrThickFBO)    { glDeleteFramebuffers(1, &ssfrThickFBO);    ssfrThickFBO = 0; }
     if (ssfrThickTex)    { glDeleteTextures(1, &ssfrThickTex);        ssfrThickTex = 0; }
+    if (ssfrFoamTex)     { glDeleteTextures(1, &ssfrFoamTex);         ssfrFoamTex = 0; }
     if (ssfrBgFBO)       { glDeleteFramebuffers(1, &ssfrBgFBO);       ssfrBgFBO = 0; }
     if (ssfrBgTex)       { glDeleteTextures(1, &ssfrBgTex);           ssfrBgTex = 0; }
     if (ssfrBgRBO)       { glDeleteRenderbuffers(1, &ssfrBgRBO);      ssfrBgRBO = 0; }
     ssfrW = ssfrH = 0;
 }
 
-void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const {
+void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
-    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h);
+    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
     const auto  nFluid = static_cast<GLsizei>(fluidGPU->GetNumFluids());
 
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -811,7 +898,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     // Pass 1 — Sphere depth: render spherical impostors, write view-space Z
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
-    glViewport(0, 0, ssfrW, ssfrH);
+    glViewport(0, 0, ssfrFluidW, ssfrFluidH);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
@@ -824,7 +911,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     if (GLint r = ssfrDepthShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
     if (GLint r = ssfrDepthShader->GetUniformID("viewportH"); r != -1)
-        glUniform1f(r, static_cast<float>(ssfrH));
+        glUniform1f(r, static_cast<float>(ssfrFluidH));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -841,9 +928,14 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     int    pingPong = 0;
 
     glUseProgram(ssfrSmoothShader->GetProgram());
-    glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
-    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius * pixelScale);
-    glUniform1f(ssfrSmoothShader->GetUniformID("depthFalloff"),  smoothDepthFalloff);
+    glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrFluidW), static_cast<float>(ssfrFluidH));
+    glUniform1f(ssfrSmoothShader->GetUniformID("particleRadius"),   radius);
+    glUniform1f(ssfrSmoothShader->GetUniformID("worldFilterScale"), worldFilterScale);
+    glUniform1f(ssfrSmoothShader->GetUniformID("surfaceMerge"),     surfaceMerge);
+    // World-size-to-pixels projection factor; using the target height keeps
+    // the smoothing consistent between the window and high-res captures.
+    const float* pm = proj;
+    glUniform1f(ssfrSmoothShader->GetUniformID("projScaleY"), pm[5] * static_cast<float>(ssfrFluidH) * 0.5f);
 
     glBindVertexArray(ssfrQuadVAO);
 
@@ -892,7 +984,11 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     if (GLint r = ssfrThickShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
     if (GLint r = ssfrThickShader->GetUniformID("viewportH"); r != -1)
-        glUniform1f(r, static_cast<float>(ssfrH));
+        glUniform1f(r, static_cast<float>(ssfrFluidH));
+    if (GLint r = ssfrThickShader->GetUniformID("thicknessStrength"); r != -1)
+        glUniform1f(r, thicknessStrength);
+    if (GLint r = ssfrThickShader->GetUniformID("thicknessFalloff"); r != -1)
+        glUniform1f(r, thicknessFalloff);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -902,11 +998,30 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     // Pass 4 — Background scene (terrain + box wireframe on sky)
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
+    glViewport(0, 0, ssfrW, ssfrH);
     glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_BLEND);
+
+    // Procedural sky gradient behind everything (no depth writes)
+    if (skyShader) {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glUseProgram(skyShader->GetProgram());
+        glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
+        glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+        glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+        glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+        glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
+        glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
+        glBindVertexArray(ssfrQuadVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+    }
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glDisable(GL_BLEND);
 
     // Terrain mesh (when river mode is active and terrain has been built)
     if (terrainShader && terrainVAO && terrainIndexCount > 0 &&
@@ -934,7 +1049,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
             glUniform3f(c, 0.6f, 0.75f, 1.0f);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
-        glDrawArrays(GL_LINES, 0, 24);
+        glDrawArrays(GL_LINES, 0, containerWireVerts);
         glBindVertexArray(0);
     }
 
@@ -963,10 +1078,14 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
     glUniform1i(ssfrCompositeShader->GetUniformID("backgroundTex"), 2);
 
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, ssfrFoamTex);
+    glUniform1i(ssfrCompositeShader->GetUniformID("foamTex"), 3);
+
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
-                static_cast<float>(ssfrW), static_cast<float>(ssfrH));
+                static_cast<float>(ssfrFluidW), static_cast<float>(ssfrFluidH));
 
     // Lighting & water appearance
     glUniform3fv(ssfrCompositeShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
@@ -979,6 +1098,10 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
     glUniform1f(ssfrCompositeShader->GetUniformID("fresnelBias"),      fresnelBias);
     glUniform3fv(ssfrCompositeShader->GetUniformID("deepWaterColor"),  1, deepWaterColor);
     glUniform3fv(ssfrCompositeShader->GetUniformID("envReflectColor"), 1, envReflectColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+    glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmount);
+    glUniform1f(ssfrCompositeShader->GetUniformID("exposure"),   exposure);
     SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);

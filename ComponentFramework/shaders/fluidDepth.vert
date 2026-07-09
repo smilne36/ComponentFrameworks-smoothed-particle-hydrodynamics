@@ -14,10 +14,12 @@ layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 
 out vec3 vViewPos;
 out flat int vIsGhost;
+out float vFoam;   // per-particle foam factor (padA); used by the thickness pass
 
 void main() {
     Particle p = particles[gl_VertexID];
     vIsGhost = p.flags.x;
+    vFoam = p.padA;
 
     vec4 vp = viewMatrix * vec4(p.pos.xyz, 1.0);
     vViewPos = vp.xyz;

@@ -175,7 +175,6 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="OBBConstraints.comp" />
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />
@@ -183,6 +182,7 @@
     <None Include="shaders\lineFrag.glsl" />
     <None Include="shaders\lineVert.glsl" />
     <None Include="shaders\particleImpostor.frag" />
+    <None Include="shaders\skyGradient.frag" />
     <None Include="shaders\particleImpostor.vert" />
     <None Include="shaders\RadixSort.comp" />
     <None Include="shaders\SPHFluid.comp" />

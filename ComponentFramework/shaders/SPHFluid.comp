@@ -24,7 +24,7 @@ layout(std430, binding = 3) buffer ParticleCellBuf{ int particleCell[]; };
 // ----------- Uniforms -----------
 uniform ivec3 gridSize;
 uniform float cellSize;
-uniform float box;
+uniform vec3 gridMin;   // world-space grid origin (must match BuildGrid.comp)
 uniform float h;
 uniform float mass;
 uniform float restDensity;
@@ -34,6 +34,8 @@ uniform float timeStep;
 uniform vec3 gravity;
 uniform float surfaceTension; // Tunable from CPU
 uniform int numParticles; // total particle count
+uniform float foamGen;    // foam generation scale (0 disables)
+uniform float foamVelRef; // speed at which foam generation saturates
 
 // ----------- SPH Kernels -----------
 float poly6(float r2, float h) {
@@ -80,7 +82,7 @@ void main() {
     }
 
     vec3 pos = pi.pos.xyz;
-    ivec3 cellCoord = ivec3(floor((pos + vec3(box)) / cellSize));
+    ivec3 cellCoord = ivec3(floor((pos - gridMin) / cellSize));
     cellCoord = clamp(cellCoord, ivec3(0), gridSize - 1);
 
     // ---------- Density ----------
@@ -165,25 +167,9 @@ pi.vel.xyz += acc * timeStep;
 pi.vel.xyz *= 0.995; // Gentle damping (optional)
 pi.pos.xyz += pi.vel.xyz * timeStep;
 
-   
-
-    // ---------- Boundaries ----------
-    for (int c = 0; c < 3; ++c) {
-        if (pi.pos[c] < -box) { pi.pos[c] = -box; if (pi.vel[c] < 0.0) pi.vel[c] *= -0.15; }
-        if (pi.pos[c] >  box) { pi.pos[c] =  box; if (pi.vel[c] > 0.0) pi.vel[c] *= -0.15; }
-    }
-    // Floor friction
-    if (pi.pos.y <= -box + 0.01 && abs(pi.vel.y) < 0.1) {
-        pi.vel.x *= 0.93;
-        pi.vel.z *= 0.93;
-    }
-
-    if (pi.pos.y < -box) {
-        pi.pos.y = -box;
-        if (pi.vel.y < 0.0) pi.vel.y *= -0.02;
-        pi.vel.x *= 0.95;
-        pi.vel.z *= 0.95;
-    }
+    // Containment is handled by the shape-constraint pass that runs right
+    // after this one; it tracks the live container transform, so no wall
+    // clamp is applied here.
 
     // ---------- XSPH velocity correction ----------
     vec3 xsph = vec3(0.0);
@@ -210,6 +196,16 @@ pi.pos.xyz += pi.vel.xyz * timeStep;
     }
     if (norm > 0.0) xsph /= norm;
     pi.vel.xyz += xsphC * xsph;
+
+    // ---------- Foam factor (padA, consumed by the renderer) ----------
+    // Aerated where density is depleted (free surface / splashes) AND moving
+    // fast; decays over time so foam lingers briefly after the splash.
+    {
+        float speed = length(pi.vel.xyz);
+        float aer = clamp((restDensity - pi.density) / restDensity, 0.0, 1.0)
+                  * clamp(speed / max(foamVelRef, 1e-3), 0.0, 1.0);
+        pi.padA = max(aer * foamGen, pi.padA * 0.97);
+    }
 
     // ---------- Write back ----------
     particles[i] = pi;

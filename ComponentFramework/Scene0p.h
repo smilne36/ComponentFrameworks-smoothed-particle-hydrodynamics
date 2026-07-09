@@ -36,6 +36,7 @@ private:
 
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
+    int     containerWireVerts = 24;   // vertex count currently in boxVBO
 
     bool    pendingReset = false;
     float   ballAnimTime = 0.0f;
@@ -48,6 +49,7 @@ private:
     Vec3    lastBoxCenter{};
     Vec3    lastBoxHalf{};
     Vec3    lastBoxEuler{};
+    int     lastShapeType = -1;
 
     bool    useImpostors = false;
     Shader* impostorShader = nullptr;
@@ -71,8 +73,11 @@ private:
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
     float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // clear color, impostor/mesh paths
-    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // SSFR background clear
-    float   envReflectColor[3] = {0.05f, 0.12f, 0.28f};     // SSFR environment reflection tint
+    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color
+    float   skyZenith[3] = {0.15f, 0.28f, 0.50f};           // sky zenith color
+    float   envReflectColor[3] = {0.90f, 0.95f, 1.00f};     // tint on the reflected sky
+    float   foamAmount   = 1.5f;
+    float   exposure     = 1.0f;
 
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
@@ -96,7 +101,7 @@ private:
     bool    continuousWave = false;
     float   wavePhase      = 0.0f;
 
-    void    UpdateBoxWireframe();
+    void    UpdateContainerWireframe();
     void    SetupImpostorVAO();
     void    DrawFluidImpostors(const Matrix4& proj, int outH) const;
     int     CurrentViewportHeight() const;
@@ -106,6 +111,7 @@ private:
     Shader* ssfrSmoothShader    = nullptr;
     Shader* ssfrThickShader     = nullptr;
     Shader* ssfrCompositeShader = nullptr;
+    Shader* skyShader           = nullptr;
     GLuint  ssfrQuadVAO         = 0;
 
     GLuint  ssfrDepthFBO        = 0;
@@ -117,18 +123,25 @@ private:
 
     GLuint  ssfrThickFBO        = 0;
     GLuint  ssfrThickTex        = 0;
+    GLuint  ssfrFoamTex         = 0;   // second attachment of ssfrThickFBO
 
     GLuint  ssfrBgFBO           = 0;
     GLuint  ssfrBgTex           = 0;
     GLuint  ssfrBgRBO           = 0;
 
-    int     ssfrW               = 0;
+    int     ssfrW               = 0;   // full-res target size (background + composite)
     int     ssfrH               = 0;
+    int     ssfrFluidW          = 0;   // fluid pass size (depth/smooth/thickness/foam)
+    int     ssfrFluidH          = 0;
+    bool    ssfrHalfRes         = false;   // render fluid passes at half resolution (~4x faster)
 
     bool    useWaterRendering   = true;
     int     smoothIterations    = 5;
-    float   smoothFilterRadius  = 10.0f;
-    float   smoothDepthFalloff  = 0.1f;
+    float   worldFilterScale    = 4.0f;   // smoothing kernel width, in particle radii
+    float   surfaceMerge        = 2.0f;   // narrow-range band, in particle radii
+    float   thicknessStrength   = 0.05f;
+    float   thicknessFalloff    = 4.0f;
+    float   renderRadiusScale   = 1.0f;   // visual particle size multiplier (physics untouched)
     float   waterExtinction[3]  = {0.45f, 0.15f, 0.05f};
     float   thicknessScale      = 1.0f;
     float   sunDirWorld[3]      = {0.4f, 1.0f, 0.5f};
@@ -140,7 +153,7 @@ private:
     float   fresnelBias         = 0.02f;
 
     void    InitSSFRBuffers(int w, int h);
-    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const;
+    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj) const;
     void    DestroySSFRBuffers();
 
     // --- Terrain mesh ---
