@@ -384,10 +384,7 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
         ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
         ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-        if (ImGui::Button("Rebuild Grid for Box")) {
-            fluidGPU->RecreateGridForBox();
-            UpdateBoxWireframe();
-        }
+        ImGui::TextDisabled("The sim grid follows container edits automatically.");
         ImGui::PopID();
     }
 

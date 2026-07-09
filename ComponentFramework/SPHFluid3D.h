@@ -49,14 +49,16 @@ public:
     void   ApplyWaveImpulse(float amplitude, float wavelength, float phase, const Vec3& dir,
         float yMin = -FLT_MAX, float yMax = FLT_MAX);
     void   ResetSimulation();
-    void   RecreateGridForBox();
+    void   ComputeGridExtents();
 
     Vec3   ComputeAABBFittedHalf() const;
 
-    float box = 7.0f;
+    float box = 7.0f;              // legacy scalar extent (ghost shell + spawn helpers)
     float cellSize = 0.0f;
     int   gridSizeX = 1, gridSizeY = 1, gridSizeZ = 1;
     int   numCells = 1;
+    Vec3  gridMinV = Vec3(-7, -7, -7);  // world-space grid origin (rotation-aware AABB)
+    int   allocatedCells = 0;           // cellHeadSSBO capacity, for auto-rebuild
 
     std::vector<SPHParticle> particles;
     size_t numParticles;
@@ -184,8 +186,4 @@ private:
     GhostGrid2D ghostZNeg, ghostZPos;
 
     void BuildGhostGrids();
-
-    // Cached OBB rotation
-    float cachedRot3x3[9] = { 1,0,0, 0,1,0, 0,0,1 };
-    void  UpdateCachedBoxIfNeeded();
 };
