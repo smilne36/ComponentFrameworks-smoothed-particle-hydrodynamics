@@ -36,6 +36,7 @@ uniform float surfaceTension; // Tunable from CPU
 uniform int numParticles; // total particle count
 uniform float foamGen;    // foam generation scale (0 disables)
 uniform float foamVelRef; // speed at which foam generation saturates
+uniform float maxSpeed;   // CFL-style velocity cap (stability)
 
 // ----------- SPH Kernels -----------
 float poly6(float r2, float h) {
@@ -105,7 +106,9 @@ void main() {
     pi.density = density;
 
     // ---------- Pressure ----------
-    pi.pressure = gasConstant * (pi.density - restDensity);
+    // Clamped non-negative: negative (attractive) pressure at the free surface
+    // is the main source of particle jitter in weakly-compressible SPH.
+    pi.pressure = max(gasConstant * (pi.density - restDensity), 0.0);
 
     // ---------- Forces ----------
     vec3 fPressure = vec3(0.0);
@@ -197,14 +200,20 @@ pi.pos.xyz += pi.vel.xyz * timeStep;
     if (norm > 0.0) xsph /= norm;
     pi.vel.xyz += xsphC * xsph;
 
+    // ---------- Velocity cap (CFL-style, kills integration spikes) ----------
+    {
+        float sp = length(pi.vel.xyz);
+        if (sp > maxSpeed) pi.vel.xyz *= maxSpeed / sp;
+    }
+
     // ---------- Foam factor (padA, consumed by the renderer) ----------
     // Aerated where density is depleted (free surface / splashes) AND moving
-    // fast; decays over time so foam lingers briefly after the splash.
+    // fast; decays slowly so foam lingers like real sea foam.
     {
         float speed = length(pi.vel.xyz);
         float aer = clamp((restDensity - pi.density) / restDensity, 0.0, 1.0)
                   * clamp(speed / max(foamVelRef, 1e-3), 0.0, 1.0);
-        pi.padA = max(aer * foamGen, pi.padA * 0.97);
+        pi.padA = max(aer * foamGen, pi.padA * 0.995);
     }
 
     // ---------- Write back ----------

@@ -515,7 +515,10 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform1f(glGetUniformLocation(sphGridShader, "surfaceTension"), param_surfaceTension);
     glUniform3f(glGetUniformLocation(sphGridShader, "gridMin"), gridMinV.x, gridMinV.y, gridMinV.z);
     glUniform1f(glGetUniformLocation(sphGridShader, "foamGen"), param_foamGen);
-    glUniform1f(glGetUniformLocation(sphGridShader, "foamVelRef"), 6.0f);
+    glUniform1f(glGetUniformLocation(sphGridShader, "foamVelRef"), param_foamVelRef);
+    // CFL-style cap: a particle may not cross more than ~0.4 smoothing lengths
+    // per substep. Kills the integration spikes that read as jitter.
+    glUniform1f(glGetUniformLocation(sphGridShader, "maxSpeed"), 0.4f * param_h / std::max(timeStep, 1e-6f));
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);
