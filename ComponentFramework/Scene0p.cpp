@@ -553,6 +553,8 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::ColorEdit3("Reflect Tint", envReflectColor);
         }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
+            if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
+                InitSSFRBuffers(windowW, windowH);
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
             ImGui::SliderFloat("Smoothing Scale",   &worldFilterScale,   0.0f, 10.0f);
             ImGui::SliderFloat("Surface Merge",     &surfaceMerge,       0.5f, 8.0f);
@@ -800,11 +802,16 @@ static GLuint MakeR32FFBO(GLuint& texOut, int w, int h) {
 void Scene0p::InitSSFRBuffers(int w, int h) {
     DestroySSFRBuffers();
     ssfrW = w; ssfrH = h;
+    // Fluid passes (depth/smooth/thickness/foam) can run at half resolution;
+    // the background and composite always stay full-res.
+    const int fw = ssfrHalfRes ? std::max(1, w / 2) : w;
+    const int fh = ssfrHalfRes ? std::max(1, h / 2) : h;
+    ssfrFluidW = fw; ssfrFluidH = fh;
 
     // --- Pass 1: depth FBO (R32F color + depth renderbuffer) ---
     glGenTextures(1, &ssfrDepthTex);
     glBindTexture(GL_TEXTURE_2D, ssfrDepthTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, fw, fh, 0, GL_RED, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -812,7 +819,7 @@ void Scene0p::InitSSFRBuffers(int w, int h) {
 
     glGenRenderbuffers(1, &ssfrDepthRBO);
     glBindRenderbuffer(GL_RENDERBUFFER, ssfrDepthRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, fw, fh);
 
     glGenFramebuffers(1, &ssfrDepthFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
@@ -821,14 +828,14 @@ void Scene0p::InitSSFRBuffers(int w, int h) {
 
     // --- Pass 2: ping-pong smooth FBOs (R32F) ---
     for (int i = 0; i < 2; ++i)
-        ssfrSmoothFBO[i] = MakeR32FFBO(ssfrSmoothTex[i], w, h);
+        ssfrSmoothFBO[i] = MakeR32FFBO(ssfrSmoothTex[i], fw, fh);
 
     // --- Pass 3: thickness FBO (R32F, additive) ---
-    ssfrThickFBO = MakeR32FFBO(ssfrThickTex, w, h);
+    ssfrThickFBO = MakeR32FFBO(ssfrThickTex, fw, fh);
     // Second attachment: foam accumulation (same additive blend, MRT)
     glGenTextures(1, &ssfrFoamTex);
     glBindTexture(GL_TEXTURE_2D, ssfrFoamTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, fw, fh, 0, GL_RED, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -891,7 +898,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     // Pass 1 — Sphere depth: render spherical impostors, write view-space Z
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrDepthFBO);
-    glViewport(0, 0, ssfrW, ssfrH);
+    glViewport(0, 0, ssfrFluidW, ssfrFluidH);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
@@ -904,7 +911,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (GLint r = ssfrDepthShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
     if (GLint r = ssfrDepthShader->GetUniformID("viewportH"); r != -1)
-        glUniform1f(r, static_cast<float>(ssfrH));
+        glUniform1f(r, static_cast<float>(ssfrFluidH));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
@@ -921,14 +928,14 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     int    pingPong = 0;
 
     glUseProgram(ssfrSmoothShader->GetProgram());
-    glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
+    glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrFluidW), static_cast<float>(ssfrFluidH));
     glUniform1f(ssfrSmoothShader->GetUniformID("particleRadius"),   radius);
     glUniform1f(ssfrSmoothShader->GetUniformID("worldFilterScale"), worldFilterScale);
     glUniform1f(ssfrSmoothShader->GetUniformID("surfaceMerge"),     surfaceMerge);
     // World-size-to-pixels projection factor; using the target height keeps
     // the smoothing consistent between the window and high-res captures.
     const float* pm = proj;
-    glUniform1f(ssfrSmoothShader->GetUniformID("projScaleY"), pm[5] * static_cast<float>(ssfrH) * 0.5f);
+    glUniform1f(ssfrSmoothShader->GetUniformID("projScaleY"), pm[5] * static_cast<float>(ssfrFluidH) * 0.5f);
 
     glBindVertexArray(ssfrQuadVAO);
 
@@ -977,7 +984,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (GLint r = ssfrThickShader->GetUniformID("particleRadius"); r != -1)
         glUniform1f(r, radius);
     if (GLint r = ssfrThickShader->GetUniformID("viewportH"); r != -1)
-        glUniform1f(r, static_cast<float>(ssfrH));
+        glUniform1f(r, static_cast<float>(ssfrFluidH));
     if (GLint r = ssfrThickShader->GetUniformID("thicknessStrength"); r != -1)
         glUniform1f(r, thicknessStrength);
     if (GLint r = ssfrThickShader->GetUniformID("thicknessFalloff"); r != -1)
@@ -991,6 +998,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     // Pass 4 — Background scene (terrain + box wireframe on sky)
     // -----------------------------------------------------------------------
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
+    glViewport(0, 0, ssfrW, ssfrH);
     glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDisable(GL_BLEND);
@@ -1077,7 +1085,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
-                static_cast<float>(ssfrW), static_cast<float>(ssfrH));
+                static_cast<float>(ssfrFluidW), static_cast<float>(ssfrFluidH));
 
     // Lighting & water appearance
     glUniform3fv(ssfrCompositeShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);

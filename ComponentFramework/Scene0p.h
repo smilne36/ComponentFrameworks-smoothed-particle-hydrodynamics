@@ -129,8 +129,11 @@ private:
     GLuint  ssfrBgTex           = 0;
     GLuint  ssfrBgRBO           = 0;
 
-    int     ssfrW               = 0;
+    int     ssfrW               = 0;   // full-res target size (background + composite)
     int     ssfrH               = 0;
+    int     ssfrFluidW          = 0;   // fluid pass size (depth/smooth/thickness/foam)
+    int     ssfrFluidH          = 0;
+    bool    ssfrHalfRes         = false;   // render fluid passes at half resolution (~4x faster)
 
     bool    useWaterRendering   = true;
     int     smoothIterations    = 5;
