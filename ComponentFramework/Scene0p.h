@@ -36,6 +36,7 @@ private:
 
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
+    int     containerWireVerts = 24;   // vertex count currently in boxVBO
 
     bool    pendingReset = false;
     float   ballAnimTime = 0.0f;
@@ -48,6 +49,7 @@ private:
     Vec3    lastBoxCenter{};
     Vec3    lastBoxHalf{};
     Vec3    lastBoxEuler{};
+    int     lastShapeType = -1;
 
     bool    useImpostors = false;
     Shader* impostorShader = nullptr;
@@ -96,7 +98,7 @@ private:
     bool    continuousWave = false;
     float   wavePhase      = 0.0f;
 
-    void    UpdateBoxWireframe();
+    void    UpdateContainerWireframe();
     void    SetupImpostorVAO();
     void    DrawFluidImpostors(const Matrix4& proj, int outH) const;
     int     CurrentViewportHeight() const;

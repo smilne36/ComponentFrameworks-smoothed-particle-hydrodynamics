@@ -151,20 +151,37 @@ void SPHFluidGPU::InitializeParticles() {
         }
     } else {
         // Standard fill: a bottom-anchored block centered on the container,
-        // sized per axis (the old code used an origin-centered scalar cube).
+        // sized per axis, with lattice points outside the shape rejected.
         const Vec3 c  = param_boxCenter;
-        const Vec3 hf = param_boxHalf;
-        int   layersY = int((2.0f * hf.y * fillFraction) / spacing);
+        const Vec3 hf = EffectiveHalf();
+        const float margin = spacing * 0.5f;
+        // Offsets are relative to the container center (rotation is ignored at
+        // spawn, as before; the constraint pass settles particles afterwards).
+        auto insideShape = [&](float lx, float ly, float lz) -> bool {
+            switch (param_shapeType) {
+            case 1: {
+                float r = hf.x - margin;
+                return lx * lx + ly * ly + lz * lz <= r * r;
+            }
+            case 2: {
+                float r = hf.x - margin;
+                return lx * lx + lz * lz <= r * r && std::fabs(ly) <= hf.y - margin;
+            }
+            default: return true;
+            }
+        };
+        int   layersY = std::max(1, int((2.0f * hf.y * fillFraction) / spacing));
         int   sideX   = std::max(1, int((hf.x * 1.7f) / spacing));
         int   sideZ   = std::max(1, int((hf.z * 1.7f) / spacing));
-        layersY = std::max(1, layersY);
         for (int x = 0; x < sideX && count < (int)numParticles; ++x)
             for (int y = 0; y < layersY && count < (int)numParticles; ++y)
                 for (int z = 0; z < sideZ && count < (int)numParticles; ++z) {
+                    float lx = -hf.x * 0.85f + x * spacing + j();
+                    float ly = -hf.y + spacing + y * spacing + j();
+                    float lz = -hf.z * 0.85f + z * spacing + j();
+                    if (!insideShape(lx, ly, lz)) continue;
                     SPHParticle p{};
-                    p.pos = Vec4(c.x - hf.x * 0.85f + x * spacing + j(),
-                        c.y - hf.y + spacing + y * spacing + j(),
-                        c.z - hf.z * 0.85f + z * spacing + j(), 0.0f);
+                    p.pos = Vec4(c.x + lx, c.y + ly, c.z + lz, 0.0f);
                     p.vel = Vec4(0, 0, 0, 0);
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
@@ -173,16 +190,19 @@ void SPHFluidGPU::InitializeParticles() {
                 }
     }
 
-    // Create axis-aligned ghost shell (used if param_enableGhosts is true)
-    auto add_ghost = [&](float x, float y, float z) {
-        SPHParticle p{};
-        p.pos = Vec4(x, y, z, 0); p.vel = Vec4(0, 0, 0, 0); p.acc = Vec4(0, 0, 0, 0);
-        p.density = p.pressure = 0.0f; p.isGhost = 1; p.isActive = 0; p.pad0 = 0;
-        particles.push_back(p);
-        };
-    for (float y = -box; y <= box; y += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
-    for (float x = -box; x <= box; x += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
-    for (float x = -box; x <= box; x += spacing) for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
+    // Create axis-aligned ghost shell (used if param_enableGhosts is true).
+    // Box-only: the shell is an axis-aligned cube, meaningless for other shapes.
+    if (param_shapeType == 0) {
+        auto add_ghost = [&](float x, float y, float z) {
+            SPHParticle p{};
+            p.pos = Vec4(x, y, z, 0); p.vel = Vec4(0, 0, 0, 0); p.acc = Vec4(0, 0, 0, 0);
+            p.density = p.pressure = 0.0f; p.isGhost = 1; p.isActive = 0; p.pad0 = 0;
+            particles.push_back(p);
+            };
+        for (float y = -box; y <= box; y += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
+        for (float x = -box; x <= box; x += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
+        for (float x = -box; x <= box; x += spacing) for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
+    }
 
     std::cout << "Fluid particles: " << count
         << ", ghosts: " << (particles.size() - count) << std::endl;
@@ -341,7 +361,7 @@ void SPHFluidGPU::ComputeGridExtents() {
 
     float R[9];
     MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
-    const Vec3 half = param_boxHalf;
+    const Vec3 half = EffectiveHalf();
     // World AABB extent of the rotated container: ext_i = sum_j |R[i][j]| * half_j
     // (R is column-major world_from_box, so world axis i reads R[i], R[3+i], R[6+i].)
     Vec3 ext(
@@ -509,6 +529,7 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform3f(glGetUniformLocation(obbConstraintShader, "uBoxHalf"), param_boxHalf.x, param_boxHalf.y, param_boxHalf.z);
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uRestitution"), param_wallRestitution);
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uFriction"), param_wallFriction);
+    glUniform1i(glGetUniformLocation(obbConstraintShader, "uShapeType"), param_shapeType);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

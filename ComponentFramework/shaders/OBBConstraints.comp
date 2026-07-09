@@ -18,10 +18,11 @@ struct Particle {
 layout(std430, binding=0) buffer Particles { Particle particles[]; };
 
 uniform vec3 uBoxCenter;
-uniform vec3 uBoxHalf;
+uniform vec3 uBoxHalf;      // box: half extents | sphere: x=radius | cylinder: x=radius, y=half height
 uniform mat3 uBoxRot;    // column-major, world_from_box
 uniform float uRestitution; // 0..1
 uniform float uFriction;    // 0..1
+uniform int  uShapeType;    // 0=box, 1=sphere, 2=cylinder
 
 // Convert world to box-local (R^T*(p-c))
 vec3 worldToLocal(vec3 p) {
@@ -43,22 +44,53 @@ void main() {
     vec3 pW = particles[i].pos.xyz;
     vec3 vW = particles[i].vel.xyz;
 
-    // Transform to box local space
+    // Transform to container local space
     vec3 pL = worldToLocal(pW);
 
-    // Clamp to OBB AABB in local space
-    vec3 qL = clamp(pL, -uBoxHalf, uBoxHalf);
+    // Project the particle back inside the container (per shape) and get the
+    // outward contact normal in local space.
+    vec3 qL = pL;
+    vec3 nL = vec3(0.0);
+    bool hit = false;
 
-    // If clamped, compute collision response
-    vec3 delta = pL - qL;
-    if (any(greaterThan(abs(delta), vec3(0.0)))) {
-        // Contact normal along the most violated axis (in local space)
-        vec3 nL = vec3(0.0);
-        vec3 d = abs(delta);
-        if (d.x >= d.y && d.x >= d.z) nL = vec3(sign(delta.x), 0.0, 0.0);
-        else if (d.y >= d.x && d.y >= d.z) nL = vec3(0.0, sign(delta.y), 0.0);
-        else nL = vec3(0.0, 0.0, sign(delta.z));
+    if (uShapeType == 1) {
+        // Sphere: radius = uBoxHalf.x
+        float R = uBoxHalf.x;
+        float d = length(pL);
+        if (d > R) {
+            nL = (d > 1e-6) ? pL / d : vec3(0.0, 1.0, 0.0);
+            qL = nL * R;
+            hit = true;
+        }
+    } else if (uShapeType == 2) {
+        // Cylinder along local Y: radius = uBoxHalf.x, half height = uBoxHalf.y
+        float R = uBoxHalf.x;
+        float H = uBoxHalf.y;
+        vec2 radXZ = pL.xz;
+        float rad = length(radXZ);
+        vec2 qXZ = (rad > R) ? radXZ * (R / max(rad, 1e-6)) : radXZ;
+        qL = vec3(qXZ.x, clamp(pL.y, -H, H), qXZ.y);
+        vec3 delta = pL - qL;
+        float dl = length(delta);
+        if (dl > 1e-6) {
+            nL = delta / dl;   // exact closest-feature normal (convex shape)
+            hit = true;
+        }
+    } else {
+        // Box: clamp to the OBB AABB in local space
+        qL = clamp(pL, -uBoxHalf, uBoxHalf);
+        vec3 delta = pL - qL;
+        if (any(greaterThan(abs(delta), vec3(0.0)))) {
+            // Contact normal along the most violated axis (in local space)
+            vec3 d = abs(delta);
+            if (d.x >= d.y && d.x >= d.z) nL = vec3(sign(delta.x), 0.0, 0.0);
+            else if (d.y >= d.x && d.y >= d.z) nL = vec3(0.0, sign(delta.y), 0.0);
+            else nL = vec3(0.0, 0.0, sign(delta.z));
+            hit = true;
+        }
+    }
 
+    if (hit) {
         // Transform normal to world
         vec3 nW = normalize(uBoxRot * nL);
 

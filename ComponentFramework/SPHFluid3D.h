@@ -102,10 +102,20 @@ public:
     bool  param_enableSort = false;
 
     Vec3  param_boxCenter = Vec3(0, 0, 0);
-    Vec3  param_boxHalf = Vec3(7, 7, 7);
+    Vec3  param_boxHalf = Vec3(7, 7, 7);   // box: halves | sphere: x=radius | cylinder: x=radius, y=half height
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
+    int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
+
+    // Container half extents seen by the grid/spawn code, per shape
+    Vec3  EffectiveHalf() const {
+        switch (param_shapeType) {
+        case 1:  return Vec3(param_boxHalf.x, param_boxHalf.x, param_boxHalf.x);
+        case 2:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        default: return param_boxHalf;
+        }
+    }
 
     // --- River / Stream mode ---
     bool  riverMode = false;

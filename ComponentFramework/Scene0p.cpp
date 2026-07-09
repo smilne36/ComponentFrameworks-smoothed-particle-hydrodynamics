@@ -74,7 +74,7 @@ bool Scene0p::OnCreate() {
     glBindVertexArray(boxVAO);
     glGenBuffers(1, &boxVBO);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 24, nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 512, nullptr, GL_DYNAMIC_DRAW); // enough for sphere/cylinder wireframes
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
     glBindVertexArray(0);
@@ -112,7 +112,7 @@ bool Scene0p::OnCreate() {
             InitSSFRBuffers(vp[2], vp[3]);
     }
 
-    UpdateBoxWireframe();
+    UpdateContainerWireframe();
     lastBoxCenter = fluidGPU->param_boxCenter;
     lastBoxHalf = fluidGPU->param_boxHalf;
     lastBoxEuler = fluidGPU->param_boxEulerDeg;
@@ -233,7 +233,7 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
     }
 }
 
-void Scene0p::UpdateBoxWireframe() {
+void Scene0p::UpdateContainerWireframe() {
     if (!fluidGPU || !boxVBO) return;
 
     const Vec3 C = fluidGPU->param_boxCenter;
@@ -250,20 +250,62 @@ void Scene0p::UpdateBoxWireframe() {
             Rm[2] * x + Rm[5] * y + Rm[8] * z + C.z);
         };
 
-    Vec3 c[8]; int i = 0;
-    for (int sx = -1; sx <= 1; sx += 2)
-        for (int sy = -1; sy <= 1; sy += 2)
-            for (int sz = -1; sz <= 1; sz += 2)
-                c[i++] = xform(sx * H.x, sy * H.y, sz * H.z);
+    std::vector<float> lines;
+    lines.reserve(512 * 3);
+    auto push = [&](const Vec3& p) { lines.push_back(p.x); lines.push_back(p.y); lines.push_back(p.z); };
+    auto seg  = [&](const Vec3& a, const Vec3& b) { push(a); push(b); };
 
-    int E[24] = { 0,1, 0,2, 0,4, 3,1, 3,2, 3,7, 5,1, 5,4, 5,7, 6,2, 6,4, 6,7 };
-    float lines[24 * 3];
-    for (int e = 0; e < 24; ++e) {
-        Vec3 p = c[E[e]];
-        lines[e * 3 + 0] = p.x; lines[e * 3 + 1] = p.y; lines[e * 3 + 2] = p.z;
+    const int   shape   = fluidGPU->param_shapeType;
+    const float TWO_PI  = 6.28318530718f;
+    const int   SEGS    = 48;
+
+    if (shape == 1) {
+        // Sphere: three orthogonal great circles
+        const float r = H.x;
+        for (int axis = 0; axis < 3; ++axis) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                float ca = std::cos(a) * r, sa = std::sin(a) * r;
+                Vec3 p = (axis == 0) ? xform(0.0f, ca, sa)
+                       : (axis == 1) ? xform(ca, 0.0f, sa)
+                       :               xform(ca, sa, 0.0f);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+    } else if (shape == 2) {
+        // Cylinder: two cap circles + four vertical edges
+        const float r = H.x, hh = H.y;
+        for (int cap = 0; cap < 2; ++cap) {
+            float y = cap ? hh : -hh;
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                Vec3 p = xform(std::cos(a) * r, y, std::sin(a) * r);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+        for (int s = 0; s < 4; ++s) {
+            float a = (float(s) / 4.0f) * TWO_PI;
+            float cx = std::cos(a) * r, cz = std::sin(a) * r;
+            seg(xform(cx, -hh, cz), xform(cx, hh, cz));
+        }
+    } else {
+        // Box: 12 edges
+        Vec3 c[8]; int i = 0;
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    c[i++] = xform(sx * H.x, sy * H.y, sz * H.z);
+        int E[24] = { 0,1, 0,2, 0,4, 3,1, 3,2, 3,7, 5,1, 5,4, 5,7, 6,2, 6,4, 6,7 };
+        for (int e = 0; e < 24; ++e) push(c[E[e]]);
     }
+
+    containerWireVerts = int(lines.size() / 3);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(lines), lines);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, lines.size() * sizeof(float), lines.data());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
@@ -377,14 +419,28 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::PopID();
     }
 
-    if (ImGui::CollapsingHeader("Container Box")) {
+    if (ImGui::CollapsingHeader("Container")) {
         ImGui::PushID("ContainerBox");
+        if (fluidGPU->riverMode) {
+            fluidGPU->param_shapeType = 0;   // river terrain assumes the box
+            ImGui::TextDisabled("River mode uses the Box container.");
+        } else {
+            ImGui::Combo("Shape", &fluidGPU->param_shapeType, "Box\0Sphere\0Cylinder\0");
+        }
         ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
-        ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-        ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
+        if (fluidGPU->param_shapeType == 1) {
+            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        } else if (fluidGPU->param_shapeType == 2) {
+            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+            ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+        } else {
+            ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+        }
+        if (fluidGPU->param_shapeType != 1)   // rotation is meaningless for a sphere
+            ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
         ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
         ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-        ImGui::TextDisabled("The sim grid follows container edits automatically.");
+        ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
         ImGui::PopID();
     }
 
@@ -539,11 +595,13 @@ void Scene0p::Update(const float deltaTime) {
         lastBoxHalf.z != fluidGPU->param_boxHalf.z ||
         lastBoxEuler.x != fluidGPU->param_boxEulerDeg.x ||
         lastBoxEuler.y != fluidGPU->param_boxEulerDeg.y ||
-        lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z) {
-        UpdateBoxWireframe();
+        lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z ||
+        lastShapeType != fluidGPU->param_shapeType) {
+        UpdateContainerWireframe();
         lastBoxCenter = fluidGPU->param_boxCenter;
         lastBoxHalf = fluidGPU->param_boxHalf;
         lastBoxEuler = fluidGPU->param_boxEulerDeg;
+        lastShapeType = fluidGPU->param_shapeType;
     }
 
     if (pendingReset) {
@@ -614,7 +672,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         if (GLint col = lineShader->GetUniformID("uColor"); col != -1) glUniform3f(col, 0.85f, 0.95f, 1.0f);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
-        glDrawArrays(GL_LINES, 0, 24);
+        glDrawArrays(GL_LINES, 0, containerWireVerts);
         glBindVertexArray(0);
         glUseProgram(0);
     }
@@ -931,7 +989,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
             glUniform3f(c, 0.6f, 0.75f, 1.0f);
         glBindVertexArray(boxVAO);
         glLineWidth(1.5f);
-        glDrawArrays(GL_LINES, 0, 24);
+        glDrawArrays(GL_LINES, 0, containerWireVerts);
         glBindVertexArray(0);
     }
 
