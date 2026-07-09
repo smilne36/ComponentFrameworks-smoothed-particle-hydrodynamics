@@ -96,6 +96,9 @@ bool Scene0p::OnCreate() {
     ssfrCompositeShader = new Shader("shaders/screenQuad.vert", "shaders/fluidComposite.frag");
     if (!ssfrCompositeShader->OnCreate()) { std::cerr << "fluidComposite shader failed\n"; return false; }
 
+    skyShader = new Shader("shaders/screenQuad.vert", "shaders/skyGradient.frag");
+    if (!skyShader->OnCreate()) { std::cerr << "skyGradient shader failed\n"; return false; }
+
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
@@ -139,6 +142,7 @@ void Scene0p::OnDestroy() {
     if (ssfrSmoothShader)    { ssfrSmoothShader->OnDestroy();    delete ssfrSmoothShader;    ssfrSmoothShader    = nullptr; }
     if (ssfrThickShader)     { ssfrThickShader->OnDestroy();     delete ssfrThickShader;     ssfrThickShader     = nullptr; }
     if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
+    if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
     DestroySSFRBuffers();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
@@ -544,8 +548,9 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Separator(); ImGui::Text("Background");
         ImGui::ColorEdit3("Background", bgColor);
         if (useWaterRendering) {
-            ImGui::ColorEdit3("Sky", skyColor);
-            ImGui::ColorEdit3("Env Reflect", envReflectColor);
+            ImGui::ColorEdit3("Sky Horizon", skyColor);
+            ImGui::ColorEdit3("Sky Zenith", skyZenith);
+            ImGui::ColorEdit3("Reflect Tint", envReflectColor);
         }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
@@ -565,6 +570,10 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
             ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
             ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+            ImGui::Separator();
+            ImGui::SliderFloat("Foam Generation",   &fluidGPU->param_foamGen, 0.0f, 2.0f);
+            ImGui::SliderFloat("Foam Amount",       &foamAmount,          0.0f,  4.0f);
+            ImGui::SliderFloat("Exposure",          &exposure,            0.25f, 4.0f);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -816,6 +825,19 @@ void Scene0p::InitSSFRBuffers(int w, int h) {
 
     // --- Pass 3: thickness FBO (R32F, additive) ---
     ssfrThickFBO = MakeR32FFBO(ssfrThickTex, w, h);
+    // Second attachment: foam accumulation (same additive blend, MRT)
+    glGenTextures(1, &ssfrFoamTex);
+    glBindTexture(GL_TEXTURE_2D, ssfrFoamTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, ssfrThickFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, ssfrFoamTex, 0);
+    const GLenum thickBufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(2, thickBufs);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // --- Pass 4: background FBO (RGBA8 + depth) ---
     glGenTextures(1, &ssfrBgTex);
@@ -850,6 +872,7 @@ void Scene0p::DestroySSFRBuffers() {
     }
     if (ssfrThickFBO)    { glDeleteFramebuffers(1, &ssfrThickFBO);    ssfrThickFBO = 0; }
     if (ssfrThickTex)    { glDeleteTextures(1, &ssfrThickTex);        ssfrThickTex = 0; }
+    if (ssfrFoamTex)     { glDeleteTextures(1, &ssfrFoamTex);         ssfrFoamTex = 0; }
     if (ssfrBgFBO)       { glDeleteFramebuffers(1, &ssfrBgFBO);       ssfrBgFBO = 0; }
     if (ssfrBgTex)       { glDeleteTextures(1, &ssfrBgTex);           ssfrBgTex = 0; }
     if (ssfrBgRBO)       { glDeleteRenderbuffers(1, &ssfrBgRBO);      ssfrBgRBO = 0; }
@@ -970,9 +993,27 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glBindFramebuffer(GL_FRAMEBUFFER, ssfrBgFBO);
     glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_BLEND);
+
+    // Procedural sky gradient behind everything (no depth writes)
+    if (skyShader) {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glUseProgram(skyShader->GetProgram());
+        glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
+        glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+        glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+        glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+        glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
+        glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
+        glBindVertexArray(ssfrQuadVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+    }
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glDisable(GL_BLEND);
 
     // Terrain mesh (when river mode is active and terrain has been built)
     if (terrainShader && terrainVAO && terrainIndexCount > 0 &&
@@ -1029,6 +1070,10 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glBindTexture(GL_TEXTURE_2D, ssfrBgTex);
     glUniform1i(ssfrCompositeShader->GetUniformID("backgroundTex"), 2);
 
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, ssfrFoamTex);
+    glUniform1i(ssfrCompositeShader->GetUniformID("foamTex"), 3);
+
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(ssfrCompositeShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
     glUniform2f(ssfrCompositeShader->GetUniformID("screenSize"),
@@ -1045,6 +1090,10 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glUniform1f(ssfrCompositeShader->GetUniformID("fresnelBias"),      fresnelBias);
     glUniform3fv(ssfrCompositeShader->GetUniformID("deepWaterColor"),  1, deepWaterColor);
     glUniform3fv(ssfrCompositeShader->GetUniformID("envReflectColor"), 1, envReflectColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+    glUniform3fv(ssfrCompositeShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+    glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmount);
+    glUniform1f(ssfrCompositeShader->GetUniformID("exposure"),   exposure);
     SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);

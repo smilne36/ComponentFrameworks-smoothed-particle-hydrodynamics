@@ -73,8 +73,11 @@ private:
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
     float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // clear color, impostor/mesh paths
-    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // SSFR background clear
-    float   envReflectColor[3] = {0.05f, 0.12f, 0.28f};     // SSFR environment reflection tint
+    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color
+    float   skyZenith[3] = {0.15f, 0.28f, 0.50f};           // sky zenith color
+    float   envReflectColor[3] = {0.90f, 0.95f, 1.00f};     // tint on the reflected sky
+    float   foamAmount   = 1.5f;
+    float   exposure     = 1.0f;
 
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
@@ -108,6 +111,7 @@ private:
     Shader* ssfrSmoothShader    = nullptr;
     Shader* ssfrThickShader     = nullptr;
     Shader* ssfrCompositeShader = nullptr;
+    Shader* skyShader           = nullptr;
     GLuint  ssfrQuadVAO         = 0;
 
     GLuint  ssfrDepthFBO        = 0;
@@ -119,6 +123,7 @@ private:
 
     GLuint  ssfrThickFBO        = 0;
     GLuint  ssfrThickTex        = 0;
+    GLuint  ssfrFoamTex         = 0;   // second attachment of ssfrThickFBO
 
     GLuint  ssfrBgFBO           = 0;
     GLuint  ssfrBgTex           = 0;

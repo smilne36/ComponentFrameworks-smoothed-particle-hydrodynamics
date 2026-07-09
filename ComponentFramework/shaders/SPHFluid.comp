@@ -34,6 +34,8 @@ uniform float timeStep;
 uniform vec3 gravity;
 uniform float surfaceTension; // Tunable from CPU
 uniform int numParticles; // total particle count
+uniform float foamGen;    // foam generation scale (0 disables)
+uniform float foamVelRef; // speed at which foam generation saturates
 
 // ----------- SPH Kernels -----------
 float poly6(float r2, float h) {
@@ -194,6 +196,16 @@ pi.pos.xyz += pi.vel.xyz * timeStep;
     }
     if (norm > 0.0) xsph /= norm;
     pi.vel.xyz += xsphC * xsph;
+
+    // ---------- Foam factor (padA, consumed by the renderer) ----------
+    // Aerated where density is depleted (free surface / splashes) AND moving
+    // fast; decays over time so foam lingers briefly after the splash.
+    {
+        float speed = length(pi.vel.xyz);
+        float aer = clamp((restDensity - pi.density) / restDensity, 0.0, 1.0)
+                  * clamp(speed / max(foamVelRef, 1e-3), 0.0, 1.0);
+        pi.padA = max(aer * foamGen, pi.padA * 0.97);
+    }
 
     // ---------- Write back ----------
     particles[i] = pi;

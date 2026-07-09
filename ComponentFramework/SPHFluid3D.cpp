@@ -514,6 +514,8 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform3f(glGetUniformLocation(sphGridShader, "gravity"), param_gravityX, param_gravityY, param_gravityZ);
     glUniform1f(glGetUniformLocation(sphGridShader, "surfaceTension"), param_surfaceTension);
     glUniform3f(glGetUniformLocation(sphGridShader, "gridMin"), gridMinV.x, gridMinV.y, gridMinV.z);
+    glUniform1f(glGetUniformLocation(sphGridShader, "foamGen"), param_foamGen);
+    glUniform1f(glGetUniformLocation(sphGridShader, "foamVelRef"), 6.0f);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, particleNextSSBO);

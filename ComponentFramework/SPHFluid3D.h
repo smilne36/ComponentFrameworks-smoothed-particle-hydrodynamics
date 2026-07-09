@@ -98,6 +98,8 @@ public:
     bool  param_useJitter = true;
     float param_jitterAmp = 0.20f;
 
+    float param_foamGen = 1.0f;   // foam generation scale (0 disables)
+
     bool  param_enableGhosts = false;
     bool  param_enableSort = false;
 
