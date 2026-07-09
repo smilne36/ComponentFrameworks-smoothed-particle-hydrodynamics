@@ -14,6 +14,7 @@ out vec4 outColor;
 uniform mat4  viewMatrix;
 uniform int   colorDrive;   // 0=Height 1=Speed 2=Pressure 3=Density 4=ViewDepth 5=VelocityDir 6=RadialDist 7=InstanceColor
 uniform int   paletteId;    // 0=Classic 1=Turbo 2=Neon 3=Fire 4=Iridescent 5=Ice 6=Vaporwave 7=Toxic 8=Duotone
+                             // 9=Galaxy 10=Plasma 11=Chrome 12=MoltenGold 13=AcidRings 14=Aurora
 uniform vec2  vizRange;
 uniform vec2  heightMinMax;
 uniform vec3  boxCenter;
@@ -21,6 +22,7 @@ uniform vec3  duoColorA;
 uniform vec3  duoColorB;
 uniform float iridFreq;
 uniform float iridShift;
+uniform float animTime;    // seconds, for time-animated palettes (e.g. Aurora)
 uniform float hueShift;     // degrees
 uniform float satMul;
 uniform float brightMul;
@@ -96,7 +98,29 @@ vec3 applyPalette(float t, float facing) {
                                         vec3(1.00, 0.55, 0.75), vec3(0.35, 0.95, 0.90)); // Vaporwave
     if (paletteId == 7) return ramp4(t, vec3(0.01, 0.03, 0.01), vec3(0.05, 0.35, 0.05),
                                         vec3(0.45, 0.95, 0.10), vec3(0.95, 1.00, 0.30)); // Toxic
-    return mix(duoColorA, duoColorB, t); // 8 = Duotone
+    if (paletteId == 8) return mix(duoColorA, duoColorB, t); // Duotone
+    if (paletteId == 9) return iqPal(t, vec3(0.20, 0.10, 0.35), vec3(0.35, 0.25, 0.55),
+                                        vec3(1.00, 1.20, 0.70), vec3(0.10, 0.35, 0.65))
+                              + vec3(0.10, 0.00, 0.25) * (1.0 - facing); // Galaxy / Nebula
+    if (paletteId == 10) {                                              // Plasma
+        float p = sin(t * 12.566 + facing * 6.2831853) * 0.5 + 0.5;
+        float q = sin(t * 8.377  - facing * 9.4248)    * 0.5 + 0.5;
+        return vec3(p, q, 1.0 - p * q);
+    }
+    if (paletteId == 11) {                                              // Chrome
+        vec3 base = mix(vec3(0.05), vec3(0.85), t);
+        return base + vec3(pow(1.0 - facing, 2.0));
+    }
+    if (paletteId == 12) {                                              // Molten Gold
+        vec3 base = ramp4(t, vec3(0.10, 0.04, 0.00), vec3(0.55, 0.28, 0.02),
+                              vec3(0.95, 0.65, 0.10), vec3(1.00, 0.92, 0.55));
+        return base + vec3(1.00, 0.95, 0.80) * pow(1.0 - facing, 2.5) * 0.6;
+    }
+    if (paletteId == 13) return iqPal(t * 3.0 + iridFreq * (1.0 - facing) * 2.0 + iridShift,
+                                      vec3(0.5), vec3(0.5), vec3(2.0, 3.0, 4.0),
+                                      vec3(0.00, 0.15, 0.35)); // Acid Rings
+    return iqPal(t + animTime * 0.15, vec3(0.15, 0.35, 0.35), vec3(0.25, 0.45, 0.45),
+                 vec3(0.80, 1.00, 1.20), vec3(0.25, 0.55, 0.85)); // 14 = Aurora
 }
 
 // Branchless RGB<->HSV (Sam Hocevar, public domain)
