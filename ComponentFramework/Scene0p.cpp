@@ -549,11 +549,14 @@ void Scene0p::Update(const float deltaTime) {
         }
         if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
             ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
-            ImGui::SliderFloat("Filter Radius (px)", &smoothFilterRadius, 5.0f, 30.0f);
-            ImGui::SliderFloat("Depth Falloff",      &smoothDepthFalloff, 0.01f, 1.0f);
+            ImGui::SliderFloat("Smoothing Scale",   &worldFilterScale,   0.0f, 10.0f);
+            ImGui::SliderFloat("Surface Merge",     &surfaceMerge,       0.5f, 8.0f);
+            ImGui::SliderFloat("Render Radius",     &renderRadiusScale,  0.5f, 2.0f);
             ImGui::Separator();
             ImGui::ColorEdit3("Water Extinction",   waterExtinction);
             ImGui::SliderFloat("Thickness Scale",   &thicknessScale,      0.01f, 20.0f);
+            ImGui::SliderFloat("Blob Strength",     &thicknessStrength,   0.005f, 0.3f, "%.3f");
+            ImGui::SliderFloat("Blob Falloff",      &thicknessFalloff,    1.0f, 8.0f);
             ImGui::ColorEdit3("Deep Water Color",   deepWaterColor);
             ImGui::Separator();
             ImGui::SliderFloat3("Sun Dir (World)",  sunDirWorld,         -1.0f,  1.0f);
@@ -653,8 +656,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
     if (useWaterRendering && ssfrW > 0 && ssfrDepthShader && fluidGPU) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        const float pixelScale = (windowH > 0) ? static_cast<float>(outH) / static_cast<float>(windowH) : 1.0f;
-        RenderSSFR(targetFBO, proj, pixelScale);
+        RenderSSFR(targetFBO, proj);
         return;
     }
 
@@ -696,7 +698,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
     SetColorUniforms(shader);
 
-    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h);
+    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
     glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
 
@@ -754,7 +756,7 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
     SetColorUniforms(impostorShader);
 
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
-        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h));
+        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale);
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(outH));
 
@@ -854,10 +856,10 @@ void Scene0p::DestroySSFRBuffers() {
     ssfrW = ssfrH = 0;
 }
 
-void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const {
+void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
-    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h);
+    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
     const auto  nFluid = static_cast<GLsizei>(fluidGPU->GetNumFluids());
 
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -897,8 +899,13 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
 
     glUseProgram(ssfrSmoothShader->GetProgram());
     glUniform2f(ssfrSmoothShader->GetUniformID("screenSize"),    static_cast<float>(ssfrW), static_cast<float>(ssfrH));
-    glUniform1f(ssfrSmoothShader->GetUniformID("filterRadius"),  smoothFilterRadius * pixelScale);
-    glUniform1f(ssfrSmoothShader->GetUniformID("depthFalloff"),  smoothDepthFalloff);
+    glUniform1f(ssfrSmoothShader->GetUniformID("particleRadius"),   radius);
+    glUniform1f(ssfrSmoothShader->GetUniformID("worldFilterScale"), worldFilterScale);
+    glUniform1f(ssfrSmoothShader->GetUniformID("surfaceMerge"),     surfaceMerge);
+    // World-size-to-pixels projection factor; using the target height keeps
+    // the smoothing consistent between the window and high-res captures.
+    const float* pm = proj;
+    glUniform1f(ssfrSmoothShader->GetUniformID("projScaleY"), pm[5] * static_cast<float>(ssfrH) * 0.5f);
 
     glBindVertexArray(ssfrQuadVAO);
 
@@ -948,6 +955,10 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale
         glUniform1f(r, radius);
     if (GLint r = ssfrThickShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(ssfrH));
+    if (GLint r = ssfrThickShader->GetUniformID("thicknessStrength"); r != -1)
+        glUniform1f(r, thicknessStrength);
+    if (GLint r = ssfrThickShader->GetUniformID("thicknessFalloff"); r != -1)
+        glUniform1f(r, thicknessFalloff);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);

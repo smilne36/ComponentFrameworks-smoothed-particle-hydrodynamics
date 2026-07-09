@@ -77,14 +77,27 @@ void main() {
     // Reconstruct surface position
     vec3 pos = viewPosFromZ(vTexCoord, vz);
 
-    // Forward-difference normal reconstruction
+    // Depth-aware normal reconstruction: per axis take the forward or backward
+    // difference with the smaller depth change (avoids straddling silhouettes),
+    // falling back to whichever side has valid fluid.
+    float vzL = texture(smoothDepthTex, vTexCoord - vec2(px.x, 0.0)).r;
     float vzR = texture(smoothDepthTex, vTexCoord + vec2(px.x, 0.0)).r;
+    float vzD = texture(smoothDepthTex, vTexCoord - vec2(0.0, px.y)).r;
     float vzU = texture(smoothDepthTex, vTexCoord + vec2(0.0, px.y)).r;
-    vec3 posR = (vzR != 0.0) ? viewPosFromZ(vTexCoord + vec2(px.x, 0.0), vzR) : pos;
-    vec3 posU = (vzU != 0.0) ? viewPosFromZ(vTexCoord + vec2(0.0, px.y), vzU) : pos;
 
-    vec3 dX = posR - pos;
-    vec3 dY = posU - pos;
+    vec3 dX = vec3(0.0);
+    if (vzR != 0.0) dX = viewPosFromZ(vTexCoord + vec2(px.x, 0.0), vzR) - pos;
+    if (vzL != 0.0) {
+        vec3 dxB = pos - viewPosFromZ(vTexCoord - vec2(px.x, 0.0), vzL);
+        if (vzR == 0.0 || abs(dxB.z) < abs(dX.z)) dX = dxB;
+    }
+    vec3 dY = vec3(0.0);
+    if (vzU != 0.0) dY = viewPosFromZ(vTexCoord + vec2(0.0, px.y), vzU) - pos;
+    if (vzD != 0.0) {
+        vec3 dyB = pos - viewPosFromZ(vTexCoord - vec2(0.0, px.y), vzD);
+        if (vzU == 0.0 || abs(dyB.z) < abs(dY.z)) dY = dyB;
+    }
+
     vec3 N  = (length(dX) > 1e-5 && length(dY) > 1e-5)
               ? normalize(cross(dX, dY))
               : vec3(0.0, 0.0, 1.0);

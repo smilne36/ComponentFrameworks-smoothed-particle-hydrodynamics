@@ -129,8 +129,11 @@ private:
 
     bool    useWaterRendering   = true;
     int     smoothIterations    = 5;
-    float   smoothFilterRadius  = 10.0f;
-    float   smoothDepthFalloff  = 0.1f;
+    float   worldFilterScale    = 4.0f;   // smoothing kernel width, in particle radii
+    float   surfaceMerge        = 2.0f;   // narrow-range band, in particle radii
+    float   thicknessStrength   = 0.05f;
+    float   thicknessFalloff    = 4.0f;
+    float   renderRadiusScale   = 1.0f;   // visual particle size multiplier (physics untouched)
     float   waterExtinction[3]  = {0.45f, 0.15f, 0.05f};
     float   thicknessScale      = 1.0f;
     float   sunDirWorld[3]      = {0.4f, 1.0f, 0.5f};
@@ -142,7 +145,7 @@ private:
     float   fresnelBias         = 0.02f;
 
     void    InitSSFRBuffers(int w, int h);
-    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj, float pixelScale) const;
+    void    RenderSSFR(GLuint targetFBO, const Matrix4& proj) const;
     void    DestroySSFRBuffers();
 
     // --- Terrain mesh ---
