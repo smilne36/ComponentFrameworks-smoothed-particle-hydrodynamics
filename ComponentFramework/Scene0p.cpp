@@ -124,10 +124,14 @@ bool Scene0p::OnCreate() {
     vizRangeMin = 0.0f;
     vizRangeMax = 10.0f;
 
+    audioReactive = new AudioReactive();   // capture thread starts only when enabled
+
     return true;
 }
 
 void Scene0p::OnDestroy() {
+    // First: join the audio capture thread so it never outlives the scene.
+    if (audioReactive) { audioReactive->Stop(); delete audioReactive; audioReactive = nullptr; }
     if (sphere) { sphere->OnDestroy(); delete sphere; sphere = nullptr; }
     if (mesh) { mesh->OnDestroy(); delete mesh; mesh = nullptr; }
     if (shader) { shader->OnDestroy(); delete shader; shader = nullptr; }
@@ -478,6 +482,48 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::PopID();
     }
 
+    if (ImGui::CollapsingHeader("Audio Reactive")) {
+        ImGui::PushID("AudioReactive");
+        ImGui::Checkbox("Enable", &audioReactiveEnabled);   // thread start/stop happens in Update()
+        ImGui::TextDisabled("%s", audioReactive->GetStatusText().c_str());
+        ImGui::TextDisabled("Reacts to whatever your computer is playing.");
+
+        if (ImGui::SliderFloat("Master Gain", &audioMasterGain, 0.0f, 4.0f))
+            audioReactive->gain.store(audioMasterGain);
+
+        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetBass()),   ImVec2(-1.0f, 0.0f), "Bass");
+        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetMid()),    ImVec2(-1.0f, 0.0f), "Mid");
+        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetTreble()), ImVec2(-1.0f, 0.0f), "Treble");
+
+        ImGui::Separator(); ImGui::Text("Physical (splashes)");
+        ImGui::SliderFloat("Bass Force",       &audioBassForce,       0.0f, 30.0f);
+        ImGui::SliderFloat("Bass Threshold",   &audioBassThreshold,   0.0f, 1.0f);
+        ImGui::SliderFloat("Mid Force",        &audioMidForce,        0.0f, 30.0f);
+        ImGui::SliderFloat("Mid Threshold",    &audioMidThreshold,    0.0f, 1.0f);
+        ImGui::SliderFloat("Treble Force",     &audioTrebleForce,     0.0f, 30.0f);
+        ImGui::SliderFloat("Treble Threshold", &audioTrebleThreshold, 0.0f, 1.0f);
+
+        ImGui::Separator(); ImGui::Text("Visual (pulses)");
+        ImGui::SliderFloat("Size Kick (bass)", &audioSizeKick,    0.0f, 2.0f);
+        ImGui::SliderFloat("Shimmer (treble)", &audioShimmerKick, 0.0f, 2.0f);
+        ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
+
+        if (ImGui::TreeNode("Advanced")) {
+            float atk = audioReactive->attackMs.load();
+            float rel = audioReactive->releaseMs.load();
+            if (ImGui::SliderFloat("Attack (ms)",  &atk, 1.0f, 100.0f)) audioReactive->attackMs.store(atk);
+            if (ImGui::SliderFloat("Release (ms)", &rel, 20.0f, 800.0f)) audioReactive->releaseMs.store(rel);
+            ImGui::SliderFloat("Bass Wavelength",    &audioBassWavelength,   1.0f, 30.0f);
+            ImGui::SliderFloat("Mid Wavelength",     &audioMidWavelength,    0.5f, 10.0f);
+            ImGui::SliderFloat("Treble Wavelength",  &audioTrebleWavelength, 0.2f, 3.0f);
+            ImGui::SliderFloat("Bass Phase Speed",   &audioBassPhaseSpeed,   0.0f, 10.0f);
+            ImGui::SliderFloat("Mid Rotation Speed", &audioMidRotSpeed,      0.0f, 5.0f);
+            ImGui::SliderFloat("Treble Phase Speed", &audioTreblePhaseSpeed, 0.0f, 30.0f);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+
     if (ImGui::CollapsingHeader("River / Stream Mode")) {
         ImGui::PushID("River");
         bool wasRiver = fluidGPU->riverMode;
@@ -641,6 +687,50 @@ void Scene0p::Update(const float deltaTime) {
         fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
     }
 
+    // --- Audio Reactive: each band hits the fluid somewhere different ---
+    if (audioReactiveEnabled && audioReactive) {
+        if (!audioReactive->IsRunning()) audioReactive->Start();
+
+        const float bass   = audioReactive->GetBass();
+        const float mid    = audioReactive->GetMid();
+        const float treble = audioReactive->GetTreble();
+
+        const Vec3  half      = fluidGPU->EffectiveHalf();
+        const float boxBottom = fluidGPU->param_boxCenter.y - half.y;
+        const float boxSpanY  = 2.0f * half.y;
+
+        audioBassPhase   += audioBassPhaseSpeed   * deltaTime;
+        audioMidPhase    += audioMidRotSpeed      * deltaTime;   // doubles as rotation angle
+        audioTreblePhase += audioTreblePhaseSpeed * deltaTime;
+
+        if (bass > audioBassThreshold) {
+            // Bass: broad upward heave from the lower part of the container
+            fluidGPU->ApplyWaveImpulse(audioBassForce * bass, audioBassWavelength, audioBassPhase,
+                Vec3(0, 1, 0), boxBottom, boxBottom + boxSpanY * 0.4f);
+        }
+        if (mid > audioMidThreshold) {
+            // Mid: horizontal push whose direction slowly rotates around Y,
+            // so hits come from different sides over time
+            Vec3 dir(std::cos(audioMidPhase), 0.0f, std::sin(audioMidPhase));
+            fluidGPU->ApplyWaveImpulse(audioMidForce * mid, audioMidWavelength, audioMidPhase, dir,
+                boxBottom + boxSpanY * 0.3f, boxBottom + boxSpanY * 0.7f);
+        }
+        if (treble > audioTrebleThreshold) {
+            // Treble: fast, fine ripple confined to the surface band
+            fluidGPU->ApplyWaveImpulse(audioTrebleForce * treble, audioTrebleWavelength, audioTreblePhase,
+                Vec3(0, 1, 0), boxBottom + boxSpanY * 0.6f, boxBottom + boxSpanY);
+        }
+
+        renderRadiusScaleLive = renderRadiusScale * (1.0f + audioSizeKick    * bass);
+        brightMulLive         = brightMul         * (1.0f + audioShimmerKick * treble);
+        foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
+    } else {
+        if (audioReactive && audioReactive->IsRunning()) audioReactive->Stop();
+        renderRadiusScaleLive = renderRadiusScale;
+        brightMulLive         = brightMul;
+        foamAmountLive        = foamAmount;
+    }
+
     const float fixedDt = std::max(1e-6f, fluidGPU->param_timeStep);
     dtAccumulator += deltaTime;
     const int cap = (deltaTime > 0.033f) ? std::min(8, maxSubstepsPerFrame) : maxSubstepsPerFrame;
@@ -719,7 +809,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
     SetColorUniforms(shader);
 
-    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
+    float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive;
     Matrix4 scaleMat = MMath::scale(particleRadius, particleRadius, particleRadius);
     glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
 
@@ -765,7 +855,7 @@ void Scene0p::SetColorUniforms(Shader* s) const {
 void Scene0p::SetGradeUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("hueShift");    loc != -1) glUniform1f(loc, hueShiftDeg);
     if (GLint loc = s->GetUniformID("satMul");      loc != -1) glUniform1f(loc, satMul);
-    if (GLint loc = s->GetUniformID("brightMul");   loc != -1) glUniform1f(loc, brightMul);
+    if (GLint loc = s->GetUniformID("brightMul");   loc != -1) glUniform1f(loc, brightMulLive);
     if (GLint loc = s->GetUniformID("contrastMul"); loc != -1) glUniform1f(loc, contrastMul);
     if (GLint loc = s->GetUniformID("invertColor"); loc != -1) glUniform1i(loc, invertColor ? 1 : 0);
 }
@@ -778,7 +868,7 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
     SetColorUniforms(impostorShader);
 
     if (GLint r = impostorShader->GetUniformID("particleRadius"); r != -1)
-        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale);
+        glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive);
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(outH));
 
@@ -900,7 +990,7 @@ void Scene0p::DestroySSFRBuffers() {
 void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
-    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScale;
+    const float radius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive;
     const auto  nFluid = static_cast<GLsizei>(fluidGPU->GetNumFluids());
 
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -1116,7 +1206,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glUniform3fv(ssfrCompositeShader->GetUniformID("envReflectColor"), 1, envReflectColor);
     glUniform3fv(ssfrCompositeShader->GetUniformID("skyHorizonColor"), 1, skyColor);
     glUniform3fv(ssfrCompositeShader->GetUniformID("skyZenithColor"),  1, skyZenith);
-    glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmount);
+    glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmountLive);
     glUniform1f(ssfrCompositeShader->GetUniformID("exposure"),   exposure);
     SetGradeUniforms(ssfrCompositeShader);
 
