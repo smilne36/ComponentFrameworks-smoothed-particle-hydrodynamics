@@ -110,6 +110,7 @@ void AudioReactive::SetStatus(const std::string& s) {
 // (the stop flag is checked every wake).
 // ---------------------------------------------------------------------------
 
+#define NOMINMAX        // windows.h defines min/max macros that break std::min/std::max
 #include <initguid.h>   // define the ksmedia GUIDs in this TU (no ksguid.lib needed)
 #include <windows.h>
 #include <mmdeviceapi.h>
