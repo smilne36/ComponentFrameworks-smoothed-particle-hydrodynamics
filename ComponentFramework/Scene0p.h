@@ -72,8 +72,9 @@ private:
     float   iridShift    = 0.0f;
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
-    float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // clear color, impostor/mesh paths
-    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color
+    bool    showSkyBackground = false;                      // false = flat bgColor backdrop (water pops on black)
+    float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // backdrop clear color (all render paths)
+    float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color (reflections + optional backdrop)
     float   skyZenith[3] = {0.15f, 0.28f, 0.50f};           // sky zenith color
     float   envReflectColor[3] = {0.90f, 0.95f, 1.00f};     // tint on the reflected sky
     float   foamAmount   = 1.5f;
