@@ -9,6 +9,7 @@
 #include "Body.h"
 #include "Mesh.h"
 #include "Shader.h"
+#include "AudioReactive.h"
 #include <glad.h>
 #include <limits>
 using namespace MATH;
@@ -103,6 +104,30 @@ private:
     float   yBandMax       =  std::numeric_limits<float>::infinity();
     bool    continuousWave = false;
     float   wavePhase      = 0.0f;
+
+    // --- Audio Reactive (own phase accumulators, independent of manual Waves) ---
+    AudioReactive* audioReactive = nullptr;
+    bool    audioReactiveEnabled = false;
+    float   audioMasterGain      = 1.0f;
+
+    float   audioBassForce   = 8.0f,  audioBassThreshold   = 0.05f;
+    float   audioBassWavelength = 10.0f, audioBassPhaseSpeed = 1.5f,  audioBassPhase   = 0.0f;
+    float   audioMidForce    = 4.0f,  audioMidThreshold    = 0.05f;
+    float   audioMidWavelength  = 3.0f,  audioMidRotSpeed    = 1.2f,  audioMidPhase    = 0.0f;
+    float   audioTrebleForce = 1.5f,  audioTrebleThreshold = 0.05f;
+    float   audioTrebleWavelength = 1.0f, audioTreblePhaseSpeed = 14.0f, audioTreblePhase = 0.0f;
+
+    float   audioSizeKick    = 0.3f;   // bass -> particle render size
+    float   audioShimmerKick = 0.5f;   // treble -> brightness pulse
+    float   audioFoamKick    = 0.6f;   // mid -> foam boost
+
+    // "Live" values fed to the renderer each frame. The base members stay the
+    // user's pure slider settings; these are recomputed fresh every Update()
+    // (base, or base*(1+kick*envelope) when audio-reactive is on), so there is
+    // no compounding drift and no fighting the sliders.
+    float   renderRadiusScaleLive = 1.3f;
+    float   brightMulLive         = 1.0f;
+    float   foamAmountLive        = 1.5f;
 
     void    UpdateContainerWireframe();
     void    SetupImpostorVAO();
