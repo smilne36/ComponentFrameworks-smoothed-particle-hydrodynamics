@@ -1,4 +1,4 @@
-Wed Jul  8 22:15:38 2026
+Thu Jul  9 19:15:57 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -6,27 +6,28 @@ Wed Jul  8 22:15:38 2026
 [INFO]: GLSL version: 4.50 NVIDIA
 [INFO]: Loading assets Scene0p
 [INFO]: Uniforms:
-"boxCenter" loc:0
-"brightMul" loc:1
-"colorDrive" loc:2
-"contrastMul" loc:3
-"duoColorA" loc:4
-"duoColorB" loc:5
-"heightMinMax" loc:6
-"hueShift" loc:7
-"invertColor" loc:8
-"iridFreq" loc:9
-"iridShift" loc:10
-"litSphere" loc:11
-"modelMatrix" loc:12
-"paletteId" loc:13
-"projectionMatrix" loc:14
-"satMul" loc:15
-"sunColor" loc:16
-"sunDirWorld" loc:17
-"useSSBO" loc:18
-"viewMatrix" loc:19
-"vizRange" loc:20
+"animTime" loc:0
+"boxCenter" loc:1
+"brightMul" loc:2
+"colorDrive" loc:3
+"contrastMul" loc:4
+"duoColorA" loc:5
+"duoColorB" loc:6
+"heightMinMax" loc:7
+"hueShift" loc:8
+"invertColor" loc:9
+"iridFreq" loc:10
+"iridShift" loc:11
+"litSphere" loc:12
+"modelMatrix" loc:13
+"paletteId" loc:14
+"projectionMatrix" loc:15
+"satMul" loc:16
+"sunColor" loc:17
+"sunDirWorld" loc:18
+"useSSBO" loc:19
+"viewMatrix" loc:20
+"vizRange" loc:21
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
@@ -34,27 +35,28 @@ Wed Jul  8 22:15:38 2026
 "viewMatrix" loc:2
 
 [INFO]: Uniforms:
-"boxCenter" loc:0
-"brightMul" loc:1
-"colorDrive" loc:2
-"contrastMul" loc:3
-"duoColorA" loc:4
-"duoColorB" loc:5
-"heightMinMax" loc:6
-"hueShift" loc:7
-"invertColor" loc:8
-"iridFreq" loc:9
-"iridShift" loc:10
-"litSphere" loc:11
-"paletteId" loc:12
-"particleRadius" loc:13
-"projectionMatrix" loc:14
-"satMul" loc:15
-"sunColor" loc:16
-"sunDirWorld" loc:17
-"viewMatrix" loc:18
-"viewportH" loc:19
-"vizRange" loc:20
+"animTime" loc:0
+"boxCenter" loc:1
+"brightMul" loc:2
+"colorDrive" loc:3
+"contrastMul" loc:4
+"duoColorA" loc:5
+"duoColorB" loc:6
+"heightMinMax" loc:7
+"hueShift" loc:8
+"invertColor" loc:9
+"iridFreq" loc:10
+"iridShift" loc:11
+"litSphere" loc:12
+"paletteId" loc:13
+"particleRadius" loc:14
+"projectionMatrix" loc:15
+"satMul" loc:16
+"sunColor" loc:17
+"sunDirWorld" loc:18
+"viewMatrix" loc:19
+"viewportH" loc:20
+"vizRange" loc:21
 
 [INFO]: Uniforms:
 "particleRadius" loc:0

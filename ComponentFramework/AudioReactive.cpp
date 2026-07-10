@@ -1,5 +1,5 @@
 #include "AudioReactive.h"
-
+#define NOMINMAX        // windows.h defines min/max macros that break std::min/std::max
 #include <cmath>
 #include <algorithm>
 
@@ -210,7 +210,7 @@ void AudioReactive::CaptureThreadMain() {
             bassLevel.store(std::min(4.0f, state.envBass * g),     std::memory_order_relaxed);
             midLevel.store(std::min(4.0f, state.envMid * g),       std::memory_order_relaxed);
             trebleLevel.store(std::min(4.0f, state.envTreble * g), std::memory_order_relaxed);
-
+             
             capture->ReleaseBuffer(numFrames);
             hr = capture->GetNextPacketSize(&packetLen);
         }
