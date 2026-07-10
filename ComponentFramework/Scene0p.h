@@ -73,6 +73,8 @@ private:
     bool    litParticles = true;
     float   iridFreq     = 3.0f;
     float   iridShift    = 0.0f;
+    float   paletteFlow  = 0.0f;   // scrolls any palette over time (0 = static)
+    float   patternScale = 1.0f;   // spatial frequency of world-space pattern palettes
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
     bool    showSkyBackground = false;                      // false = flat bgColor backdrop (water pops on black)

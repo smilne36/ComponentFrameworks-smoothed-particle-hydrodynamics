@@ -573,13 +573,17 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Separator(); ImGui::Text("Color");
         ImGui::Combo("Palette", &paletteId,
             "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
-            "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0");
+            "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
+            "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0");
+        ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
+        if (paletteId >= 15)
+            ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
         ImGui::Combo("Color Drive", &vizMode,
             "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0Instance Color\0");
         ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
         ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
         ImGui::TextDisabled("Height drive uses box Y extents, not Range. Palette & drive\ncolor the Impostor/Mesh modes; Adjustments grade every mode.");
-        if (paletteId == 8) {
+        if (paletteId == 8 || paletteId == 20) {   // Duotone + Candy Stripes share the pickers
             ImGui::ColorEdit3("Duotone A", duoColorA);
             ImGui::ColorEdit3("Duotone B", duoColorB);
         }
@@ -845,6 +849,8 @@ void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("iridFreq");    loc != -1) glUniform1f(loc, iridFreq);
     if (GLint loc = s->GetUniformID("iridShift");   loc != -1) glUniform1f(loc, iridShift);
     if (GLint loc = s->GetUniformID("animTime");    loc != -1) glUniform1f(loc, ballAnimTime);
+    if (GLint loc = s->GetUniformID("paletteFlow");  loc != -1) glUniform1f(loc, paletteFlow);
+    if (GLint loc = s->GetUniformID("patternScale"); loc != -1) glUniform1f(loc, patternScale);
     if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
     if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
     if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
