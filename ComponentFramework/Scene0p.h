@@ -85,6 +85,7 @@ private:
     float   foamAmount   = 1.5f;
     float   exposure     = 1.0f;
 
+    void    ApplyArtPreset(int which);
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 
