@@ -14,6 +14,7 @@ uniform int   colorDrive;   // 0=Height 1=Speed 2=Pressure 3=Density 4=ViewDepth
 uniform int   paletteId;    // 0=Classic 1=Turbo 2=Neon 3=Fire 4=Iridescent 5=Ice 6=Vaporwave 7=Toxic 8=Duotone
                              // 9=Galaxy 10=Plasma 11=Chrome 12=MoltenGold 13=AcidRings 14=Aurora
                              // 15=MarbleInk 16=LavaLamp 17=DiscoChecker 18=StainedGlass 19=PsychoSwirl 20=CandyStripes
+                             // 21=Electric 22=Smoke 23=RGBPop
 uniform vec2  vizRange;
 uniform vec2  heightMinMax;
 uniform vec3  boxCenter;
@@ -214,10 +215,25 @@ vec3 applyPalette(float t, float facing, vec3 worldPos) {
         float hue = fract(ang + rad * 0.20 + animTime * 0.08 + t * 0.30);
         return hsv2rgb(vec3(hue, 0.90, 0.95));
     }
-    // 20 = Candy Stripes: diagonal world-space bands between the Duotone colors
-    float s = sin(dot(wp, normalize(vec3(1.0, 0.35, 0.6))) * 5.0 + animTime * 0.8);
-    float band = smoothstep(-0.25, 0.25, s);
-    return mix(duoColorA, duoColorB, band) * (0.65 + 0.35 * t);
+    if (paletteId == 20) {                                              // Candy Stripes
+        float s = sin(dot(wp, normalize(vec3(1.0, 0.35, 0.6))) * 5.0 + animTime * 0.8);
+        float band = smoothstep(-0.25, 0.25, s);
+        return mix(duoColorA, duoColorB, band) * (0.65 + 0.35 * t);
+    }
+    if (paletteId == 21) {                                              // Electric (hologram edge glow)
+        vec3 body = vec3(0.02, 0.02, 0.05);
+        vec3 glow = hsv2rgb(vec3(fract(0.50 + t * 0.35), 0.90, 1.0));
+        float rim = pow(1.0 - facing, 1.5);
+        return body + glow * (rim * 1.4 + 0.08);
+    }
+    if (paletteId == 22) {                                              // Smoke (moody monochrome)
+        float n = fbm(wp * 0.8 + vec3(0.0, animTime * 0.05, 0.0));
+        float v = clamp(0.15 + 0.85 * n * (0.4 + 0.6 * t), 0.0, 1.0);
+        return vec3(v);
+    }
+    // 23 = RGB Pop: posterized rainbow bands (pop-art)
+    float q = floor(fract(t) * 6.0) / 6.0;
+    return hsv2rgb(vec3(q, 1.0, 1.0));
 }
 
 vec3 applyColorAdjust(vec3 c) {

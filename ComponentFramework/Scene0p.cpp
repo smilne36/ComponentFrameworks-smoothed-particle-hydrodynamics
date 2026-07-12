@@ -411,6 +411,16 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_wallFriction = 0.05f;
             pendingReset = true;
         }
+        ImGui::Separator();
+        ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
+        if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
+        ImGui::SameLine();
+        if (ImGui::Button("Dream Float"))   ApplyArtPreset(1);
+        ImGui::SameLine();
+        if (ImGui::Button("Acid Trip"))     ApplyArtPreset(2);
+        if (ImGui::Button("Club Water"))    ApplyArtPreset(3);
+        ImGui::SameLine();
+        if (ImGui::Button("Molten Disco"))  ApplyArtPreset(4);
         ImGui::PopID();
     }
 
@@ -574,7 +584,8 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Combo("Palette", &paletteId,
             "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
             "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
-            "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0");
+            "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
+            "Electric\0Smoke\0RGB Pop\0");
         ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
         if (paletteId >= 15)
             ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
@@ -830,6 +841,119 @@ int Scene0p::CurrentViewportHeight() const {
     GLint vp[4] = { 0,0,0,0 };
     glGetIntegerv(GL_VIEWPORT, vp);
     return vp[3] > 0 ? vp[3] : 1080;
+}
+
+// One-click looks: container + physics + palette + audio reaction in one go,
+// tuned for audio-reactive videos. The floaty ones use weak gravity + high
+// viscosity so the fluid drifts and reacts instead of falling.
+void Scene0p::ApplyArtPreset(int which) {
+    if (!fluidGPU) return;
+
+    // Common canvas: black backdrop, neutral grade, no river
+    fluidGPU->riverMode = false;
+    showSkyBackground = false;
+    bgColor[0] = bgColor[1] = bgColor[2] = 0.0f;
+    hueShiftDeg = 0.0f; satMul = 1.0f; brightMul = 1.0f; contrastMul = 1.0f;
+    invertColor = false;
+    fluidGPU->param_boxCenter = Vec3(0, 0, 0);
+    fluidGPU->param_boxEulerDeg = Vec3(0, 0, 0);
+    fluidGPU->param_h = 0.28f;
+    fluidGPU->param_restDensity = 1000.0f;
+    fluidGPU->param_timeStep = 1.0e-3f;
+    fluidGPU->param_pause = false;
+
+    switch (which) {
+    case 0: // Zero-G Nebula: drifting cloud in a sphere, galaxy colors
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -15.0f;
+        fluidGPU->param_viscosity = 6.0f;
+        fluidGPU->param_gasConstant = 1500.0f;
+        fluidGPU->param_surfaceTension = 0.05f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.2f;
+        paletteId = 9; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 8.0f;
+        paletteFlow = 0.05f; patternScale = 1.0f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 12.0f;  audioBassThreshold = 0.06f;
+        audioMidForce  = 5.0f;   audioMidThreshold  = 0.06f;
+        audioTrebleForce = 2.0f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.5f; audioShimmerKick = 0.6f; audioFoamKick = 0.3f;
+        break;
+    case 1: // Dream Float: slow syrupy drift, aurora colors by depth
+        fluidGPU->param_shapeType = 0;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -35.0f;
+        fluidGPU->param_viscosity = 8.0f;
+        fluidGPU->param_gasConstant = 1200.0f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.5f;
+        paletteId = 14; vizMode = 4; vizRangeMin = 8.0f; vizRangeMax = 40.0f;
+        paletteFlow = 0.08f; patternScale = 1.0f;
+        audioMasterGain = 1.2f;
+        audioBassForce = 8.0f;   audioBassThreshold = 0.08f;
+        audioMidForce  = 4.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 1.5f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.35f; audioShimmerKick = 0.5f; audioFoamKick = 0.2f;
+        break;
+    case 2: // Acid Trip: floaty sphere, kaleidoscope rings, hard audio hits
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -60.0f;
+        fluidGPU->param_viscosity = 2.0f;
+        fluidGPU->param_gasConstant = 3500.0f;
+        fluidGPU->param_surfaceTension = 0.10f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.1f;
+        paletteId = 13; iridFreq = 4.0f; iridShift = 0.0f;
+        vizMode = 6; vizRangeMin = 0.0f; vizRangeMax = 7.0f;
+        paletteFlow = 0.20f; patternScale = 1.0f;
+        audioMasterGain = 1.8f;
+        audioBassForce = 15.0f;  audioBassThreshold = 0.05f;
+        audioMidForce  = 7.0f;   audioMidThreshold  = 0.06f;
+        audioTrebleForce = 3.0f; audioTrebleThreshold = 0.04f;
+        audioSizeKick = 0.6f; audioShimmerKick = 1.0f; audioFoamKick = 0.3f;
+        break;
+    case 3: // Club Water: real water surface, black backdrop, heavy bass splashes
+        fluidGPU->param_shapeType = 0;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -980.0f;
+        fluidGPU->param_viscosity = 3.5f;
+        fluidGPU->param_gasConstant = 2500.0f;
+        fluidGPU->param_surfaceTension = 0.10f;
+        useWaterRendering = true; useImpostors = false;
+        fluidGPU->param_foamGen = 1.3f;
+        foamAmount = 2.2f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 18.0f;  audioBassThreshold = 0.08f;
+        audioMidForce  = 8.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 4.0f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.2f; audioShimmerKick = 0.4f; audioFoamKick = 1.2f;
+        break;
+    default: // 4, Molten Disco: gold metal sloshing in a cylinder
+        fluidGPU->param_shapeType = 2;
+        fluidGPU->param_boxHalf = Vec3(6, 5, 6);
+        fluidGPU->param_gravityY = -200.0f;
+        fluidGPU->param_viscosity = 4.0f;
+        fluidGPU->param_gasConstant = 2000.0f;
+        fluidGPU->param_surfaceTension = 0.10f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.25f;
+        paletteId = 12; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 12.0f;
+        paletteFlow = 0.10f; patternScale = 1.0f;
+        audioMasterGain = 1.4f;
+        audioBassForce = 14.0f;  audioBassThreshold = 0.07f;
+        audioMidForce  = 6.0f;   audioMidThreshold  = 0.07f;
+        audioTrebleForce = 2.5f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.45f; audioShimmerKick = 0.7f; audioFoamKick = 0.3f;
+        break;
+    }
+
+    // Turn the audio reaction on with the new settings and respawn the fluid
+    audioReactiveEnabled = true;
+    if (audioReactive) audioReactive->gain.store(audioMasterGain);
+    pendingReset = true;
 }
 
 // Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
