@@ -1,4 +1,4 @@
-Thu Jul  9 19:15:57 2026
+Mon Jul 13 18:05:55 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -20,14 +20,16 @@ Thu Jul  9 19:15:57 2026
 "iridShift" loc:11
 "litSphere" loc:12
 "modelMatrix" loc:13
-"paletteId" loc:14
-"projectionMatrix" loc:15
-"satMul" loc:16
-"sunColor" loc:17
-"sunDirWorld" loc:18
-"useSSBO" loc:19
-"viewMatrix" loc:20
-"vizRange" loc:21
+"paletteFlow" loc:14
+"paletteId" loc:15
+"patternScale" loc:16
+"projectionMatrix" loc:17
+"satMul" loc:18
+"sunColor" loc:19
+"sunDirWorld" loc:20
+"useSSBO" loc:21
+"viewMatrix" loc:22
+"vizRange" loc:23
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
@@ -48,15 +50,17 @@ Thu Jul  9 19:15:57 2026
 "iridFreq" loc:10
 "iridShift" loc:11
 "litSphere" loc:12
-"paletteId" loc:13
-"particleRadius" loc:14
-"projectionMatrix" loc:15
-"satMul" loc:16
-"sunColor" loc:17
-"sunDirWorld" loc:18
-"viewMatrix" loc:19
-"viewportH" loc:20
-"vizRange" loc:21
+"paletteFlow" loc:13
+"paletteId" loc:14
+"particleRadius" loc:15
+"patternScale" loc:16
+"projectionMatrix" loc:17
+"satMul" loc:18
+"sunColor" loc:19
+"sunDirWorld" loc:20
+"viewMatrix" loc:21
+"viewportH" loc:22
+"vizRange" loc:23
 
 [INFO]: Uniforms:
 "particleRadius" loc:0

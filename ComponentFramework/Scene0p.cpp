@@ -1693,19 +1693,16 @@ void Scene0p::FinishReelExport(bool wroteBat) {
         std::string audioAbs = ec ? std::string(reelAudioPath) : abs.string();
 
         std::filesystem::path batPath = std::filesystem::path(reelOutDir) / "mux_reel.bat";
-        if (FILE* f = fopen(batPath.string().c_str(), "wb")) {
-            fprintf(f, "@echo off\r\n");
-            fprintf(f, "REM Needs ffmpeg on PATH (https://ffmpeg.org). Makes the reel from the rendered frames + your track.\r\n");
-            fprintf(f, "ffmpeg -y -framerate %d -i \"frames\\f_%%05d.png\" -i \"%s\" "
-                       "-c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -shortest \"reel.mp4\"\r\n",
-                    fps, audioAbs.c_str());
-            fprintf(f, "pause\r\n");
-            fclose(f);
+        std::ofstream bat(batPath, std::ios::binary);
+        if (bat) {
+            bat << "@echo off\r\n"
+                << "REM Needs ffmpeg on PATH (https://ffmpeg.org). Makes the reel from the rendered frames + your track.\r\n"
+                << "ffmpeg -y -framerate " << fps << " -i \"frames\\f_%05d.png\" -i \""
+                << audioAbs << "\" -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -shortest \"reel.mp4\"\r\n"
+                << "pause\r\n";
         }
         reelStatus = "Done: " + std::to_string(reelFrame) + " frames. Run "
-                   + batPath.string() + " to make reel.mp4";
-    } else {
-        reelStatus = "Cancelled at frame " + std::to_string(reelFrame);
+            + batPath.string() + " to make reel.mp4";
     }
 
     if (reelFBO) glDeleteFramebuffers(1, &reelFBO);
