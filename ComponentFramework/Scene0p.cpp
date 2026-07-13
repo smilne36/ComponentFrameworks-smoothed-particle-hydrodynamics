@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 #include <SDL.h>
 #include <MMath.h>
@@ -125,6 +126,7 @@ bool Scene0p::OnCreate() {
     vizRangeMax = 10.0f;
 
     audioReactive = new AudioReactive();   // capture thread starts only when enabled
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);   // allow dragging an audio file onto the window
 
     return true;
 }
@@ -234,6 +236,16 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
             camDist *= std::pow(0.90f, (float)e.wheel.y);
             if (camDist < 1.0f)  camDist = 1.0f;
             if (camDist > 120.0f) camDist = 120.0f;
+        }
+        break;
+
+    case SDL_DROPFILE:
+        // Drag an audio file onto the window to load it into Reels Export.
+        if (e.drop.file) {
+            snprintf(reelAudioPath, sizeof(reelAudioPath), "%s", e.drop.file);
+            std::filesystem::path p(reelAudioPath);
+            reelStatus = "Loaded: " + p.filename().string();
+            SDL_free(e.drop.file);
         }
         break;
 
@@ -543,6 +555,7 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::Text("Rendering frame %d / %d", reelFrame, reelBands.frameCount);
             if (ImGui::Button("Cancel")) FinishReelExport(false);
         } else {
+            ImGui::TextDisabled("Drag an audio file onto the window, or type its path:");
             ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
             ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
             ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
