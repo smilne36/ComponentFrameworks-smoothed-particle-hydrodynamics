@@ -10,6 +10,7 @@
 #include "Mesh.h"
 #include "Shader.h"
 #include "AudioReactive.h"
+#include "ReelExport.h"
 #include <glad.h>
 #include <limits>
 using namespace MATH;
@@ -131,6 +132,26 @@ private:
     float   renderRadiusScaleLive = 1.3f;
     float   brightMulLive         = 1.0f;
     float   foamAmountLive        = 1.5f;
+
+    // Applies one frame of audio reaction (3 wave impulses + the 3 *Live
+    // values), shared by the live reactor and the offline Reels render.
+    void    DriveAudioReaction(float bass, float mid, float treble, float dt);
+
+    // --- Reels Export (offline, frame-accurate, music-synced render) ---
+    bool    reelExporting = false;
+    int     reelFrame     = 0;
+    int     reelFpsIdx    = 0;          // 0=30, 1=60
+    int     reelResIdx    = 0;          // 0=1080x1920, 1=1080x1350, 2=1920x1080
+    int     reelW = 1080, reelH = 1920;
+    float   reelMaxSeconds = 0.0f;      // 0 = whole track
+    char    reelAudioPath[512] = {0};
+    char    reelOutDir[512]    = "reels";
+    std::string  reelStatus;
+    ReelAnalysis reelBands;
+    GLuint  reelFBO = 0, reelTex = 0, reelRBO = 0;
+    void    StartReelExport();
+    void    ReelExportStep();
+    void    FinishReelExport(bool wroteBat);
 
     void    UpdateContainerWireframe();
     void    SetupImpostorVAO();

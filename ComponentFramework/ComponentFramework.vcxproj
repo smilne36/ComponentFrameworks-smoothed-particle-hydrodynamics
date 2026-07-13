@@ -129,6 +129,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="AudioReactive.cpp" />
+    <ClCompile Include="dr_libs_impl.cpp" />
+    <ClCompile Include="ReelExport.cpp" />
     <ClCompile Include="Body.cpp" />
     <ClCompile Include="Debug.cpp" />
     <ClCompile Include="glad.c" />
@@ -153,6 +155,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AudioReactive.h" />
+    <ClInclude Include="AudioBands.h" />
+    <ClInclude Include="dr_wav.h" />
+    <ClInclude Include="dr_mp3.h" />
+    <ClInclude Include="ReelExport.h" />
     <ClInclude Include="Body.h" />
     <ClInclude Include="Debug.h" />
     <ClInclude Include="imconfig.h" />

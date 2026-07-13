@@ -534,6 +534,31 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::PopID();
     }
 
+    if (ImGui::CollapsingHeader("Reels Export")) {
+        ImGui::PushID("ReelsExport");
+        if (reelExporting) {
+            float prog = reelBands.frameCount > 0
+                ? float(reelFrame) / float(reelBands.frameCount) : 0.0f;
+            ImGui::ProgressBar(prog, ImVec2(-1.0f, 0.0f));
+            ImGui::Text("Rendering frame %d / %d", reelFrame, reelBands.frameCount);
+            if (ImGui::Button("Cancel")) FinishReelExport(false);
+        } else {
+            ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
+            ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
+            ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
+            ImGui::Combo("Aspect", &reelResIdx,
+                "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0");
+            ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
+            if (ImGui::Button("Export Reel")) StartReelExport();
+            if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
+            ImGui::TextDisabled(
+                "Uses your current live look + audio settings. Renders numbered\n"
+                "PNGs to the folder, then double-click mux_reel.bat (needs ffmpeg)\n"
+                "to make the vertical mp4 with your track.");
+        }
+        ImGui::PopID();
+    }
+
     if (ImGui::CollapsingHeader("River / Stream Mode")) {
         ImGui::PushID("River");
         bool wasRiver = fluidGPU->riverMode;
@@ -671,6 +696,13 @@ void Scene0p::Update(const float deltaTime) {
     }
     ImGui::End();
 
+    // While exporting a reel, drive the sim from the pre-analyzed track and
+    // skip the live-audio + wall-clock stepping entirely (fully deterministic).
+    if (reelExporting) {
+        ReelExportStep();
+        return;
+    }
+
     if (lastBoxCenter.x != fluidGPU->param_boxCenter.x ||
         lastBoxCenter.y != fluidGPU->param_boxCenter.y ||
         lastBoxCenter.z != fluidGPU->param_boxCenter.z ||
@@ -705,40 +737,8 @@ void Scene0p::Update(const float deltaTime) {
     // --- Audio Reactive: each band hits the fluid somewhere different ---
     if (audioReactiveEnabled && audioReactive) {
         if (!audioReactive->IsRunning()) audioReactive->Start();
-
-        const float bass   = audioReactive->GetBass();
-        const float mid    = audioReactive->GetMid();
-        const float treble = audioReactive->GetTreble();
-
-        const Vec3  half      = fluidGPU->EffectiveHalf();
-        const float boxBottom = fluidGPU->param_boxCenter.y - half.y;
-        const float boxSpanY  = 2.0f * half.y;
-
-        audioBassPhase   += audioBassPhaseSpeed   * deltaTime;
-        audioMidPhase    += audioMidRotSpeed      * deltaTime;   // doubles as rotation angle
-        audioTreblePhase += audioTreblePhaseSpeed * deltaTime;
-
-        if (bass > audioBassThreshold) {
-            // Bass: broad upward heave from the lower part of the container
-            fluidGPU->ApplyWaveImpulse(audioBassForce * bass, audioBassWavelength, audioBassPhase,
-                Vec3(0, 1, 0), boxBottom, boxBottom + boxSpanY * 0.4f);
-        }
-        if (mid > audioMidThreshold) {
-            // Mid: horizontal push whose direction slowly rotates around Y,
-            // so hits come from different sides over time
-            Vec3 dir(std::cos(audioMidPhase), 0.0f, std::sin(audioMidPhase));
-            fluidGPU->ApplyWaveImpulse(audioMidForce * mid, audioMidWavelength, audioMidPhase, dir,
-                boxBottom + boxSpanY * 0.3f, boxBottom + boxSpanY * 0.7f);
-        }
-        if (treble > audioTrebleThreshold) {
-            // Treble: fast, fine ripple confined to the surface band
-            fluidGPU->ApplyWaveImpulse(audioTrebleForce * treble, audioTrebleWavelength, audioTreblePhase,
-                Vec3(0, 1, 0), boxBottom + boxSpanY * 0.6f, boxBottom + boxSpanY);
-        }
-
-        renderRadiusScaleLive = renderRadiusScale * (1.0f + audioSizeKick    * bass);
-        brightMulLive         = brightMul         * (1.0f + audioShimmerKick * treble);
-        foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
+        DriveAudioReaction(audioReactive->GetBass(), audioReactive->GetMid(),
+                           audioReactive->GetTreble(), deltaTime);
     } else {
         if (audioReactive && audioReactive->IsRunning()) audioReactive->Stop();
         renderRadiusScaleLive = renderRadiusScale;
@@ -769,6 +769,15 @@ void Scene0p::Update(const float deltaTime) {
 }
 
 void Scene0p::Render() const {
+    // During a reel export the SSFR buffers are sized for the reel, not the
+    // window, so skip the on-screen scene draw (the progress panel still shows).
+    if (reelExporting) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, windowW, windowH);
+        glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        return;
+    }
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
 }
 
@@ -1537,6 +1546,177 @@ void Scene0p::DrawRiverBankLines(const Matrix4& proj) const {
 // ---------------------------------------------------------------------------
 // Screenshot capture
 // ---------------------------------------------------------------------------
+
+// One frame of audio reaction: three directional wave impulses (bass heave,
+// rotating mid push, treble surface ripple) plus the three visual "Live"
+// values. Shared by the live reactor and the offline reels render so the
+// export matches what you tuned live.
+void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) {
+    if (!fluidGPU) return;
+
+    const Vec3  half      = fluidGPU->EffectiveHalf();
+    const float boxBottom = fluidGPU->param_boxCenter.y - half.y;
+    const float boxSpanY  = 2.0f * half.y;
+
+    audioBassPhase   += audioBassPhaseSpeed   * dt;
+    audioMidPhase    += audioMidRotSpeed      * dt;   // doubles as rotation angle
+    audioTreblePhase += audioTreblePhaseSpeed * dt;
+
+    if (bass > audioBassThreshold) {
+        fluidGPU->ApplyWaveImpulse(audioBassForce * bass, audioBassWavelength, audioBassPhase,
+            Vec3(0, 1, 0), boxBottom, boxBottom + boxSpanY * 0.4f);
+    }
+    if (mid > audioMidThreshold) {
+        Vec3 dir(std::cos(audioMidPhase), 0.0f, std::sin(audioMidPhase));
+        fluidGPU->ApplyWaveImpulse(audioMidForce * mid, audioMidWavelength, audioMidPhase, dir,
+            boxBottom + boxSpanY * 0.3f, boxBottom + boxSpanY * 0.7f);
+    }
+    if (treble > audioTrebleThreshold) {
+        fluidGPU->ApplyWaveImpulse(audioTrebleForce * treble, audioTrebleWavelength, audioTreblePhase,
+            Vec3(0, 1, 0), boxBottom + boxSpanY * 0.6f, boxBottom + boxSpanY);
+    }
+
+    renderRadiusScaleLive = renderRadiusScale * (1.0f + audioSizeKick    * bass);
+    brightMulLive         = brightMul         * (1.0f + audioShimmerKick * treble);
+    foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
+}
+
+// ---------------------------------------------------------------------------
+// Reels Export — offline, frame-accurate, music-synced render
+// ---------------------------------------------------------------------------
+
+void Scene0p::StartReelExport() {
+    if (reelExporting || !fluidGPU) return;
+
+    const int fps = (reelFpsIdx == 1) ? 60 : 30;
+    switch (reelResIdx) {
+        case 1:  reelW = 1080; reelH = 1350; break;
+        case 2:  reelW = 1920; reelH = 1080; break;
+        default: reelW = 1080; reelH = 1920; break;
+    }
+
+    reelBands = AnalyzeTrack(reelAudioPath, fps, reelMaxSeconds);
+    if (!reelBands.error.empty()) {
+        reelStatus = "FAILED: " + reelBands.error;
+        return;
+    }
+
+    // Deterministic start: fresh fluid + zeroed reaction phases.
+    audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
+    fluidGPU->ResetSimulation();
+    fluidGPU->param_pause = false;
+    mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
+    dtAccumulator = 0.0f;
+
+    // Reel render target (RGBA8 + depth), sized once for the whole export.
+    glGenTextures(1, &reelTex);
+    glBindTexture(GL_TEXTURE_2D, reelTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, reelW, reelH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenRenderbuffers(1, &reelRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, reelRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, reelW, reelH);
+    glGenFramebuffers(1, &reelFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, reelFBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, reelTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, reelRBO);
+    const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    if (!fboOK) {
+        if (reelFBO) glDeleteFramebuffers(1, &reelFBO);
+        if (reelTex) glDeleteTextures(1, &reelTex);
+        if (reelRBO) glDeleteRenderbuffers(1, &reelRBO);
+        reelFBO = reelTex = reelRBO = 0;
+        reelStatus = "FAILED: could not create reel framebuffer";
+        return;
+    }
+    if (useWaterRendering) InitSSFRBuffers(reelW, reelH);
+
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
+
+    reelFrame = 0;
+    reelExporting = true;
+    reelStatus = "Exporting...";
+}
+
+void Scene0p::ReelExportStep() {
+    if (!reelExporting) return;
+
+    const int fps = (reelFpsIdx == 1) ? 60 : 30;
+    const float frameDt = 1.0f / float(fps);
+    const Matrix4 reelProj = MMath::perspective(
+        45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, 100.0f);
+
+    // Deterministic substeps: never larger than the sim's own timestep.
+    const float ts   = std::max(1e-6f, fluidGPU->param_timeStep);
+    const int   nSub = std::max(1, int(std::ceil(frameDt / ts)));
+    const float subDt = frameDt / float(nSub);
+
+    std::vector<unsigned char> pixels(static_cast<size_t>(reelW) * static_cast<size_t>(reelH) * 3);
+
+    // Render a small batch of frames per Update() so the UI stays responsive.
+    const int batch = 3;
+    for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
+        DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
+                           reelBands.treble[reelFrame], frameDt);
+        for (int i = 0; i < nSub; ++i) fluidGPU->DispatchCompute(subDt);
+
+        RenderSceneTo(reelFBO, reelW, reelH, reelProj);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, reelFBO);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, reelW, reelH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        char name[640];
+        snprintf(name, sizeof(name), "%s/frames/f_%05d.png", reelOutDir, reelFrame);
+        stbi_flip_vertically_on_write(1);   // GL rows are bottom-up
+        stbi_write_png(name, reelW, reelH, 3, pixels.data(), reelW * 3);
+
+        ++reelFrame;
+    }
+
+    if (reelFrame >= reelBands.frameCount) FinishReelExport(true);
+}
+
+void Scene0p::FinishReelExport(bool wroteBat) {
+    if (wroteBat) {
+        const int fps = (reelFpsIdx == 1) ? 60 : 30;
+        std::error_code ec;
+        std::filesystem::path abs = std::filesystem::absolute(reelAudioPath, ec);
+        std::string audioAbs = ec ? std::string(reelAudioPath) : abs.string();
+
+        std::filesystem::path batPath = std::filesystem::path(reelOutDir) / "mux_reel.bat";
+        if (FILE* f = fopen(batPath.string().c_str(), "wb")) {
+            fprintf(f, "@echo off\r\n");
+            fprintf(f, "REM Needs ffmpeg on PATH (https://ffmpeg.org). Makes the reel from the rendered frames + your track.\r\n");
+            fprintf(f, "ffmpeg -y -framerate %d -i \"frames\\f_%%05d.png\" -i \"%s\" "
+                       "-c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -shortest \"reel.mp4\"\r\n",
+                    fps, audioAbs.c_str());
+            fprintf(f, "pause\r\n");
+            fclose(f);
+        }
+        reelStatus = "Done: " + std::to_string(reelFrame) + " frames. Run "
+                   + batPath.string() + " to make reel.mp4";
+    } else {
+        reelStatus = "Cancelled at frame " + std::to_string(reelFrame);
+    }
+
+    if (reelFBO) glDeleteFramebuffers(1, &reelFBO);
+    if (reelTex) glDeleteTextures(1, &reelTex);
+    if (reelRBO) glDeleteRenderbuffers(1, &reelRBO);
+    reelFBO = reelTex = reelRBO = 0;
+
+    if (useWaterRendering && windowW > 0 && windowH > 0)
+        InitSSFRBuffers(windowW, windowH);
+    reelExporting = false;
+}
 
 void Scene0p::DoCapture() {
     int capW = 3000, capH = 3000;
