@@ -552,7 +552,12 @@ void Scene0p::Update(const float deltaTime) {
             float prog = reelBands.frameCount > 0
                 ? float(reelFrame) / float(reelBands.frameCount) : 0.0f;
             ImGui::ProgressBar(prog, ImVec2(-1.0f, 0.0f));
-            ImGui::Text("Rendering frame %d / %d", reelFrame, reelBands.frameCount);
+            float elapsed = (SDL_GetTicks() - reelStartMs) / 1000.0f;
+            float rate = (reelFrame > 0 && elapsed > 0.01f) ? reelFrame / elapsed : 0.0f;
+            int etaSec = (rate > 0.01f) ? int((reelBands.frameCount - reelFrame) / rate) : 0;
+            ImGui::Text("Frame %d / %d  (%.0f%%)", reelFrame, reelBands.frameCount, prog * 100.0f);
+            ImGui::Text("%.1f fps  |  ETA %d:%02d", rate, etaSec / 60, etaSec % 60);
+            ImGui::TextDisabled("Live preview on the left updates as it renders.");
             if (ImGui::Button("Cancel")) FinishReelExport(false);
         } else {
             ImGui::TextDisabled("Drag an audio file onto the window, or type its path:");
@@ -562,12 +567,15 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::Combo("Aspect", &reelResIdx,
                 "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0");
             ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
+            ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
             if (ImGui::Button("Export Reel")) StartReelExport();
             if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
             ImGui::TextDisabled(
-                "Uses your current live look + audio settings. Renders numbered\n"
-                "PNGs to the folder, then double-click mux_reel.bat (needs ffmpeg)\n"
-                "to make the vertical mp4 with your track.");
+                "Uses your current live look. Offline render is heavy, so:\n"
+                " - Test with Max seconds = 5 first.\n"
+                " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
+                " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
+                "Writes PNGs, then double-click mux_reel.bat (needs ffmpeg) for the mp4.");
         }
         ImGui::PopID();
     }
@@ -783,12 +791,24 @@ void Scene0p::Update(const float deltaTime) {
 
 void Scene0p::Render() const {
     // During a reel export the SSFR buffers are sized for the reel, not the
-    // window, so skip the on-screen scene draw (the progress panel still shows).
+    // window. Instead of the live scene, blit the most recent rendered reel
+    // frame to the window (letterboxed) so you can watch it render.
     if (reelExporting) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, windowW, windowH);
         glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (reelFBO && windowW > 0 && windowH > 0) {
+            // Fit the portrait/other-aspect reel into the window, centered.
+            float scale = std::min(float(windowW) / float(reelW), float(windowH) / float(reelH));
+            int dw = int(reelW * scale), dh = int(reelH * scale);
+            int dx = (windowW - dw) / 2, dy = (windowH - dh) / 2;
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, reelFBO);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(0, 0, reelW, reelH, dx, dy, dx + dw, dy + dh,
+                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
         return;
     }
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
@@ -1651,7 +1671,12 @@ void Scene0p::StartReelExport() {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
 
+    // Lighter PNG compression: a bit larger on disk, noticeably faster to
+    // encode (this runs on the main thread once per frame).
+    stbi_write_png_compression_level = 6;
+
     reelFrame = 0;
+    reelStartMs = SDL_GetTicks();
     reelExporting = true;
     reelStatus = "Exporting...";
 }
@@ -1664,15 +1689,18 @@ void Scene0p::ReelExportStep() {
     const Matrix4 reelProj = MMath::perspective(
         45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, 100.0f);
 
-    // Deterministic substeps: never larger than the sim's own timestep.
+    // Deterministic substeps. Accurate by default (subDt <= the sim timestep);
+    // an optional cap trades physical accuracy for render speed.
     const float ts   = std::max(1e-6f, fluidGPU->param_timeStep);
-    const int   nSub = std::max(1, int(std::ceil(frameDt / ts)));
+    int nSub = std::max(1, int(std::ceil(frameDt / ts)));
+    if (reelSubstepCap > 0) nSub = std::min(nSub, reelSubstepCap);
     const float subDt = frameDt / float(nSub);
 
     std::vector<unsigned char> pixels(static_cast<size_t>(reelW) * static_cast<size_t>(reelH) * 3);
 
-    // Render a small batch of frames per Update() so the UI stays responsive.
-    const int batch = 3;
+    // One frame per Update() so the live preview + progress refresh smoothly
+    // and Cancel stays responsive (the render is the bottleneck, not the loop).
+    const int batch = 1;
     for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
         DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
                            reelBands.treble[reelFrame], frameDt);
