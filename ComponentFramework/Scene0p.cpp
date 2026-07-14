@@ -552,7 +552,12 @@ void Scene0p::Update(const float deltaTime) {
             float prog = reelBands.frameCount > 0
                 ? float(reelFrame) / float(reelBands.frameCount) : 0.0f;
             ImGui::ProgressBar(prog, ImVec2(-1.0f, 0.0f));
-            ImGui::Text("Rendering frame %d / %d", reelFrame, reelBands.frameCount);
+            float elapsed = (SDL_GetTicks() - reelStartMs) / 1000.0f;
+            float rate = (reelFrame > 0 && elapsed > 0.01f) ? reelFrame / elapsed : 0.0f;
+            int etaSec = (rate > 0.01f) ? int((reelBands.frameCount - reelFrame) / rate) : 0;
+            ImGui::Text("Frame %d / %d  (%.0f%%)", reelFrame, reelBands.frameCount, prog * 100.0f);
+            ImGui::Text("%.1f fps  |  ETA %d:%02d", rate, etaSec / 60, etaSec % 60);
+            ImGui::TextDisabled("Live preview on the left updates as it renders.");
             if (ImGui::Button("Cancel")) FinishReelExport(false);
         } else {
             ImGui::TextDisabled("Drag an audio file onto the window, or type its path:");
@@ -562,12 +567,17 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::Combo("Aspect", &reelResIdx,
                 "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0");
             ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
+            ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
             if (ImGui::Button("Export Reel")) StartReelExport();
             if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
             ImGui::TextDisabled(
-                "Uses your current live look + audio settings. Renders numbered\n"
-                "PNGs to the folder, then double-click mux_reel.bat (needs ffmpeg)\n"
-                "to make the vertical mp4 with your track.");
+                "Uses your current live look. Offline render is heavy, so:\n"
+                " - Test with Max seconds = 5 first.\n"
+                " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
+                " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
+                "Writes PNGs, then double-click mux_reel.bat to build the mp4.\n"
+                "That needs ffmpeg: install it (ffmpeg.org) and add to PATH, OR\n"
+                "just drop ffmpeg.exe into the output folder next to the .bat.");
         }
         ImGui::PopID();
     }
@@ -783,12 +793,24 @@ void Scene0p::Update(const float deltaTime) {
 
 void Scene0p::Render() const {
     // During a reel export the SSFR buffers are sized for the reel, not the
-    // window, so skip the on-screen scene draw (the progress panel still shows).
+    // window. Instead of the live scene, blit the most recent rendered reel
+    // frame to the window (letterboxed) so you can watch it render.
     if (reelExporting) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, windowW, windowH);
         glClearColor(0.02f, 0.02f, 0.03f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (reelFBO && windowW > 0 && windowH > 0) {
+            // Fit the portrait/other-aspect reel into the window, centered.
+            float scale = std::min(float(windowW) / float(reelW), float(windowH) / float(reelH));
+            int dw = int(reelW * scale), dh = int(reelH * scale);
+            int dx = (windowW - dw) / 2, dy = (windowH - dh) / 2;
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, reelFBO);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(0, 0, reelW, reelH, dx, dy, dx + dw, dy + dh,
+                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
         return;
     }
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
@@ -1651,7 +1673,12 @@ void Scene0p::StartReelExport() {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
 
+    // Lighter PNG compression: a bit larger on disk, noticeably faster to
+    // encode (this runs on the main thread once per frame).
+    stbi_write_png_compression_level = 6;
+
     reelFrame = 0;
+    reelStartMs = SDL_GetTicks();
     reelExporting = true;
     reelStatus = "Exporting...";
 }
@@ -1664,15 +1691,18 @@ void Scene0p::ReelExportStep() {
     const Matrix4 reelProj = MMath::perspective(
         45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, 100.0f);
 
-    // Deterministic substeps: never larger than the sim's own timestep.
+    // Deterministic substeps. Accurate by default (subDt <= the sim timestep);
+    // an optional cap trades physical accuracy for render speed.
     const float ts   = std::max(1e-6f, fluidGPU->param_timeStep);
-    const int   nSub = std::max(1, int(std::ceil(frameDt / ts)));
+    int nSub = std::max(1, int(std::ceil(frameDt / ts)));
+    if (reelSubstepCap > 0) nSub = std::min(nSub, reelSubstepCap);
     const float subDt = frameDt / float(nSub);
 
     std::vector<unsigned char> pixels(static_cast<size_t>(reelW) * static_cast<size_t>(reelH) * 3);
 
-    // Render a small batch of frames per Update() so the UI stays responsive.
-    const int batch = 3;
+    // One frame per Update() so the live preview + progress refresh smoothly
+    // and Cancel stays responsive (the render is the bottleneck, not the loop).
+    const int batch = 1;
     for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
         DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
                            reelBands.treble[reelFrame], frameDt);
@@ -1708,10 +1738,40 @@ void Scene0p::FinishReelExport(bool wroteBat) {
         std::filesystem::path batPath = std::filesystem::path(reelOutDir) / "mux_reel.bat";
         std::ofstream bat(batPath, std::ios::binary);
         if (bat) {
+            // Self-locating ffmpeg: use it from PATH if present, otherwise fall
+            // back to an ffmpeg.exe dropped next to this .bat. Makes it painless
+            // to hand the tool to someone who hasn't set up PATH -- they just put
+            // ffmpeg.exe in this folder. (%%05d, not %05d: inside a .bat cmd would
+            // otherwise treat %0 as the script name and mangle the frame pattern.)
             bat << "@echo off\r\n"
-                << "REM Needs ffmpeg on PATH (https://ffmpeg.org). Makes the reel from the rendered frames + your track.\r\n"
-                << "ffmpeg -y -framerate " << fps << " -i \"frames\\f_%05d.png\" -i \""
+                << "setlocal\r\n"
+                << "cd /d \"%~dp0\"\r\n"
+                << "\r\n"
+                << "REM Makes reel.mp4 from the rendered PNG frames + your track.\r\n"
+                << "REM Needs ffmpeg: install it and add to PATH (https://ffmpeg.org/download.html),\r\n"
+                << "REM or just drop ffmpeg.exe into this folder, next to mux_reel.bat.\r\n"
+                << "\r\n"
+                << "set \"FFMPEG=ffmpeg\"\r\n"
+                << "where ffmpeg >nul 2>nul\r\n"
+                << "if errorlevel 1 (\r\n"
+                << "  if exist \"%~dp0ffmpeg.exe\" (\r\n"
+                << "    set \"FFMPEG=%~dp0ffmpeg.exe\"\r\n"
+                << "  ) else (\r\n"
+                << "    echo.\r\n"
+                << "    echo   ffmpeg was not found. Fix it one of two ways:\r\n"
+                << "    echo     1^) Install ffmpeg and add it to PATH:  https://ffmpeg.org/download.html\r\n"
+                << "    echo     2^) Put ffmpeg.exe in this folder next to mux_reel.bat, then run again.\r\n"
+                << "    echo.\r\n"
+                << "    pause\r\n"
+                << "    exit /b 1\r\n"
+                << "  )\r\n"
+                << ")\r\n"
+                << "\r\n"
+                << "\"%FFMPEG%\" -y -framerate " << fps << " -i \"frames\\f_%%05d.png\" -i \""
                 << audioAbs << "\" -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -shortest \"reel.mp4\"\r\n"
+                << "if errorlevel 1 ( echo. & echo   ffmpeg reported an error above. & pause & exit /b 1 )\r\n"
+                << "echo.\r\n"
+                << "echo   Done - created reel.mp4 in this folder.\r\n"
                 << "pause\r\n";
         }
         reelStatus = "Done: " + std::to_string(reelFrame) + " frames. Run "

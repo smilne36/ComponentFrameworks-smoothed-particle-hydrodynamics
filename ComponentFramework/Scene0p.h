@@ -144,11 +144,13 @@ private:
     int     reelResIdx    = 0;          // 0=1080x1920, 1=1080x1350, 2=1920x1080
     int     reelW = 1080, reelH = 1920;
     float   reelMaxSeconds = 0.0f;      // 0 = whole track
+    int     reelSubstepCap = 0;         // 0 = accurate (full substeps); >0 caps for speed
     char    reelAudioPath[512] = {0};
     char    reelOutDir[512]    = "reels";
     std::string  reelStatus;
     ReelAnalysis reelBands;
     GLuint  reelFBO = 0, reelTex = 0, reelRBO = 0;
+    unsigned reelStartMs = 0;           // SDL ticks at export start, for ETA
     void    StartReelExport();
     void    ReelExportStep();
     void    FinishReelExport(bool wroteBat);

@@ -363,3 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 # ImGui runtime layout (regenerated on launch)
 imgui.ini
+
+# Generated art output (screenshots + reels renders) — keep these local, not in the repo
+screenshots/
+reels/
+*.mp4
+mux_reel.bat
