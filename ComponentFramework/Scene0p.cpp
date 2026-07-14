@@ -444,6 +444,14 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::Button("Club Water"))    ApplyArtPreset(3);
         ImGui::SameLine();
         if (ImGui::Button("Molten Disco"))  ApplyArtPreset(4);
+        ImGui::SameLine();
+        if (ImGui::Button("Vaporwave Orb")) ApplyArtPreset(5);
+        if (ImGui::Button("Chrome Mercury")) ApplyArtPreset(6);
+        ImGui::SameLine();
+        if (ImGui::Button("Plasma Storm"))   ApplyArtPreset(7);
+        if (ImGui::Button("Lava Lamp"))      ApplyArtPreset(8);
+        ImGui::SameLine();
+        if (ImGui::Button("Candy Rain"))     ApplyArtPreset(9);
         ImGui::PopID();
     }
 
@@ -959,6 +967,21 @@ void Scene0p::ApplyArtPreset(int which) {
     fluidGPU->param_timeStep = 1.0e-3f;
     fluidGPU->param_pause = false;
 
+    // Reset the knobs individual presets don't all set, so a preset lands the
+    // same no matter what was tuned before it (each case overrides as needed).
+    fluidGPU->param_mass            = 13.8f;
+    fluidGPU->param_wallRestitution = 0.15f;
+    fluidGPU->param_wallFriction    = 0.02f;
+    fluidGPU->param_foamGen         = 1.0f;
+    renderRadiusScale     = 1.3f;
+    patternScale          = 1.0f;
+    audioBassWavelength   = 10.0f; audioBassPhaseSpeed   = 1.5f;
+    audioMidWavelength    = 3.0f;  audioMidRotSpeed      = 1.2f;
+    audioTrebleWavelength = 1.0f;  audioTreblePhaseSpeed = 14.0f;
+
+    // Envelope timing is applied to the live reactor at the end; cases may set it.
+    float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
+
     switch (which) {
     case 0: // Zero-G Nebula: drifting cloud in a sphere, galaxy colors
         fluidGPU->param_shapeType = 1;
@@ -1028,7 +1051,7 @@ void Scene0p::ApplyArtPreset(int which) {
         audioTrebleForce = 4.0f; audioTrebleThreshold = 0.06f;
         audioSizeKick = 0.2f; audioShimmerKick = 0.4f; audioFoamKick = 1.2f;
         break;
-    default: // 4, Molten Disco: gold metal sloshing in a cylinder
+    case 4: // Molten Disco: gold metal sloshing in a cylinder
         fluidGPU->param_shapeType = 2;
         fluidGPU->param_boxHalf = Vec3(6, 5, 6);
         fluidGPU->param_gravityY = -200.0f;
@@ -1045,11 +1068,116 @@ void Scene0p::ApplyArtPreset(int which) {
         audioTrebleForce = 2.5f; audioTrebleThreshold = 0.05f;
         audioSizeKick = 0.45f; audioShimmerKick = 0.7f; audioFoamKick = 0.3f;
         break;
+    case 5: // Vaporwave Orb: the saved live look -- floaty vaporwave sphere
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(14.35f, 14.35f, 14.35f);
+        fluidGPU->param_h = 0.634f;
+        fluidGPU->param_mass = 156.5f;
+        fluidGPU->param_gasConstant = 9467.0f;
+        fluidGPU->param_viscosity = 4.177f;
+        fluidGPU->param_gravityY = -371.835f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        fluidGPU->param_timeStep = 0.000388f;
+        fluidGPU->param_wallRestitution = 0.22f;
+        fluidGPU->param_wallFriction = 0.131f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.3f;
+        paletteId = 6; vizMode = 0; vizRangeMin = 8.0f; vizRangeMax = 40.0f;
+        paletteFlow = -0.165f;
+        audioMasterGain = 1.816f;
+        audioBassForce = 25.685f;   audioBassThreshold = 0.08f;
+        audioMidForce  = 21.629f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 27.959f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 2.0f; audioShimmerKick = 1.092f; audioFoamKick = 1.570f;
+        audioBassWavelength = 17.657f; audioMidWavelength = 7.385f; audioTrebleWavelength = 2.043f;
+        audioBassPhaseSpeed = 7.816f;  audioMidRotSpeed = 2.579f;  audioTreblePhaseSpeed = 15.285f;
+        presetAttackMs = 15.0f; presetReleaseMs = 250.0f;
+        break;
+    case 6: // Chrome Mercury: cohesive metallic blob, color shifts with motion
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -40.0f;
+        fluidGPU->param_viscosity = 7.0f;
+        fluidGPU->param_gasConstant = 1800.0f;
+        fluidGPU->param_surfaceTension = 0.12f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.4f;
+        paletteId = 11; vizMode = 5; vizRangeMin = 0.0f; vizRangeMax = 12.0f;
+        paletteFlow = 0.03f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 14.0f;  audioBassThreshold = 0.06f;
+        audioMidForce  = 5.0f;   audioMidThreshold  = 0.07f;
+        audioTrebleForce = 2.0f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.5f; audioShimmerKick = 0.8f; audioFoamKick = 0.2f;
+        audioBassWavelength = 12.0f;
+        presetAttackMs = 18.0f; presetReleaseMs = 300.0f;
+        break;
+    case 7: // Plasma Storm: energetic expanding energy ball, snappy strobe
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -8.0f;
+        fluidGPU->param_viscosity = 1.5f;
+        fluidGPU->param_gasConstant = 5000.0f;
+        fluidGPU->param_surfaceTension = 0.05f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.1f;
+        paletteId = 10; vizMode = 6; vizRangeMin = 0.0f; vizRangeMax = 7.0f;
+        paletteFlow = 0.35f;
+        audioMasterGain = 1.8f;
+        audioBassForce = 16.0f;  audioBassThreshold = 0.05f;
+        audioMidForce  = 7.0f;   audioMidThreshold  = 0.06f;
+        audioTrebleForce = 4.0f; audioTrebleThreshold = 0.04f;
+        audioSizeKick = 0.6f; audioShimmerKick = 1.2f; audioFoamKick = 0.3f;
+        audioTreblePhaseSpeed = 20.0f;
+        presetAttackMs = 10.0f; presetReleaseMs = 160.0f;
+        break;
+    case 8: // Lava Lamp: slow rising warm blobs in a tall cylinder
+        fluidGPU->param_shapeType = 2;
+        fluidGPU->param_boxHalf = Vec3(5, 7, 5);
+        fluidGPU->param_gravityY = -25.0f;
+        fluidGPU->param_viscosity = 10.0f;
+        fluidGPU->param_gasConstant = 900.0f;
+        fluidGPU->param_surfaceTension = 0.15f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.5f;
+        paletteId = 16; vizMode = 0; vizRangeMin = -7.0f; vizRangeMax = 7.0f;
+        paletteFlow = 0.04f;
+        audioMasterGain = 1.3f;
+        audioBassForce = 10.0f;  audioBassThreshold = 0.07f;
+        audioMidForce  = 4.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 1.5f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.4f; audioShimmerKick = 0.4f; audioFoamKick = 0.2f;
+        audioBassWavelength = 8.0f;
+        presetAttackMs = 25.0f; presetReleaseMs = 420.0f;
+        break;
+    default: // 9, Candy Rain: playful colorful downpour in a box
+        fluidGPU->param_shapeType = 0;
+        fluidGPU->param_boxHalf = Vec3(8, 8, 8);
+        fluidGPU->param_gravityY = -500.0f;
+        fluidGPU->param_viscosity = 2.0f;
+        fluidGPU->param_gasConstant = 2500.0f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.1f;
+        paletteId = 20; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 14.0f;
+        paletteFlow = 0.15f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 16.0f;  audioBassThreshold = 0.08f;
+        audioMidForce  = 8.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 5.0f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.3f; audioShimmerKick = 1.0f; audioFoamKick = 0.4f;
+        audioTrebleWavelength = 1.5f; audioTreblePhaseSpeed = 16.0f;
+        presetAttackMs = 12.0f; presetReleaseMs = 200.0f;
+        break;
     }
 
     // Turn the audio reaction on with the new settings and respawn the fluid
     audioReactiveEnabled = true;
-    if (audioReactive) audioReactive->gain.store(audioMasterGain);
+    if (audioReactive) {
+        audioReactive->gain.store(audioMasterGain);
+        audioReactive->attackMs.store(presetAttackMs);
+        audioReactive->releaseMs.store(presetReleaseMs);
+    }
     pendingReset = true;
 }
 
