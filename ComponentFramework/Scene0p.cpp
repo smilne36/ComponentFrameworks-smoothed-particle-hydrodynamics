@@ -575,7 +575,9 @@ void Scene0p::Update(const float deltaTime) {
                 " - Test with Max seconds = 5 first.\n"
                 " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
                 " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
-                "Writes PNGs, then double-click mux_reel.bat (needs ffmpeg) for the mp4.");
+                "Writes PNGs, then double-click mux_reel.bat to build the mp4.\n"
+                "That needs ffmpeg: install it (ffmpeg.org) and add to PATH, OR\n"
+                "just drop ffmpeg.exe into the output folder next to the .bat.");
         }
         ImGui::PopID();
     }
@@ -1736,10 +1738,40 @@ void Scene0p::FinishReelExport(bool wroteBat) {
         std::filesystem::path batPath = std::filesystem::path(reelOutDir) / "mux_reel.bat";
         std::ofstream bat(batPath, std::ios::binary);
         if (bat) {
+            // Self-locating ffmpeg: use it from PATH if present, otherwise fall
+            // back to an ffmpeg.exe dropped next to this .bat. Makes it painless
+            // to hand the tool to someone who hasn't set up PATH -- they just put
+            // ffmpeg.exe in this folder. (%%05d, not %05d: inside a .bat cmd would
+            // otherwise treat %0 as the script name and mangle the frame pattern.)
             bat << "@echo off\r\n"
-                << "REM Needs ffmpeg on PATH (https://ffmpeg.org). Makes the reel from the rendered frames + your track.\r\n"
-                << "ffmpeg -y -framerate " << fps << " -i \"frames\\f_%05d.png\" -i \""
+                << "setlocal\r\n"
+                << "cd /d \"%~dp0\"\r\n"
+                << "\r\n"
+                << "REM Makes reel.mp4 from the rendered PNG frames + your track.\r\n"
+                << "REM Needs ffmpeg: install it and add to PATH (https://ffmpeg.org/download.html),\r\n"
+                << "REM or just drop ffmpeg.exe into this folder, next to mux_reel.bat.\r\n"
+                << "\r\n"
+                << "set \"FFMPEG=ffmpeg\"\r\n"
+                << "where ffmpeg >nul 2>nul\r\n"
+                << "if errorlevel 1 (\r\n"
+                << "  if exist \"%~dp0ffmpeg.exe\" (\r\n"
+                << "    set \"FFMPEG=%~dp0ffmpeg.exe\"\r\n"
+                << "  ) else (\r\n"
+                << "    echo.\r\n"
+                << "    echo   ffmpeg was not found. Fix it one of two ways:\r\n"
+                << "    echo     1^) Install ffmpeg and add it to PATH:  https://ffmpeg.org/download.html\r\n"
+                << "    echo     2^) Put ffmpeg.exe in this folder next to mux_reel.bat, then run again.\r\n"
+                << "    echo.\r\n"
+                << "    pause\r\n"
+                << "    exit /b 1\r\n"
+                << "  )\r\n"
+                << ")\r\n"
+                << "\r\n"
+                << "\"%FFMPEG%\" -y -framerate " << fps << " -i \"frames\\f_%%05d.png\" -i \""
                 << audioAbs << "\" -c:v libx264 -pix_fmt yuv420p -crf 18 -c:a aac -shortest \"reel.mp4\"\r\n"
+                << "if errorlevel 1 ( echo. & echo   ffmpeg reported an error above. & pause & exit /b 1 )\r\n"
+                << "echo.\r\n"
+                << "echo   Done - created reel.mp4 in this folder.\r\n"
                 << "pause\r\n";
         }
         reelStatus = "Done: " + std::to_string(reelFrame) + " frames. Run "
