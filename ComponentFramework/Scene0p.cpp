@@ -151,6 +151,7 @@ void Scene0p::OnDestroy() {
     if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
     DestroySSFRBuffers();
+    DestroyPreviewTarget();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
     if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
     if (terrainVBO) glDeleteBuffers(1, &terrainVBO);
@@ -345,15 +346,25 @@ void Scene0p::Update(const float deltaTime) {
     }
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 
-    // Resize SSFR FBOs if viewport changed; remember the on-screen size for captures
+    // Track the on-screen size (for captures) and keep the SSFR buffers sized to
+    // whatever we're currently rendering into: the reel-preview portrait target
+    // when previewing, otherwise the window. (During an export the buffers stay
+    // reel-sized and are managed by Start/FinishReelExport.)
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
         if (vp[2] > 0 && vp[3] > 0) {
             windowW = vp[2];
             windowH = vp[3];
-            if (vp[2] != ssfrW || vp[3] != ssfrH)
-                InitSSFRBuffers(vp[2], vp[3]);
+        }
+    }
+    if (!reelExporting) {
+        if (reelPreview) {
+            EnsurePreviewTarget();
+        } else {
+            if (previewFBO) DestroyPreviewTarget();
+            if (windowW > 0 && windowH > 0 && (windowW != ssfrW || windowH != ssfrH))
+                InitSSFRBuffers(windowW, windowH);
         }
     }
 
@@ -433,6 +444,14 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::Button("Club Water"))    ApplyArtPreset(3);
         ImGui::SameLine();
         if (ImGui::Button("Molten Disco"))  ApplyArtPreset(4);
+        ImGui::SameLine();
+        if (ImGui::Button("Vaporwave Orb")) ApplyArtPreset(5);
+        if (ImGui::Button("Chrome Mercury")) ApplyArtPreset(6);
+        ImGui::SameLine();
+        if (ImGui::Button("Plasma Storm"))   ApplyArtPreset(7);
+        if (ImGui::Button("Lava Lamp"))      ApplyArtPreset(8);
+        ImGui::SameLine();
+        if (ImGui::Button("Candy Rain"))     ApplyArtPreset(9);
         ImGui::PopID();
     }
 
@@ -564,14 +583,33 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
             ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
             ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
-            ImGui::Combo("Aspect", &reelResIdx,
-                "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0");
+            if (ImGui::Combo("Aspect", &reelResIdx,
+                    "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0")) {
+                // Keep reelW/reelH live so the preview framing follows the combo
+                // (StartReelExport also sets these; harmless to do it here too).
+                switch (reelResIdx) {
+                    case 1:  reelW = 1080; reelH = 1350; break;
+                    case 2:  reelW = 1920; reelH = 1080; break;
+                    default: reelW = 1080; reelH = 1920; break;
+                }
+            }
+
+            // Live "record-safe" framing for OBS: shows the scene at the exact
+            // reel aspect (black bars fill the rest of the window) so a quick
+            // OBS grab matches what the offline export would produce.
+            ImGui::Checkbox("Reel Preview (frame view for OBS)", &reelPreview);
+            if (reelPreview)
+                ImGui::TextDisabled("Recording %d x %d framing. Crop the black bars in OBS.",
+                                    reelW, reelH);
+
             ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
             ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
             if (ImGui::Button("Export Reel")) StartReelExport();
             if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
             ImGui::TextDisabled(
-                "Uses your current live look. Offline render is heavy, so:\n"
+                "Reel Preview = quick OBS captures (live, audio-reactive).\n"
+                "Export Reel = frame-accurate render for longer/final videos.\n"
+                "Export is heavy, so:\n"
                 " - Test with Max seconds = 5 first.\n"
                 " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
                 " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
@@ -813,6 +851,29 @@ void Scene0p::Render() const {
         }
         return;
     }
+
+    // Reel preview: render the live scene into the portrait target at the reel
+    // aspect, then blit it 1:1 (centered, black bars) to the window so OBS can
+    // capture a true 9:16 frame. Same framing the offline export produces.
+    if (reelPreview && previewFBO && previewW > 0 && previewH > 0) {
+        const Matrix4 previewProj = MMath::perspective(
+            45.0f, float(reelW) / float(reelH), 0.5f, 100.0f);
+        RenderSceneTo(previewFBO, previewW, previewH, previewProj);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, windowW, windowH);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        int dx = (windowW - previewW) / 2;
+        int dy = (windowH - previewH) / 2;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, previewFBO);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, previewW, previewH, dx, dy, dx + previewW, dy + previewH,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
+
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
 }
 
@@ -906,6 +967,21 @@ void Scene0p::ApplyArtPreset(int which) {
     fluidGPU->param_timeStep = 1.0e-3f;
     fluidGPU->param_pause = false;
 
+    // Reset the knobs individual presets don't all set, so a preset lands the
+    // same no matter what was tuned before it (each case overrides as needed).
+    fluidGPU->param_mass            = 13.8f;
+    fluidGPU->param_wallRestitution = 0.15f;
+    fluidGPU->param_wallFriction    = 0.02f;
+    fluidGPU->param_foamGen         = 1.0f;
+    renderRadiusScale     = 1.3f;
+    patternScale          = 1.0f;
+    audioBassWavelength   = 10.0f; audioBassPhaseSpeed   = 1.5f;
+    audioMidWavelength    = 3.0f;  audioMidRotSpeed      = 1.2f;
+    audioTrebleWavelength = 1.0f;  audioTreblePhaseSpeed = 14.0f;
+
+    // Envelope timing is applied to the live reactor at the end; cases may set it.
+    float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
+
     switch (which) {
     case 0: // Zero-G Nebula: drifting cloud in a sphere, galaxy colors
         fluidGPU->param_shapeType = 1;
@@ -975,7 +1051,7 @@ void Scene0p::ApplyArtPreset(int which) {
         audioTrebleForce = 4.0f; audioTrebleThreshold = 0.06f;
         audioSizeKick = 0.2f; audioShimmerKick = 0.4f; audioFoamKick = 1.2f;
         break;
-    default: // 4, Molten Disco: gold metal sloshing in a cylinder
+    case 4: // Molten Disco: gold metal sloshing in a cylinder
         fluidGPU->param_shapeType = 2;
         fluidGPU->param_boxHalf = Vec3(6, 5, 6);
         fluidGPU->param_gravityY = -200.0f;
@@ -992,11 +1068,116 @@ void Scene0p::ApplyArtPreset(int which) {
         audioTrebleForce = 2.5f; audioTrebleThreshold = 0.05f;
         audioSizeKick = 0.45f; audioShimmerKick = 0.7f; audioFoamKick = 0.3f;
         break;
+    case 5: // Vaporwave Orb: the saved live look -- floaty vaporwave sphere
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(14.35f, 14.35f, 14.35f);
+        fluidGPU->param_h = 0.634f;
+        fluidGPU->param_mass = 156.5f;
+        fluidGPU->param_gasConstant = 9467.0f;
+        fluidGPU->param_viscosity = 4.177f;
+        fluidGPU->param_gravityY = -371.835f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        fluidGPU->param_timeStep = 0.000388f;
+        fluidGPU->param_wallRestitution = 0.22f;
+        fluidGPU->param_wallFriction = 0.131f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.3f;
+        paletteId = 6; vizMode = 0; vizRangeMin = 8.0f; vizRangeMax = 40.0f;
+        paletteFlow = -0.165f;
+        audioMasterGain = 1.816f;
+        audioBassForce = 25.685f;   audioBassThreshold = 0.08f;
+        audioMidForce  = 21.629f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 27.959f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 2.0f; audioShimmerKick = 1.092f; audioFoamKick = 1.570f;
+        audioBassWavelength = 17.657f; audioMidWavelength = 7.385f; audioTrebleWavelength = 2.043f;
+        audioBassPhaseSpeed = 7.816f;  audioMidRotSpeed = 2.579f;  audioTreblePhaseSpeed = 15.285f;
+        presetAttackMs = 15.0f; presetReleaseMs = 250.0f;
+        break;
+    case 6: // Chrome Mercury: cohesive metallic blob, color shifts with motion
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -40.0f;
+        fluidGPU->param_viscosity = 7.0f;
+        fluidGPU->param_gasConstant = 1800.0f;
+        fluidGPU->param_surfaceTension = 0.12f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.4f;
+        paletteId = 11; vizMode = 5; vizRangeMin = 0.0f; vizRangeMax = 12.0f;
+        paletteFlow = 0.03f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 14.0f;  audioBassThreshold = 0.06f;
+        audioMidForce  = 5.0f;   audioMidThreshold  = 0.07f;
+        audioTrebleForce = 2.0f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.5f; audioShimmerKick = 0.8f; audioFoamKick = 0.2f;
+        audioBassWavelength = 12.0f;
+        presetAttackMs = 18.0f; presetReleaseMs = 300.0f;
+        break;
+    case 7: // Plasma Storm: energetic expanding energy ball, snappy strobe
+        fluidGPU->param_shapeType = 1;
+        fluidGPU->param_boxHalf = Vec3(7, 7, 7);
+        fluidGPU->param_gravityY = -8.0f;
+        fluidGPU->param_viscosity = 1.5f;
+        fluidGPU->param_gasConstant = 5000.0f;
+        fluidGPU->param_surfaceTension = 0.05f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.1f;
+        paletteId = 10; vizMode = 6; vizRangeMin = 0.0f; vizRangeMax = 7.0f;
+        paletteFlow = 0.35f;
+        audioMasterGain = 1.8f;
+        audioBassForce = 16.0f;  audioBassThreshold = 0.05f;
+        audioMidForce  = 7.0f;   audioMidThreshold  = 0.06f;
+        audioTrebleForce = 4.0f; audioTrebleThreshold = 0.04f;
+        audioSizeKick = 0.6f; audioShimmerKick = 1.2f; audioFoamKick = 0.3f;
+        audioTreblePhaseSpeed = 20.0f;
+        presetAttackMs = 10.0f; presetReleaseMs = 160.0f;
+        break;
+    case 8: // Lava Lamp: slow rising warm blobs in a tall cylinder
+        fluidGPU->param_shapeType = 2;
+        fluidGPU->param_boxHalf = Vec3(5, 7, 5);
+        fluidGPU->param_gravityY = -25.0f;
+        fluidGPU->param_viscosity = 10.0f;
+        fluidGPU->param_gasConstant = 900.0f;
+        fluidGPU->param_surfaceTension = 0.15f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.5f;
+        paletteId = 16; vizMode = 0; vizRangeMin = -7.0f; vizRangeMax = 7.0f;
+        paletteFlow = 0.04f;
+        audioMasterGain = 1.3f;
+        audioBassForce = 10.0f;  audioBassThreshold = 0.07f;
+        audioMidForce  = 4.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 1.5f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.4f; audioShimmerKick = 0.4f; audioFoamKick = 0.2f;
+        audioBassWavelength = 8.0f;
+        presetAttackMs = 25.0f; presetReleaseMs = 420.0f;
+        break;
+    default: // 9, Candy Rain: playful colorful downpour in a box
+        fluidGPU->param_shapeType = 0;
+        fluidGPU->param_boxHalf = Vec3(8, 8, 8);
+        fluidGPU->param_gravityY = -500.0f;
+        fluidGPU->param_viscosity = 2.0f;
+        fluidGPU->param_gasConstant = 2500.0f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.1f;
+        paletteId = 20; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 14.0f;
+        paletteFlow = 0.15f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 16.0f;  audioBassThreshold = 0.08f;
+        audioMidForce  = 8.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 5.0f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.3f; audioShimmerKick = 1.0f; audioFoamKick = 0.4f;
+        audioTrebleWavelength = 1.5f; audioTreblePhaseSpeed = 16.0f;
+        presetAttackMs = 12.0f; presetReleaseMs = 200.0f;
+        break;
     }
 
     // Turn the audio reaction on with the new settings and respawn the fluid
     audioReactiveEnabled = true;
-    if (audioReactive) audioReactive->gain.store(audioMasterGain);
+    if (audioReactive) {
+        audioReactive->gain.store(audioMasterGain);
+        audioReactive->attackMs.store(presetAttackMs);
+        audioReactive->releaseMs.store(presetReleaseMs);
+    }
     pendingReset = true;
 }
 
@@ -1620,6 +1801,59 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
 // Reels Export — offline, frame-accurate, music-synced render
 // ---------------------------------------------------------------------------
 
+void Scene0p::DestroyPreviewTarget() {
+    if (previewFBO) glDeleteFramebuffers(1, &previewFBO);
+    if (previewTex) glDeleteTextures(1, &previewTex);
+    if (previewRBO) glDeleteRenderbuffers(1, &previewRBO);
+    previewFBO = previewTex = previewRBO = 0;
+    previewW = previewH = 0;
+}
+
+// Sizes the portrait preview target so it fills the window at the current reel
+// aspect (reelW:reelH), rebuilding only when that fit changes (window resize or
+// a new Aspect pick). Keeps the SSFR buffers matched to it so the water path
+// composites correctly. Cheap no-op once built and in sync.
+void Scene0p::EnsurePreviewTarget() {
+    if (windowW <= 0 || windowH <= 0) return;
+
+    const float aspect = float(reelW) / float(reelH);   // portrait (<1) for reels
+    int ph = windowH;
+    int pw = int(std::lround(ph * aspect));
+    if (pw > windowW) { pw = windowW; ph = int(std::lround(pw / aspect)); }
+    pw = std::max(2, pw);
+    ph = std::max(2, ph);
+
+    const bool sizeOK = (pw == previewW && ph == previewH && previewFBO != 0);
+    const bool ssfrOK = (!useWaterRendering || (ssfrW == pw && ssfrH == ph));
+    if (sizeOK && ssfrOK) return;
+
+    if (pw != previewW || ph != previewH || previewFBO == 0) {
+        DestroyPreviewTarget();
+        previewW = pw;
+        previewH = ph;
+
+        glGenTextures(1, &previewTex);
+        glBindTexture(GL_TEXTURE_2D, previewTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, previewW, previewH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenRenderbuffers(1, &previewRBO);
+        glBindRenderbuffer(GL_RENDERBUFFER, previewRBO);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, previewW, previewH);
+        glGenFramebuffers(1, &previewFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, previewFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previewTex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, previewRBO);
+        const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        if (!fboOK) { DestroyPreviewTarget(); reelPreview = false; return; }
+    }
+
+    if (useWaterRendering) InitSSFRBuffers(previewW, previewH);
+}
+
 void Scene0p::StartReelExport() {
     if (reelExporting || !fluidGPU) return;
 
@@ -1783,9 +2017,14 @@ void Scene0p::FinishReelExport(bool wroteBat) {
     if (reelRBO) glDeleteRenderbuffers(1, &reelRBO);
     reelFBO = reelTex = reelRBO = 0;
 
-    if (useWaterRendering && windowW > 0 && windowH > 0)
-        InitSSFRBuffers(windowW, windowH);
     reelExporting = false;
+    if (reelPreview) {
+        // Force the preview target to rebuild; EnsurePreviewTarget re-sizes the
+        // SSFR buffers to the portrait preview on the next Update.
+        previewW = previewH = 0;
+    } else if (useWaterRendering && windowW > 0 && windowH > 0) {
+        InitSSFRBuffers(windowW, windowH);
+    }
 }
 
 void Scene0p::DoCapture() {
