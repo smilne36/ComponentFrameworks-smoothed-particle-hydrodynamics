@@ -151,6 +151,7 @@ void Scene0p::OnDestroy() {
     if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
     DestroySSFRBuffers();
+    DestroyPreviewTarget();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
     if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
     if (terrainVBO) glDeleteBuffers(1, &terrainVBO);
@@ -345,15 +346,25 @@ void Scene0p::Update(const float deltaTime) {
     }
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 
-    // Resize SSFR FBOs if viewport changed; remember the on-screen size for captures
+    // Track the on-screen size (for captures) and keep the SSFR buffers sized to
+    // whatever we're currently rendering into: the reel-preview portrait target
+    // when previewing, otherwise the window. (During an export the buffers stay
+    // reel-sized and are managed by Start/FinishReelExport.)
     {
         GLint vp[4] = {0,0,0,0};
         glGetIntegerv(GL_VIEWPORT, vp);
         if (vp[2] > 0 && vp[3] > 0) {
             windowW = vp[2];
             windowH = vp[3];
-            if (vp[2] != ssfrW || vp[3] != ssfrH)
-                InitSSFRBuffers(vp[2], vp[3]);
+        }
+    }
+    if (!reelExporting) {
+        if (reelPreview) {
+            EnsurePreviewTarget();
+        } else {
+            if (previewFBO) DestroyPreviewTarget();
+            if (windowW > 0 && windowH > 0 && (windowW != ssfrW || windowH != ssfrH))
+                InitSSFRBuffers(windowW, windowH);
         }
     }
 
@@ -564,14 +575,33 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
             ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
             ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
-            ImGui::Combo("Aspect", &reelResIdx,
-                "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0");
+            if (ImGui::Combo("Aspect", &reelResIdx,
+                    "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0")) {
+                // Keep reelW/reelH live so the preview framing follows the combo
+                // (StartReelExport also sets these; harmless to do it here too).
+                switch (reelResIdx) {
+                    case 1:  reelW = 1080; reelH = 1350; break;
+                    case 2:  reelW = 1920; reelH = 1080; break;
+                    default: reelW = 1080; reelH = 1920; break;
+                }
+            }
+
+            // Live "record-safe" framing for OBS: shows the scene at the exact
+            // reel aspect (black bars fill the rest of the window) so a quick
+            // OBS grab matches what the offline export would produce.
+            ImGui::Checkbox("Reel Preview (frame view for OBS)", &reelPreview);
+            if (reelPreview)
+                ImGui::TextDisabled("Recording %d x %d framing. Crop the black bars in OBS.",
+                                    reelW, reelH);
+
             ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
             ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
             if (ImGui::Button("Export Reel")) StartReelExport();
             if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
             ImGui::TextDisabled(
-                "Uses your current live look. Offline render is heavy, so:\n"
+                "Reel Preview = quick OBS captures (live, audio-reactive).\n"
+                "Export Reel = frame-accurate render for longer/final videos.\n"
+                "Export is heavy, so:\n"
                 " - Test with Max seconds = 5 first.\n"
                 " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
                 " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
@@ -813,6 +843,29 @@ void Scene0p::Render() const {
         }
         return;
     }
+
+    // Reel preview: render the live scene into the portrait target at the reel
+    // aspect, then blit it 1:1 (centered, black bars) to the window so OBS can
+    // capture a true 9:16 frame. Same framing the offline export produces.
+    if (reelPreview && previewFBO && previewW > 0 && previewH > 0) {
+        const Matrix4 previewProj = MMath::perspective(
+            45.0f, float(reelW) / float(reelH), 0.5f, 100.0f);
+        RenderSceneTo(previewFBO, previewW, previewH, previewProj);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, windowW, windowH);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        int dx = (windowW - previewW) / 2;
+        int dy = (windowH - previewH) / 2;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, previewFBO);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, previewW, previewH, dx, dy, dx + previewW, dy + previewH,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
+
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
 }
 
@@ -1620,6 +1673,59 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
 // Reels Export — offline, frame-accurate, music-synced render
 // ---------------------------------------------------------------------------
 
+void Scene0p::DestroyPreviewTarget() {
+    if (previewFBO) glDeleteFramebuffers(1, &previewFBO);
+    if (previewTex) glDeleteTextures(1, &previewTex);
+    if (previewRBO) glDeleteRenderbuffers(1, &previewRBO);
+    previewFBO = previewTex = previewRBO = 0;
+    previewW = previewH = 0;
+}
+
+// Sizes the portrait preview target so it fills the window at the current reel
+// aspect (reelW:reelH), rebuilding only when that fit changes (window resize or
+// a new Aspect pick). Keeps the SSFR buffers matched to it so the water path
+// composites correctly. Cheap no-op once built and in sync.
+void Scene0p::EnsurePreviewTarget() {
+    if (windowW <= 0 || windowH <= 0) return;
+
+    const float aspect = float(reelW) / float(reelH);   // portrait (<1) for reels
+    int ph = windowH;
+    int pw = int(std::lround(ph * aspect));
+    if (pw > windowW) { pw = windowW; ph = int(std::lround(pw / aspect)); }
+    pw = std::max(2, pw);
+    ph = std::max(2, ph);
+
+    const bool sizeOK = (pw == previewW && ph == previewH && previewFBO != 0);
+    const bool ssfrOK = (!useWaterRendering || (ssfrW == pw && ssfrH == ph));
+    if (sizeOK && ssfrOK) return;
+
+    if (pw != previewW || ph != previewH || previewFBO == 0) {
+        DestroyPreviewTarget();
+        previewW = pw;
+        previewH = ph;
+
+        glGenTextures(1, &previewTex);
+        glBindTexture(GL_TEXTURE_2D, previewTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, previewW, previewH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenRenderbuffers(1, &previewRBO);
+        glBindRenderbuffer(GL_RENDERBUFFER, previewRBO);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, previewW, previewH);
+        glGenFramebuffers(1, &previewFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, previewFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previewTex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, previewRBO);
+        const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        if (!fboOK) { DestroyPreviewTarget(); reelPreview = false; return; }
+    }
+
+    if (useWaterRendering) InitSSFRBuffers(previewW, previewH);
+}
+
 void Scene0p::StartReelExport() {
     if (reelExporting || !fluidGPU) return;
 
@@ -1783,9 +1889,14 @@ void Scene0p::FinishReelExport(bool wroteBat) {
     if (reelRBO) glDeleteRenderbuffers(1, &reelRBO);
     reelFBO = reelTex = reelRBO = 0;
 
-    if (useWaterRendering && windowW > 0 && windowH > 0)
-        InitSSFRBuffers(windowW, windowH);
     reelExporting = false;
+    if (reelPreview) {
+        // Force the preview target to rebuild; EnsurePreviewTarget re-sizes the
+        // SSFR buffers to the portrait preview on the next Update.
+        previewW = previewH = 0;
+    } else if (useWaterRendering && windowW > 0 && windowH > 0) {
+        InitSSFRBuffers(windowW, windowH);
+    }
 }
 
 void Scene0p::DoCapture() {

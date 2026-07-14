@@ -155,6 +155,17 @@ private:
     void    ReelExportStep();
     void    FinishReelExport(bool wroteBat);
 
+    // --- Reel Preview (frame the live view as a 9:16 reel for OBS capture) ---
+    // Renders the live sim into a portrait offscreen target at the reel aspect
+    // (reelW:reelH), then blits it letterboxed to the window. Sim + audio still
+    // run live; only the framing changes. For quick OBS grabs; the offline Reels
+    // export stays the path for longer, higher-quality renders.
+    bool    reelPreview = false;
+    GLuint  previewFBO = 0, previewTex = 0, previewRBO = 0;
+    int     previewW = 0, previewH = 0;   // portrait target size (fits the window)
+    void    EnsurePreviewTarget();        // (re)build target when window/aspect changes
+    void    DestroyPreviewTarget();
+
     void    UpdateContainerWireframe();
     void    SetupImpostorVAO();
     void    DrawFluidImpostors(const Matrix4& proj, int outH) const;
