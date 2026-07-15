@@ -48,6 +48,9 @@ public:
 
     void   ApplyWaveImpulse(float amplitude, float wavelength, float phase, const Vec3& dir,
         float yMin = -FLT_MAX, float yMax = FLT_MAX);
+    // Whirlpool: tangential kick around the container's local Y axis, plus an
+    // optional inward pull. Pass kicks pre-multiplied by dt (velocity change).
+    void   ApplyVortexImpulse(float tangentKick, float inwardKick);
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -74,6 +77,7 @@ public:
     GLuint obbConstraintShader = 0;
     GLuint radixSortShader = 0;
     GLuint waveImpulseShader = 0;
+    GLuint vortexImpulseShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;
@@ -106,8 +110,10 @@ public:
 
     Vec3  param_boxCenter = Vec3(0, 0, 0);
     Vec3  param_boxHalf = Vec3(7, 7, 7);   // box: halves | sphere: x=radius | cylinder: x=radius, y=half height
+                                           // torus: x=ring radius, y=tube radius | capsule: x=radius, y=core half length
+                                           // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
-    int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder
+    int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
 
@@ -116,6 +122,10 @@ public:
         switch (param_shapeType) {
         case 1:  return Vec3(param_boxHalf.x, param_boxHalf.x, param_boxHalf.x);
         case 2:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 3:  return Vec3(param_boxHalf.x + param_boxHalf.y, param_boxHalf.y, param_boxHalf.x + param_boxHalf.y);
+        case 4:  return Vec3(param_boxHalf.x, param_boxHalf.y + param_boxHalf.x, param_boxHalf.x);
+        case 5:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 6:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
         default: return param_boxHalf;
         }
     }

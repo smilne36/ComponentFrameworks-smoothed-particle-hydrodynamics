@@ -194,6 +194,7 @@
     <None Include="shaders\particleImpostor.vert" />
     <None Include="shaders\RadixSort.comp" />
     <None Include="shaders\SPHFluid.comp" />
+    <None Include="shaders\VortexImpulse.comp" />
     <None Include="shaders\WaveImpulse.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -1,0 +1,49 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// Match CPU side SPHParticle layout (80 bytes)
+struct SPHParticle {
+    vec4  pos;
+    vec4  vel;
+    vec4  acc;
+    float density;
+    float pressure;
+    float padA;
+    float padB;
+    int   isGhost;
+    int   isActive;
+    int   padC;
+    int   pad0;
+};
+
+layout(std430, binding = 0) buffer ParticleBuf { SPHParticle particles[]; };
+
+// Uniforms expected by ApplyVortexImpulse() in SPHFluid3D.cpp.
+// Swirls particles tangentially around the container's local Y axis (whirlpool),
+// with an optional radial pull toward the axis. Kicks arrive pre-multiplied by
+// dt on the CPU so the effect is framerate-independent.
+uniform int   N;
+uniform vec3  uCenter;    // container center (world)
+uniform vec3  uAxis;      // normalized swirl axis = container local +Y in world
+uniform float uTangent;   // tangential velocity kick this call
+uniform float uInward;    // radial pull kick this call
+uniform float uRadius;    // container XZ radius, for the core falloff
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(N)) return;
+
+    SPHParticle p = particles[i];
+    if (p.isGhost != 0) return;
+
+    vec3  rel    = p.pos.xyz - uCenter;
+    vec3  radial = rel - uAxis * dot(rel, uAxis);
+    float r      = length(radial);
+    if (r < 1e-4) return;                       // on-axis: no defined tangent
+    vec3  rHat = radial / r;
+    vec3  tHat = cross(uAxis, rHat);            // unit by construction
+    // Ramp in from the axis so the core doesn't over-spin; full kick by ~35% radius
+    float fall = smoothstep(0.0, 0.35 * max(uRadius, 1e-4), r);
+    p.vel.xyz += tHat * (uTangent * fall) - rHat * (uInward * fall);
+    particles[i] = p;
+}
