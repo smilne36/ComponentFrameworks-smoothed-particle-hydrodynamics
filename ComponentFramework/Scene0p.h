@@ -49,6 +49,7 @@ private:
     int     maxSubstepsPerFrame = 16;
 
     bool    renderFromSSBO = true;
+    int     uiParticleCount = 50000;   // Performance panel slider; applied on reset
 
     Vec3    lastBoxCenter{};
     Vec3    lastBoxHalf{};
@@ -124,6 +125,18 @@ private:
     float   audioSizeKick    = 0.3f;   // bass -> particle render size
     float   audioShimmerKick = 0.5f;   // treble -> brightness pulse
     float   audioFoamKick    = 0.6f;   // mid -> foam boost
+    float   audioHueKickDeg  = 0.0f;   // bass -> hue shift (beat color pulse), degrees at full envelope
+    float   audioFlashKick   = 0.0f;   // bass -> brightness flash (multiplies with the treble shimmer)
+
+    // --- Auto camera orbit (slow cinematic spin; works live and in reel export) ---
+    bool    autoOrbitEnabled  = false;
+    float   autoOrbitSpeedDeg = 8.0f;  // deg/sec; sign flips direction
+    float   audioOrbitKick    = 0.0f;  // bass -> orbit speed multiplier kick
+
+    // --- Vortex swirl (whirlpool around the container's Y axis) ---
+    float   vortexBaseSwirl   = 0.0f;  // constant tangential accel; works without audio
+    float   audioVortexForce  = 0.0f;  // mid -> extra swirl
+    float   vortexInwardPull  = 0.0f;  // radial pull toward the axis
 
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
@@ -132,10 +145,18 @@ private:
     float   renderRadiusScaleLive = 1.3f;
     float   brightMulLive         = 1.0f;
     float   foamAmountLive        = 1.5f;
+    float   hueShiftDegLive       = 0.0f;
+    float   orbitSpeedDegLive     = 0.0f;
 
-    // Applies one frame of audio reaction (3 wave impulses + the 3 *Live
-    // values), shared by the live reactor and the offline Reels render.
+    // Applies one frame of audio reaction (wave impulses + vortex + the *Live
+    // values), shared by the live reactor and the offline Reels render. Also
+    // called with all-zero bands when audio is off, so every render mode runs
+    // the exact same code path (base swirl etc. still apply).
     void    DriveAudioReaction(float bass, float mid, float treble, float dt);
+
+    // Rebuilds cameraPos + viewMatrix from the spherical orbit parameters
+    // (camAzimuth/camElevation/camDist around cameraTarget).
+    void    RebuildOrbitCamera();
 
     // --- Reels Export (offline, frame-accurate, music-synced render) ---
     bool    reelExporting = false;

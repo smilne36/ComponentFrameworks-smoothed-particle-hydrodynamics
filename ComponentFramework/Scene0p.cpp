@@ -67,6 +67,7 @@ bool Scene0p::OnCreate() {
     modelMatrix.loadIdentity();
 
     fluidGPU = new SPHFluidGPU(50000);
+    uiParticleCount = int(fluidGPU->numParticles);   // keep the Performance slider in sync
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
 
     lineShader = new Shader("shaders/lineVert.glsl", "shaders/lineFrag.glsl");
@@ -75,7 +76,7 @@ bool Scene0p::OnCreate() {
     glBindVertexArray(boxVAO);
     glGenBuffers(1, &boxVBO);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 512, nullptr, GL_DYNAMIC_DRAW); // enough for sphere/cylinder wireframes
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 3 * 512, nullptr, GL_DYNAMIC_DRAW); // placeholder; UpdateContainerWireframe re-specifies per shape
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
     glBindVertexArray(0);
@@ -313,6 +314,104 @@ void Scene0p::UpdateContainerWireframe() {
             float cx = std::cos(a) * r, cz = std::sin(a) * r;
             seg(xform(cx, -hh, cz), xform(cx, hh, cz));
         }
+    } else if (shape == 3) {
+        // Torus: equator rings at R+-r, rings at y=+-r radius R, tube cross-sections
+        const float R = H.x, r = H.y;
+        auto ring = [&](float radius, float y) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                Vec3 p = xform(std::cos(a) * radius, y, std::sin(a) * radius);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        };
+        ring(R - r, 0.0f);
+        ring(R + r, 0.0f);
+        ring(R, -r);
+        ring(R,  r);
+        const int CROSS = 8, CSEGS = 24;
+        for (int k = 0; k < CROSS; ++k) {
+            float phi = (float(k) / CROSS) * TWO_PI;
+            float cx = std::cos(phi), sz = std::sin(phi);
+            Vec3 prev;
+            for (int s = 0; s <= CSEGS; ++s) {
+                float a = (float(s) / CSEGS) * TWO_PI;
+                float rad = R + std::cos(a) * r;   // radial dir component
+                Vec3 p = xform(cx * rad, std::sin(a) * r, sz * rad);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+    } else if (shape == 4) {
+        // Capsule: two circles + four verticals + cap arcs in the XY and ZY planes
+        const float r = H.x, hh = H.y;
+        for (int cap = 0; cap < 2; ++cap) {
+            float y = cap ? hh : -hh;
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                Vec3 p = xform(std::cos(a) * r, y, std::sin(a) * r);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+        for (int s = 0; s < 4; ++s) {
+            float a = (float(s) / 4.0f) * TWO_PI;
+            float cx = std::cos(a) * r, cz = std::sin(a) * r;
+            seg(xform(cx, -hh, cz), xform(cx, hh, cz));
+        }
+        const int ASEGS = 24;
+        for (int half = 0; half < 2; ++half) {          // 0 = top dome, 1 = bottom dome
+            float y0 = half ? -hh : hh, dir = half ? -1.0f : 1.0f;
+            for (int plane = 0; plane < 2; ++plane) {   // XY then ZY
+                Vec3 prev;
+                for (int s = 0; s <= ASEGS; ++s) {
+                    float a = (float(s) / ASEGS) * 3.14159265f;   // half circle
+                    float c = std::cos(a) * r, e = std::sin(a) * r * dir;
+                    Vec3 p = plane ? xform(0.0f, y0 + e, c) : xform(c, y0 + e, 0.0f);
+                    if (s > 0) seg(prev, p);
+                    prev = p;
+                }
+            }
+        }
+    } else if (shape == 5) {
+        // Hourglass: base circles at +-H, neck circle at 0, slanted edges
+        const float baseR = H.x, hh = H.y;
+        const float neckR = std::min(H.z, baseR);
+        auto ring = [&](float radius, float y) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float a = (float(s) / SEGS) * TWO_PI;
+                Vec3 p = xform(std::cos(a) * radius, y, std::sin(a) * radius);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        };
+        ring(baseR, -hh);
+        ring(baseR,  hh);
+        ring(neckR, 0.0f);
+        for (int s = 0; s < 4; ++s) {
+            float a = (float(s) / 4.0f) * TWO_PI;
+            float cx = std::cos(a), cz = std::sin(a);
+            seg(xform(cx * baseR,  hh, cz * baseR), xform(cx * neckR, 0.0f, cz * neckR));
+            seg(xform(cx * baseR, -hh, cz * baseR), xform(cx * neckR, 0.0f, cz * neckR));
+        }
+    } else if (shape == 6) {
+        // Egg (ellipsoid): equator circle + two vertical ellipse sections
+        const float a = H.x, b = H.y;
+        for (int axis = 0; axis < 3; ++axis) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float t = (float(s) / SEGS) * TWO_PI;
+                float ct = std::cos(t), st = std::sin(t);
+                Vec3 p = (axis == 0) ? xform(ct * a, 0.0f, st * a)      // equator
+                       : (axis == 1) ? xform(ct * a, st * b, 0.0f)     // XY ellipse
+                       :               xform(0.0f, st * b, ct * a);    // ZY ellipse
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
     } else {
         // Box: 12 edges
         Vec3 c[8]; int i = 0;
@@ -326,8 +425,23 @@ void Scene0p::UpdateContainerWireframe() {
 
     containerWireVerts = int(lines.size() / 3);
     glBindBuffer(GL_ARRAY_BUFFER, boxVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, lines.size() * sizeof(float), lines.data());
+    // Re-specify the whole buffer (orphaning): shapes like the torus need more
+    // vertices than the fixed allocation made at startup could hold.
+    glBufferData(GL_ARRAY_BUFFER, lines.size() * sizeof(float), lines.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+// Rebuilds cameraPos + viewMatrix from the spherical orbit parameters. Shared
+// by Update() and ReelExportStep() so the auto-orbit advances identically in
+// live rendering and the deterministic offline export.
+void Scene0p::RebuildOrbitCamera() {
+    float cosEl = std::cos(camElevation);
+    float sinEl = std::sin(camElevation);
+    cameraPos = cameraTarget + Vec3(
+        std::sin(camAzimuth) * cosEl,
+        sinEl,
+        std::cos(camAzimuth) * cosEl) * camDist;
+    viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 }
 
 void Scene0p::Update(const float deltaTime) {
@@ -335,16 +449,12 @@ void Scene0p::Update(const float deltaTime) {
     float ballX = std::sin(ballAnimTime) * 3.0f;
     if (sphere) sphere->SetPosition(Vec3(ballX, 0.0f, 0.0f));
 
-    // Rebuild camera position from spherical orbit parameters
-    {
-        float cosEl = std::cos(camElevation);
-        float sinEl = std::sin(camElevation);
-        cameraPos = cameraTarget + Vec3(
-            std::sin(camAzimuth) * cosEl,
-            sinEl,
-            std::cos(camAzimuth) * cosEl) * camDist;
-    }
-    viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
+    // Auto orbit: spin the camera around the fluid. orbitSpeedDegLive carries
+    // the bass kick (recomputed in DriveAudioReaction). During a reel export
+    // the advance happens in ReelExportStep with frameDt instead of wall-clock.
+    if (autoOrbitEnabled && !reelExporting)
+        camAzimuth += orbitSpeedDegLive * (3.14159265f / 180.0f) * deltaTime;
+    RebuildOrbitCamera();
 
     // Track the on-screen size (for captures) and keep the SSFR buffers sized to
     // whatever we're currently rendering into: the reel-preview portrait target
@@ -452,6 +562,12 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::Button("Lava Lamp"))      ApplyArtPreset(8);
         ImGui::SameLine();
         if (ImGui::Button("Candy Rain"))     ApplyArtPreset(9);
+        if (ImGui::Button("Donut Vortex"))   ApplyArtPreset(10);
+        ImGui::SameLine();
+        if (ImGui::Button("Capsule Wave"))   ApplyArtPreset(11);
+        if (ImGui::Button("Hourglass Drip")) ApplyArtPreset(12);
+        ImGui::SameLine();
+        if (ImGui::Button("Cosmic Egg"))     ApplyArtPreset(13);
         ImGui::PopID();
     }
 
@@ -474,7 +590,8 @@ void Scene0p::Update(const float deltaTime) {
             fluidGPU->param_shapeType = 0;   // river terrain assumes the box
             ImGui::TextDisabled("River mode uses the Box container.");
         } else {
-            ImGui::Combo("Shape", &fluidGPU->param_shapeType, "Box\0Sphere\0Cylinder\0");
+            ImGui::Combo("Shape", &fluidGPU->param_shapeType,
+                "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0");
         }
         ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
         if (fluidGPU->param_shapeType == 1) {
@@ -482,6 +599,23 @@ void Scene0p::Update(const float deltaTime) {
         } else if (fluidGPU->param_shapeType == 2) {
             ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+        } else if (fluidGPU->param_shapeType == 3) {
+            ImGui::DragFloat("Ring Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+            ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            // A tube fatter than the ring degenerates the donut
+            fluidGPU->param_boxHalf.y = std::min(fluidGPU->param_boxHalf.y, fluidGPU->param_boxHalf.x);
+        } else if (fluidGPU->param_shapeType == 4) {
+            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+            ImGui::DragFloat("Core Half Length", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+        } else if (fluidGPU->param_shapeType == 5) {
+            ImGui::DragFloat("Base Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+            ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            ImGui::DragFloat("Neck Radius", &fluidGPU->param_boxHalf.z, 0.05f, 0.05f, 100.0f);
+            fluidGPU->param_boxHalf.z = std::max(0.05f,
+                std::min(fluidGPU->param_boxHalf.z, fluidGPU->param_boxHalf.x * 0.95f));
+        } else if (fluidGPU->param_shapeType == 6) {
+            ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+            ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
         } else {
             ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
         }
@@ -494,6 +628,15 @@ void Scene0p::Update(const float deltaTime) {
         if (showContainerOutline)
             ImGui::ColorEdit3("Outline Color", containerOutlineColor);
         ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
+        ImGui::PopID();
+    }
+
+    if (ImGui::CollapsingHeader("Camera Orbit")) {
+        ImGui::PushID("CameraOrbit");
+        ImGui::Checkbox("Auto Orbit", &autoOrbitEnabled);
+        ImGui::SliderFloat("Speed (deg/s)", &autoOrbitSpeedDeg, -60.0f, 60.0f);
+        ImGui::SliderFloat("Bass Speed Kick", &audioOrbitKick, 0.0f, 3.0f);
+        ImGui::TextDisabled("Slow cinematic spin around the fluid. Negative = other way.\nWorks in Reel Export too (frame-accurate). Drag still steers.");
         ImGui::PopID();
     }
 
@@ -523,6 +666,15 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::PopID();
     }
 
+    if (ImGui::CollapsingHeader("Vortex Swirl")) {
+        ImGui::PushID("VortexSwirl");
+        ImGui::SliderFloat("Base Swirl", &vortexBaseSwirl, -30.0f, 30.0f);
+        ImGui::SliderFloat("Audio Swirl (mid)", &audioVortexForce, 0.0f, 30.0f);
+        ImGui::SliderFloat("Inward Pull", &vortexInwardPull, 0.0f, 10.0f);
+        ImGui::TextDisabled("Whirlpool around the container's axis. Base Swirl works\nwithout audio; the mid band spins it up with the music.");
+        ImGui::PopID();
+    }
+
     if (ImGui::CollapsingHeader("Audio Reactive")) {
         ImGui::PushID("AudioReactive");
         ImGui::Checkbox("Enable", &audioReactiveEnabled);   // thread start/stop happens in Update()
@@ -548,6 +700,8 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::SliderFloat("Size Kick (bass)", &audioSizeKick,    0.0f, 2.0f);
         ImGui::SliderFloat("Shimmer (treble)", &audioShimmerKick, 0.0f, 2.0f);
         ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
+        ImGui::SliderFloat("Hue Kick (bass)",  &audioHueKickDeg,  0.0f, 180.0f);
+        ImGui::SliderFloat("Flash (bass)",     &audioFlashKick,   0.0f, 2.0f);
 
         if (ImGui::TreeNode("Advanced")) {
             float atk = audioReactive->attackMs.load();
@@ -739,6 +893,24 @@ void Scene0p::Update(const float deltaTime) {
 
     if (ImGui::CollapsingHeader("Performance")) {
         ImGui::PushID("Performance");
+        // One-click modes: trade fluid-surface quality for capture framerate
+        if (ImGui::Button("Fast Capture")) {
+            ssfrHalfRes = true;  smoothIterations = 3; maxSubstepsPerFrame = 8;  reelSubstepCap = 10;
+            if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Max Quality")) {
+            ssfrHalfRes = false; smoothIterations = 8; maxSubstepsPerFrame = 16; reelSubstepCap = 0;
+            if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
+        }
+        ImGui::SliderInt("Particle Count", &uiParticleCount, 5000, 200000);
+        ImGui::SameLine();
+        if (ImGui::Button("Apply##pcount")) {
+            fluidGPU->numParticles = size_t(std::max(1000, uiParticleCount));
+            pendingReset = true;   // full realloc; the reset block rebinds the instance VBO
+        }
+        ImGui::TextDisabled("Fewer particles = faster + lighter look; more = denser fluid.\nApply respawns the fluid.");
+        ImGui::Separator();
         ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
         ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
         ImGui::SameLine();
@@ -802,9 +974,9 @@ void Scene0p::Update(const float deltaTime) {
                            audioReactive->GetTreble(), deltaTime);
     } else {
         if (audioReactive && audioReactive->IsRunning()) audioReactive->Stop();
-        renderRadiusScaleLive = renderRadiusScale;
-        brightMulLive         = brightMul;
-        foamAmountLive        = foamAmount;
+        // Same code path with silent bands: live values reduce to their bases,
+        // no wave impulses fire, but the base vortex swirl still applies.
+        DriveAudioReaction(0.0f, 0.0f, 0.0f, deltaTime);
     }
 
     const float fixedDt = std::max(1e-6f, fluidGPU->param_timeStep);
@@ -978,6 +1150,9 @@ void Scene0p::ApplyArtPreset(int which) {
     audioBassWavelength   = 10.0f; audioBassPhaseSpeed   = 1.5f;
     audioMidWavelength    = 3.0f;  audioMidRotSpeed      = 1.2f;
     audioTrebleWavelength = 1.0f;  audioTreblePhaseSpeed = 14.0f;
+    autoOrbitEnabled = false; autoOrbitSpeedDeg = 8.0f; audioOrbitKick = 0.0f;
+    audioHueKickDeg  = 0.0f;  audioFlashKick = 0.0f;
+    vortexBaseSwirl  = 0.0f;  audioVortexForce = 0.0f;  vortexInwardPull = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1150,7 +1325,7 @@ void Scene0p::ApplyArtPreset(int which) {
         audioBassWavelength = 8.0f;
         presetAttackMs = 25.0f; presetReleaseMs = 420.0f;
         break;
-    default: // 9, Candy Rain: playful colorful downpour in a box
+    case 9: // Candy Rain: playful colorful downpour in a box
         fluidGPU->param_shapeType = 0;
         fluidGPU->param_boxHalf = Vec3(8, 8, 8);
         fluidGPU->param_gravityY = -500.0f;
@@ -1168,6 +1343,86 @@ void Scene0p::ApplyArtPreset(int which) {
         audioSizeKick = 0.3f; audioShimmerKick = 1.0f; audioFoamKick = 0.4f;
         audioTrebleWavelength = 1.5f; audioTreblePhaseSpeed = 16.0f;
         presetAttackMs = 12.0f; presetReleaseMs = 200.0f;
+        break;
+    case 10: // Donut Vortex: fluid whirling around a torus, trippy swirl colors
+        fluidGPU->param_shapeType = 3;
+        fluidGPU->param_boxHalf = Vec3(7.0f, 2.2f, 0.0f);   // ring R, tube r
+        fluidGPU->param_gravityY = -60.0f;
+        fluidGPU->param_viscosity = 2.5f;
+        fluidGPU->param_gasConstant = 2500.0f;
+        fluidGPU->param_surfaceTension = 0.08f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.2f;
+        paletteId = 19; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 12.0f;
+        paletteFlow = 0.20f;
+        vortexBaseSwirl = 4.0f; audioVortexForce = 14.0f; vortexInwardPull = 1.0f;
+        autoOrbitEnabled = true; autoOrbitSpeedDeg = 10.0f; audioOrbitKick = 0.5f;
+        audioHueKickDeg = 20.0f; audioFlashKick = 0.4f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 12.0f;  audioBassThreshold = 0.06f;
+        audioMidForce  = 5.0f;   audioMidThreshold  = 0.06f;
+        audioTrebleForce = 2.0f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.4f; audioShimmerKick = 0.7f; audioFoamKick = 0.3f;
+        presetAttackMs = 15.0f; presetReleaseMs = 250.0f;
+        break;
+    case 11: // Capsule Wave: real water sloshing end to end in a pill
+        fluidGPU->param_shapeType = 4;
+        fluidGPU->param_boxHalf = Vec3(4.0f, 5.0f, 0.0f);   // radius, core half length
+        fluidGPU->param_gravityY = -500.0f;
+        fluidGPU->param_viscosity = 3.0f;
+        fluidGPU->param_gasConstant = 3000.0f;
+        fluidGPU->param_surfaceTension = 0.10f;
+        useWaterRendering = true; useImpostors = false;
+        fluidGPU->param_foamGen = 1.3f;
+        foamAmount = 2.0f;
+        autoOrbitEnabled = true; autoOrbitSpeedDeg = 6.0f;
+        audioFlashKick = 0.5f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 20.0f;  audioBassThreshold = 0.08f;
+        audioMidForce  = 8.0f;   audioMidThreshold  = 0.08f;
+        audioTrebleForce = 4.0f; audioTrebleThreshold = 0.06f;
+        audioSizeKick = 0.2f; audioShimmerKick = 0.4f; audioFoamKick = 1.0f;
+        presetAttackMs = 15.0f; presetReleaseMs = 250.0f;
+        break;
+    case 12: // Hourglass Drip: molten gold pulsing through the neck on bass
+        fluidGPU->param_shapeType = 5;
+        fluidGPU->param_boxHalf = Vec3(6.0f, 7.0f, 1.4f);   // base R, half H, neck R
+        fluidGPU->param_gravityY = -700.0f;
+        fluidGPU->param_viscosity = 3.0f;
+        fluidGPU->param_gasConstant = 3000.0f;
+        fluidGPU->param_surfaceTension = 0.10f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.25f;
+        paletteId = 12; vizMode = 1; vizRangeMin = 0.0f; vizRangeMax = 14.0f;
+        paletteFlow = 0.10f;
+        audioFlashKick = 0.6f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 18.0f;  audioBassThreshold = 0.07f;
+        audioMidForce  = 6.0f;   audioMidThreshold  = 0.07f;
+        audioTrebleForce = 2.5f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.4f; audioShimmerKick = 0.8f; audioFoamKick = 0.3f;
+        presetAttackMs = 15.0f; presetReleaseMs = 250.0f;
+        break;
+    default: // 13, Cosmic Egg: galaxy cloud drifting in an egg, reverse orbit
+        fluidGPU->param_shapeType = 6;
+        fluidGPU->param_boxHalf = Vec3(5.5f, 7.5f, 0.0f);   // XZ semi-axis, Y semi-axis
+        fluidGPU->param_gravityY = -20.0f;
+        fluidGPU->param_viscosity = 6.0f;
+        fluidGPU->param_gasConstant = 1500.0f;
+        fluidGPU->param_surfaceTension = 0.06f;
+        useWaterRendering = false; useImpostors = true; litParticles = true;
+        renderRadiusScale = 1.3f;
+        paletteId = 9; vizMode = 6; vizRangeMin = 0.0f; vizRangeMax = 8.0f;
+        paletteFlow = 0.08f;
+        autoOrbitEnabled = true; autoOrbitSpeedDeg = -8.0f; audioOrbitKick = 1.0f;
+        audioHueKickDeg = 30.0f; audioFlashKick = 0.5f;
+        vortexBaseSwirl = 1.5f;
+        audioMasterGain = 1.5f;
+        audioBassForce = 10.0f;  audioBassThreshold = 0.06f;
+        audioMidForce  = 4.0f;   audioMidThreshold  = 0.07f;
+        audioTrebleForce = 1.8f; audioTrebleThreshold = 0.05f;
+        audioSizeKick = 0.5f; audioShimmerKick = 0.6f; audioFoamKick = 0.2f;
+        presetAttackMs = 18.0f; presetReleaseMs = 300.0f;
         break;
     }
 
@@ -1187,9 +1442,12 @@ void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("paletteId");  loc != -1) glUniform1i(loc, paletteId);
     if (GLint loc = s->GetUniformID("vizRange");   loc != -1) glUniform2f(loc, vizRangeMin, vizRangeMax);
     if (GLint loc = s->GetUniformID("heightMinMax"); loc != -1) {
+        // EffectiveHalf: param_boxHalf.y is not the vertical extent for every
+        // shape (sphere/egg store it elsewhere; capsule adds its cap radius)
+        const float halfY = fluidGPU->EffectiveHalf().y;
         glUniform2f(loc,
-            fluidGPU->param_boxCenter.y - fluidGPU->param_boxHalf.y,
-            fluidGPU->param_boxCenter.y + fluidGPU->param_boxHalf.y);
+            fluidGPU->param_boxCenter.y - halfY,
+            fluidGPU->param_boxCenter.y + halfY);
     }
     if (GLint loc = s->GetUniformID("boxCenter"); loc != -1)
         glUniform3f(loc, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z);
@@ -1208,7 +1466,7 @@ void Scene0p::SetColorUniforms(Shader* s) const {
 
 // Uploads only the color-adjustment uniforms (shared with fluidComposite.frag)
 void Scene0p::SetGradeUniforms(Shader* s) const {
-    if (GLint loc = s->GetUniformID("hueShift");    loc != -1) glUniform1f(loc, hueShiftDeg);
+    if (GLint loc = s->GetUniformID("hueShift");    loc != -1) glUniform1f(loc, hueShiftDegLive);
     if (GLint loc = s->GetUniformID("satMul");      loc != -1) glUniform1f(loc, satMul);
     if (GLint loc = s->GetUniformID("brightMul");   loc != -1) glUniform1f(loc, brightMulLive);
     if (GLint loc = s->GetUniformID("contrastMul"); loc != -1) glUniform1f(loc, contrastMul);
@@ -1792,9 +2050,17 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
             Vec3(0, 1, 0), boxBottom + boxSpanY * 0.6f, boxBottom + boxSpanY);
     }
 
+    // Vortex swirl: constant base + mid-band kick; dt-scaled so the spin-up is
+    // framerate-independent. Runs even with all-zero bands (base swirl only).
+    float swirl = vortexBaseSwirl + ((mid > audioMidThreshold) ? audioVortexForce * mid : 0.0f);
+    fluidGPU->ApplyVortexImpulse(swirl * dt, vortexInwardPull * dt);
+
     renderRadiusScaleLive = renderRadiusScale * (1.0f + audioSizeKick    * bass);
-    brightMulLive         = brightMul         * (1.0f + audioShimmerKick * treble);
+    brightMulLive         = brightMul         * (1.0f + audioShimmerKick * treble)
+                                              * (1.0f + audioFlashKick   * bass);
     foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
+    hueShiftDegLive       = hueShiftDeg       + audioHueKickDeg * bass;
+    orbitSpeedDegLive     = autoOrbitSpeedDeg * (1.0f + audioOrbitKick   * bass);
 }
 
 // ---------------------------------------------------------------------------
@@ -1940,6 +2206,11 @@ void Scene0p::ReelExportStep() {
     for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
         DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
                            reelBands.treble[reelFrame], frameDt);
+        // Deterministic auto-orbit: advance with frame time (never wall-clock),
+        // using the bass-kicked speed DriveAudioReaction just computed.
+        if (autoOrbitEnabled)
+            camAzimuth += orbitSpeedDegLive * (3.14159265f / 180.0f) * frameDt;
+        RebuildOrbitCamera();
         for (int i = 0; i < nSub; ++i) fluidGPU->DispatchCompute(subDt);
 
         RenderSceneTo(reelFBO, reelW, reelH, reelProj);

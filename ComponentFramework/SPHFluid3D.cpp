@@ -38,6 +38,7 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     radixSortShader = LoadComputeShader("shaders/RadixSort.comp");
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
+    vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -69,6 +70,7 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(radixSortShader);
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
+    if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -166,6 +168,29 @@ void SPHFluidGPU::InitializeParticles() {
             case 2: {
                 float r = hf.x - margin;
                 return lx * lx + lz * lz <= r * r && std::fabs(ly) <= hf.y - margin;
+            }
+            case 3: {   // torus: distance from the ring circle <= tube radius
+                float R = param_boxHalf.x, r = param_boxHalf.y - margin;
+                float dr = std::sqrt(lx * lx + lz * lz) - R;
+                return r > 0.0f && (dr * dr + ly * ly) <= r * r;
+            }
+            case 4: {   // capsule: distance from the Y core segment <= radius
+                float r = param_boxHalf.x - margin, H = param_boxHalf.y;
+                float dy = ly - std::clamp(ly, -H, H);
+                return (lx * lx + lz * lz + dy * dy) <= r * r;
+            }
+            case 5: {   // hourglass: radius limit grows from neck (y=0) to bases
+                float baseR = param_boxHalf.x, H = std::max(param_boxHalf.y, 1e-6f);
+                float neckR = std::min(param_boxHalf.z, baseR);
+                if (std::fabs(ly) > H - margin) return false;
+                float rMax = neckR + (baseR - neckR) * std::fabs(ly) / H - margin;
+                return rMax > 0.0f && (lx * lx + lz * lz) <= rMax * rMax;
+            }
+            case 6: {   // egg (ellipsoid), margin-shrunk semi-axes
+                float a = std::max(param_boxHalf.x - margin, 1e-4f);
+                float b = std::max(param_boxHalf.y - margin, 1e-4f);
+                float u = lx / a, v = ly / b, w = lz / a;
+                return (u * u + v * v + w * w) <= 1.0f;
             }
             default: return true;
             }
@@ -621,6 +646,29 @@ void SPHFluidGPU::ApplyWaveImpulse(float amplitude, float wavelength, float phas
     glUniform3f(glGetUniformLocation(waveImpulseShader, "dir"), dir.x, dir.y, dir.z);
     glUniform1f(glGetUniformLocation(waveImpulseShader, "yMin"), yMin);
     glUniform1f(glGetUniformLocation(waveImpulseShader, "yMax"), yMax);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Whirlpool around the container's local Y axis. Kicks are velocity deltas
+// (callers pre-multiply by dt), so the swirl is framerate-independent.
+void SPHFluidGPU::ApplyVortexImpulse(float tangentKick, float inwardKick) {
+    if (std::fabs(tangentKick) < 1e-6f && std::fabs(inwardKick) < 1e-6f) return;
+
+    float R[9]; MakeRotationMat3XYZ(param_boxEulerDeg.x, param_boxEulerDeg.y, param_boxEulerDeg.z, R);
+    // column-major world_from_box: local +Y = column 1 = (R[3], R[4], R[5])
+    glUseProgram(vortexImpulseShader);
+    glUniform1i(glGetUniformLocation(vortexImpulseShader, "N"), int(particles.size()));
+    glUniform3f(glGetUniformLocation(vortexImpulseShader, "uCenter"),
+        param_boxCenter.x, param_boxCenter.y, param_boxCenter.z);
+    glUniform3f(glGetUniformLocation(vortexImpulseShader, "uAxis"), R[3], R[4], R[5]);
+    glUniform1f(glGetUniformLocation(vortexImpulseShader, "uTangent"), tangentKick);
+    glUniform1f(glGetUniformLocation(vortexImpulseShader, "uInward"), inwardKick);
+    const Vec3 half = EffectiveHalf();
+    glUniform1f(glGetUniformLocation(vortexImpulseShader, "uRadius"), std::max(half.x, half.z));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
