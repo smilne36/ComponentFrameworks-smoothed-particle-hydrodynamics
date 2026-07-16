@@ -166,11 +166,16 @@ private:
     int     reelW = 1080, reelH = 1920;
     float   reelMaxSeconds = 0.0f;      // 0 = whole track
     int     reelSubstepCap = 0;         // 0 = accurate (full substeps); >0 caps for speed
+    bool    reelSupersample = false;    // render frames at 2x + downsample (crisp, ~4x cost)
     char    reelAudioPath[512] = {0};
     char    reelOutDir[512]    = "reels";
     std::string  reelStatus;
     ReelAnalysis reelBands;
     GLuint  reelFBO = 0, reelTex = 0, reelRBO = 0;
+    // Supersample render target (2x reelW/H); blitted down into reelFBO per frame
+    GLuint  reelSSFBO = 0, reelSSTex = 0, reelSSRBO = 0;
+    int     reelRenderW = 0, reelRenderH = 0;   // actual render size (reelW/H or 2x)
+    bool    reelPrevHalfRes = false;            // ssfrHalfRes to restore after export
     unsigned reelStartMs = 0;           // SDL ticks at export start, for ETA
     void    StartReelExport();
     void    ReelExportStep();
