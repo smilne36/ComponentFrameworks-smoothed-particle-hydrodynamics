@@ -758,6 +758,9 @@ void Scene0p::Update(const float deltaTime) {
 
             ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
             ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
+            ImGui::Checkbox("Crisp 2x Supersample (slower)", &reelSupersample);
+            if (reelSupersample)
+                ImGui::TextDisabled("Renders each frame at double size + full-res fluid,\nthen downsamples. Sharpest result, ~4x render time.");
             if (ImGui::Button("Export Reel")) StartReelExport();
             if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
             ImGui::TextDisabled(
@@ -923,7 +926,7 @@ void Scene0p::Update(const float deltaTime) {
         ImGui::Combo("Resolution", &captureResIdx,
             "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
         if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
-        ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.");
+        ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.\nRendered 2x supersampled + full-res fluid for crisp edges.");
         if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
         ImGui::PopID();
     }
@@ -2168,7 +2171,46 @@ void Scene0p::StartReelExport() {
         reelStatus = "FAILED: could not create reel framebuffer";
         return;
     }
-    if (useWaterRendering) InitSSFRBuffers(reelW, reelH);
+
+    // Crisp mode: render each frame at 2x into a supersample target, then blit
+    // down into reelFBO (linear = 4-sample box filter). Also forces full-res
+    // fluid passes for the export. Falls back to 1x if the GPU can't fit 2x.
+    reelPrevHalfRes = ssfrHalfRes;
+    reelRenderW = reelW; reelRenderH = reelH;
+    if (reelSupersample) {
+        GLint maxTex = 0, maxRb = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+        glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &maxRb);
+        const GLint maxSide = std::min(maxTex, maxRb);
+        if (reelW * 2 <= maxSide && reelH * 2 <= maxSide) {
+            glGenTextures(1, &reelSSTex);
+            glBindTexture(GL_TEXTURE_2D, reelSSTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, reelW * 2, reelH * 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenRenderbuffers(1, &reelSSRBO);
+            glBindRenderbuffer(GL_RENDERBUFFER, reelSSRBO);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, reelW * 2, reelH * 2);
+            glGenFramebuffers(1, &reelSSFBO);
+            glBindFramebuffer(GL_FRAMEBUFFER, reelSSFBO);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, reelSSTex, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, reelSSRBO);
+            const bool ssOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glBindRenderbuffer(GL_RENDERBUFFER, 0);
+            if (ssOK) {
+                reelRenderW = reelW * 2; reelRenderH = reelH * 2;
+                ssfrHalfRes = false;
+            } else {
+                if (reelSSFBO) glDeleteFramebuffers(1, &reelSSFBO);
+                if (reelSSTex) glDeleteTextures(1, &reelSSTex);
+                if (reelSSRBO) glDeleteRenderbuffers(1, &reelSSRBO);
+                reelSSFBO = reelSSTex = reelSSRBO = 0;
+            }
+        }
+    }
+    if (useWaterRendering) InitSSFRBuffers(reelRenderW, reelRenderH);
 
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
@@ -2213,7 +2255,18 @@ void Scene0p::ReelExportStep() {
         RebuildOrbitCamera();
         for (int i = 0; i < nSub; ++i) fluidGPU->DispatchCompute(subDt);
 
-        RenderSceneTo(reelFBO, reelW, reelH, reelProj);
+        if (reelSSFBO) {
+            // Crisp mode: render 2x, resolve down into reelFBO (readback +
+            // live monitor blit both keep reading reelFBO unchanged).
+            RenderSceneTo(reelSSFBO, reelRenderW, reelRenderH, reelProj);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, reelSSFBO);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, reelFBO);
+            glBlitFramebuffer(0, 0, reelRenderW, reelRenderH, 0, 0, reelW, reelH,
+                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        } else {
+            RenderSceneTo(reelFBO, reelW, reelH, reelProj);
+        }
 
         glBindFramebuffer(GL_FRAMEBUFFER, reelFBO);
         glReadBuffer(GL_COLOR_ATTACHMENT0);
@@ -2287,6 +2340,11 @@ void Scene0p::FinishReelExport(bool wroteBat) {
     if (reelTex) glDeleteTextures(1, &reelTex);
     if (reelRBO) glDeleteRenderbuffers(1, &reelRBO);
     reelFBO = reelTex = reelRBO = 0;
+    if (reelSSFBO) glDeleteFramebuffers(1, &reelSSFBO);
+    if (reelSSTex) glDeleteTextures(1, &reelSSTex);
+    if (reelSSRBO) glDeleteRenderbuffers(1, &reelSSRBO);
+    reelSSFBO = reelSSTex = reelSSRBO = 0;
+    ssfrHalfRes = reelPrevHalfRes;   // undo the crisp-mode full-res override
 
     reelExporting = false;
     if (reelPreview) {
@@ -2319,45 +2377,84 @@ void Scene0p::DoCapture() {
         return;
     }
 
-    // Capture target: RGBA8 color texture + 24-bit depth renderbuffer
+    // Supersample 2x and downsample with a linear blit (4 samples averaged per
+    // output pixel): anti-aliases every render path without shader changes.
+    // Falls back to 1x if the doubled size exceeds GPU limits.
+    int ss = 2;
+    if (capW * ss > maxSide || capH * ss > maxSide) ss = 1;
+    const int renderW = capW * ss, renderH = capH * ss;
+
+    // Render target: RGBA8 color texture + 24-bit depth renderbuffer, at the
+    // supersampled size.
     GLuint capTex = 0, capRBO = 0, capFBO = 0;
     glGenTextures(1, &capTex);
     glBindTexture(GL_TEXTURE_2D, capTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderW, renderH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     glGenRenderbuffers(1, &capRBO);
     glBindRenderbuffer(GL_RENDERBUFFER, capRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, capW, capH);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, renderW, renderH);
 
     glGenFramebuffers(1, &capFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, capTex, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, capRBO);
-    const bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    bool fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
+    // Downsample destination (only needed when supersampling): color-only FBO
+    // at the output size that the blit resolves into before readback.
+    GLuint outTex = 0, outFBO = 0;
+    if (fboOK && ss > 1) {
+        glGenTextures(1, &outTex);
+        glBindTexture(GL_TEXTURE_2D, outTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenFramebuffers(1, &outFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, outFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outTex, 0);
+        fboOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     if (!fboOK) {
-        glDeleteFramebuffers(1, &capFBO);
-        glDeleteTextures(1, &capTex);
-        glDeleteRenderbuffers(1, &capRBO);
+        if (capFBO) glDeleteFramebuffers(1, &capFBO);
+        if (capTex) glDeleteTextures(1, &capTex);
+        if (capRBO) glDeleteRenderbuffers(1, &capRBO);
+        if (outFBO) glDeleteFramebuffers(1, &outFBO);
+        if (outTex) glDeleteTextures(1, &outTex);
         lastScreenshotPath = "FAILED: could not create capture framebuffer";
         return;
     }
 
-    // Render one frame at capture resolution with a matching aspect ratio.
-    // The SSFR intermediate buffers must match the target size, so resize
-    // them for the capture and restore afterwards.
-    if (useWaterRendering) InitSSFRBuffers(capW, capH);
+    // Render one frame at the supersampled size with a matching aspect ratio.
+    // Force full-res fluid passes for the still: the half-res speed toggle is a
+    // live-view optimization and is the main source of soft water in captures.
+    const bool prevHalfRes = ssfrHalfRes;
+    ssfrHalfRes = false;
+    if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, 100.0f);
-    RenderSceneTo(capFBO, capW, capH, capProj);
+    RenderSceneTo(capFBO, renderW, renderH, capProj);
+
+    GLuint readFBO = capFBO;
+    if (ss > 1) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, capFBO);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, outFBO);
+        glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, capW, capH,
+                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        readFBO = outFBO;
+    }
 
     std::vector<unsigned char> pixels(static_cast<size_t>(capW) * static_cast<size_t>(capH) * 3);
-    glBindFramebuffer(GL_FRAMEBUFFER, capFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, readFBO);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, capW, capH, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
@@ -2367,8 +2464,11 @@ void Scene0p::DoCapture() {
     glDeleteFramebuffers(1, &capFBO);
     glDeleteTextures(1, &capTex);
     glDeleteRenderbuffers(1, &capRBO);
+    if (outFBO) glDeleteFramebuffers(1, &outFBO);
+    if (outTex) glDeleteTextures(1, &outTex);
 
     // Restore the on-screen render state
+    ssfrHalfRes = prevHalfRes;
     if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
     glViewport(0, 0, windowW, windowH);
 
