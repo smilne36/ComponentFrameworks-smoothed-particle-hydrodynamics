@@ -1,5 +1,5 @@
 #include "Mesh.h"
-
+#include <iostream>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
@@ -154,23 +154,6 @@ void Mesh::SetInstanceData(const std::vector<Vec3>& positions) {
     glBindVertexArray(0);
 
     instanceCount = positions.size();
-}
-
-void Mesh::SetInstanceColors(const std::vector<Vec3>& colors) {
-    if (instanceColorVBO == 0) {
-        glGenBuffers(1, &instanceColorVBO);
-    }
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceColorVBO);
-    glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(Vec3), colors.data(), GL_DYNAMIC_DRAW);
-
-    // Attribute 4: instance color
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void*)0);
-    glVertexAttribDivisor(4, 1); // Advance per instance
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
 }
 
 void Mesh::SetInstanceVelocities(const std::vector<Vec3>& velocities) {

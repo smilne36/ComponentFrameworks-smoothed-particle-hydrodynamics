@@ -32,15 +32,7 @@ public:
     void   InitializeFluidVBO();
     void   InitializeGridAndBuffers();
     void   InitializeSortBuffers();
-    void   RadixSortByCell();
-
-    void   ActivateClosestGhost(float x, float y, float z);
-    void   UpdateGhostParticlesDynamic(float h);
-    void   UploadGhostActivityToGPU();
     void   UploadDataToGPU();
-    void   DownloadDataFromGPU();
-
-    void   UpdateFluidVBOFromGPU();
     void   DispatchCompute(float overrideDt = -1.0f);
     GLuint GetFluidVBO() const;
     size_t GetNumFluids() const;
@@ -75,7 +67,6 @@ public:
     GLuint buildGridShader = 0;
     GLuint sphGridShader = 0;
     GLuint obbConstraintShader = 0;
-    GLuint radixSortShader = 0;
     GLuint waveImpulseShader = 0;
     GLuint vortexImpulseShader = 0;
 
@@ -83,9 +74,7 @@ public:
     float* vboPtr = nullptr;
     size_t numFluids = 0;
 
-    GLuint cellKeySSBO = 0;
-    GLuint sortIdxSSBO = 0;
-    GLuint sortTmpSSBO = 0;
+    GLuint cellKeySSBO = 0;   // written by BuildGrid.comp (binding 4)
 
     float param_h = 0.28f;
     float param_mass = 13.8f;
@@ -104,9 +93,6 @@ public:
 
     float param_foamGen = 1.0f;      // foam generation scale (0 disables)
     float param_foamVelRef = 8.0f;   // speed where foam generation saturates
-
-    bool  param_enableGhosts = false;
-    bool  param_enableSort = false;
 
     Vec3  param_boxCenter = Vec3(0, 0, 0);
     Vec3  param_boxHalf = Vec3(7, 7, 7);   // box: halves | sphere: x=radius | cylinder: x=radius, y=half height
@@ -169,44 +155,4 @@ public:
 
 private:
     GLuint LoadComputeShader(const char* filePath);
-
-    /* -------- Ghost face 2D acceleration grids --------
-       Each axis-aligned face gets a 2D grid storing indices of the ghost particles
-       lying on that face.  Used for quick neighbor / activation queries. */
-    struct GhostGrid2D {
-        float minA = 0, minB = 0, cellSize = 1;
-        int   cellsA = 0, cellsB = 0;
-        // Flattened (b * cellsA + a) -> vector of particle indices
-        std::vector<std::vector<size_t>> buckets;
-
-        void init(float minA_, float minB_, float cellSz_, int cA_, int cB_) {
-            minA = minA_; minB = minB_; cellSize = cellSz_; cellsA = cA_; cellsB = cB_;
-            buckets.clear();
-            buckets.resize(std::max(1, cellsA * cellsB));
-        }
-        inline int toIndex(int ia, int ib) const { return ib * cellsA + ia; }
-
-        void addGhost(float a, float b, size_t idx) {
-            int ia = int((a - minA) / cellSize);
-            int ib = int((b - minB) / cellSize);
-            ia = std::clamp(ia, 0, cellsA - 1);
-            ib = std::clamp(ib, 0, cellsB - 1);
-            buckets[toIndex(ia, ib)].push_back(idx);
-        }
-
-        const std::vector<size_t>& getCell(float a, float b) const {
-            static const std::vector<size_t> empty;
-            if (cellsA == 0 || cellsB == 0) return empty;
-            int ia = int((a - minA) / cellSize);
-            int ib = int((b - minB) / cellSize);
-            if (ia < 0 || ib < 0 || ia >= cellsA || ib >= cellsB) return empty;
-            return buckets[toIndex(ia, ib)];
-        }
-    };
-
-    GhostGrid2D ghostXNeg, ghostXPos;
-    GhostGrid2D ghostYNeg, ghostYPos;
-    GhostGrid2D ghostZNeg, ghostZPos;
-
-    void BuildGhostGrids();
 };

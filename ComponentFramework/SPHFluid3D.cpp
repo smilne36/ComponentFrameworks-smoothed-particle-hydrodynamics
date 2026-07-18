@@ -35,7 +35,6 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     clearGridShader = LoadComputeShader("shaders/ClearGrid.comp");
     buildGridShader = LoadComputeShader("shaders/BuildGrid.comp");
     sphGridShader = LoadComputeShader("shaders/SPHFluid.comp");
-    radixSortShader = LoadComputeShader("shaders/RadixSort.comp");
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
@@ -62,12 +61,9 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteBuffers(1, &particleNextSSBO);
     glDeleteBuffers(1, &particleCellSSBO);
     glDeleteBuffers(1, &cellKeySSBO);
-    glDeleteBuffers(1, &sortIdxSSBO);
-    glDeleteBuffers(1, &sortTmpSSBO);
     glDeleteProgram(clearGridShader);
     glDeleteProgram(buildGridShader);
     glDeleteProgram(sphGridShader);
-    glDeleteProgram(radixSortShader);
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
@@ -215,136 +211,9 @@ void SPHFluidGPU::InitializeParticles() {
                 }
     }
 
-    // Create axis-aligned ghost shell (used if param_enableGhosts is true).
-    // Box-only: the shell is an axis-aligned cube, meaningless for other shapes.
-    if (param_shapeType == 0) {
-        auto add_ghost = [&](float x, float y, float z) {
-            SPHParticle p{};
-            p.pos = Vec4(x, y, z, 0); p.vel = Vec4(0, 0, 0, 0); p.acc = Vec4(0, 0, 0, 0);
-            p.density = p.pressure = 0.0f; p.isGhost = 1; p.isActive = 0; p.pad0 = 0;
-            particles.push_back(p);
-            };
-        for (float y = -box; y <= box; y += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(-box, y, z); add_ghost(box, y, z); }
-        for (float x = -box; x <= box; x += spacing) for (float z = -box; z <= box; z += spacing) { add_ghost(x, -box, z); add_ghost(x, box, z); }
-        for (float x = -box; x <= box; x += spacing) for (float y = -box; y <= box; y += spacing) { add_ghost(x, y, -box); add_ghost(x, y, box); }
-    }
-
-    std::cout << "Fluid particles: " << count
-        << ", ghosts: " << (particles.size() - count) << std::endl;
-    BuildGhostGrids(); 
-
-    
+    std::cout << "Fluid particles: " << count << std::endl;
 }
 
-void SPHFluidGPU::BuildGhostGrids() {
-    // Build 2D uniform grids on each AABB face (-X,+X,-Y,+Y,-Z,+Z)
-    // Faces are still axis-aligned even if an OBB is used for constraints (ghost shell made AABB).
-    const float hx = param_boxHalf.x;
-    const float hy = param_boxHalf.y;
-    const float hz = param_boxHalf.z;
-    const float faceCell = param_h; // use smoothing length for ghost grid resolution
-
-    auto makeDim = [&](float extent) -> int {
-        int c = int(std::ceil((2.0f * extent) / faceCell));
-        return std::max(1, c);
-        };
-
-    int cellsY = makeDim(hy);
-    int cellsZ = makeDim(hz);
-    int cellsX = makeDim(hx);
-
-    ghostXNeg.init(-hy, -hz, faceCell, cellsY, cellsZ); // a=y, b=z
-    ghostXPos.init(-hy, -hz, faceCell, cellsY, cellsZ);
-    ghostYNeg.init(-hx, -hz, faceCell, cellsX, cellsZ); // a=x, b=z
-    ghostYPos.init(-hx, -hz, faceCell, cellsX, cellsZ);
-    ghostZNeg.init(-hx, -hy, faceCell, cellsX, cellsY); // a=x, b=y
-    ghostZPos.init(-hx, -hy, faceCell, cellsX, cellsY);
-
-    const float eps = faceCell * 0.25f;
-
-    for (size_t i = 0; i < particles.size(); ++i) {
-        const SPHParticle& p = particles[i];
-        if (!p.isGhost) continue;
-
-        const float x = p.pos.x;
-        const float y = p.pos.y;
-        const float z = p.pos.z;
-
-        // Face tests (AABB shell built with 'box' == max half but we rely on param_boxHalf per axis)
-        if (std::fabs(x + hx) < eps)      ghostXNeg.addGhost(y, z, i);
-        else if (std::fabs(x - hx) < eps) ghostXPos.addGhost(y, z, i);
-
-        if (std::fabs(y + hy) < eps)      ghostYNeg.addGhost(x, z, i);
-        else if (std::fabs(y - hy) < eps) ghostYPos.addGhost(x, z, i);
-
-        if (std::fabs(z + hz) < eps)      ghostZNeg.addGhost(x, y, i);
-        else if (std::fabs(z - hz) < eps) ghostZPos.addGhost(x, y, i);
-    }
-
-    std::cout << "Ghost grids built: "
-        << " X(-/+) cells=" << ghostXNeg.cellsA << "x" << ghostXNeg.cellsB
-        << " Y(-/+) cells=" << ghostYNeg.cellsA << "x" << ghostYNeg.cellsB
-        << " Z(-/+) cells=" << ghostZNeg.cellsA << "x" << ghostZNeg.cellsB
-        << std::endl;
-}
-
-/* Optional simple usage helpers (keep lightweight) */
-
-void SPHFluidGPU::ActivateClosestGhost(float x, float y, float z) {
-    // Pick nearest face to (x,y,z), then search that face grid cell for closest ghost
-    float dxNeg = std::fabs(x + param_boxHalf.x);
-    float dxPos = std::fabs(x - param_boxHalf.x);
-    float dyNeg = std::fabs(y + param_boxHalf.y);
-    float dyPos = std::fabs(y - param_boxHalf.y);
-    float dzNeg = std::fabs(z + param_boxHalf.z);
-    float dzPos = std::fabs(z - param_boxHalf.z);
-
-    enum Face { XN, XP, YN, YP, ZN, ZP };
-    float dArr[6] = { dxNeg, dxPos, dyNeg, dyPos, dzNeg, dzPos };
-    Face best = XN;
-    float bestD = dArr[0];
-    for (int i = 1; i < 6; ++i) if (dArr[i] < bestD) { bestD = dArr[i]; best = (Face)i; }
-
-    const std::vector<size_t>* candidates = nullptr;
-    switch (best) {
-    case XN: candidates = &ghostXNeg.getCell(y, z); break;
-    case XP: candidates = &ghostXPos.getCell(y, z); break;
-    case YN: candidates = &ghostYNeg.getCell(x, z); break;
-    case YP: candidates = &ghostYPos.getCell(x, z); break;
-    case ZN: candidates = &ghostZNeg.getCell(x, y); break;
-    case ZP: candidates = &ghostZPos.getCell(x, y); break;
-    }
-    if (!candidates || candidates->empty()) return;
-
-    size_t closestIdx = (*candidates)[0];
-    float closestDist2 = FLT_MAX;
-    for (size_t idx : *candidates) {
-        const SPHParticle& gp = particles[idx];
-        float dx = gp.pos.x - x;
-        float dy = gp.pos.y - y;
-        float dz = gp.pos.z - z;
-        float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < closestDist2) { closestDist2 = d2; closestIdx = idx; }
-    }
-    particles[closestIdx].isActive = 1;
-}
-
-void SPHFluidGPU::UpdateGhostParticlesDynamic(float h) {
-    // Simple decay: deactivate ghosts set active last frame (placeholder)
-    for (auto& p : particles) if (p.isGhost) p.isActive = 0;
-    (void)h;
-}
-
-void SPHFluidGPU::UploadGhostActivityToGPU() {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-    SPHParticle* gpuParticles = (SPHParticle*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
-    if (gpuParticles) {
-        for (size_t i = 0; i < particles.size(); ++i)
-            gpuParticles[i].isActive = particles[i].isActive;
-    }
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-}
 void SPHFluidGPU::InitializeFluidVBO() {
     numFluids = 0;
     for (const auto& p : particles) if (p.isGhost == 0) ++numFluids;
@@ -357,25 +226,6 @@ void SPHFluidGPU::InitializeFluidVBO() {
     vboPtr = (float*)glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof(float) * 4 * numFluids,
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-}
-
-void SPHFluidGPU::UpdateFluidVBOFromGPU() {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-    const SPHParticle* gpuParticles = (const SPHParticle*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-    if (gpuParticles && vboPtr) {
-        size_t vboIndex = 0;
-        for (size_t i = 0; i < particles.size(); ++i) {
-            if (gpuParticles[i].isGhost == 0) {
-                vboPtr[4 * vboIndex + 0] = gpuParticles[i].pos.x;
-                vboPtr[4 * vboIndex + 1] = gpuParticles[i].pos.y;
-                vboPtr[4 * vboIndex + 2] = gpuParticles[i].pos.z;
-                vboPtr[4 * vboIndex + 3] = 1.0f;
-                ++vboIndex;
-            }
-        }
-    }
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
 // Sizes the spatial hash grid to the world-space AABB of the (possibly
@@ -436,20 +286,11 @@ void SPHFluidGPU::InitializeGridAndBuffers() {
     allocatedCells = numCells;
 }
 
-// --- sorting buffers
+// Cell-key buffer written by BuildGrid.comp (binding 4)
 void SPHFluidGPU::InitializeSortBuffers() {
     size_t N = particles.size();
     glGenBuffers(1, &cellKeySSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellKeySSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, nullptr, GL_DYNAMIC_COPY);
-
-    glGenBuffers(1, &sortIdxSSBO);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, sortIdxSSBO);
-    std::vector<int> idxInit(N); for (size_t i = 0; i < N; ++i) idxInit[i] = int(i);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, idxInit.data(), GL_DYNAMIC_COPY);
-
-    glGenBuffers(1, &sortTmpSSBO);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, sortTmpSSBO);
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * N, nullptr, GL_DYNAMIC_COPY);
 }
 
@@ -465,16 +306,6 @@ void SPHFluidGPU::UploadDataToGPU() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     std::cout << "sizeof(SPHParticle)=" << sizeof(SPHParticle) << " bytes\n";
-}
-
-void SPHFluidGPU::DownloadDataFromGPU() {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-    const SPHParticle* gpuParticles = (const SPHParticle*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-    if (gpuParticles) {
-        memcpy(particles.data(), gpuParticles, sizeof(SPHParticle) * particles.size());
-    }
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
 void SPHFluidGPU::DispatchCompute(float overrideDt) {
@@ -493,13 +324,6 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
         glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(int) * numCells, nullptr, GL_DYNAMIC_COPY);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, cellHeadSSBO);
         allocatedCells = numCells;
-    }
-
-    // Optional ghost syncing (leave off for perf)
-    if (param_enableGhosts) {
-        DownloadDataFromGPU();
-        UpdateGhostParticlesDynamic(param_h);
-        UploadGhostActivityToGPU();
     }
 
     // 1) Clear grid
@@ -522,8 +346,6 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, cellKeySSBO);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    if (param_enableSort) RadixSortByCell();
 
     // 3) SPH step
     glUseProgram(sphGridShader);
@@ -684,8 +506,6 @@ void SPHFluidGPU::ResetSimulation() {
     if (particleNextSSBO) { glDeleteBuffers(1, &particleNextSSBO); particleNextSSBO = 0; }
     if (particleCellSSBO) { glDeleteBuffers(1, &particleCellSSBO); particleCellSSBO = 0; }
     if (cellKeySSBO) { glDeleteBuffers(1, &cellKeySSBO);      cellKeySSBO = 0; }
-    if (sortIdxSSBO) { glDeleteBuffers(1, &sortIdxSSBO);      sortIdxSSBO = 0; }
-    if (sortTmpSSBO) { glDeleteBuffers(1, &sortTmpSSBO);      sortTmpSSBO = 0; }
 
     InitializeParticles();
     InitializeGridAndBuffers();
@@ -699,41 +519,6 @@ void SPHFluidGPU::ResetSimulation() {
         << " cells=" << numCells << std::endl;
 }
 
-void SPHFluidGPU::RadixSortByCell() {
-    // Map buffers
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellKeySSBO);
-    const int* keys = (const int*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY);
-    if (!keys) { glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0); return; }
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, sortIdxSSBO);
-    int* indices = (int*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
-    if (!indices) {
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER); // keys
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        return;
-    }
-
-    size_t N = particles.size();
-    // Build vector of (key,index) then stable sort
-    std::vector<std::pair<int, int>> kv;
-    kv.reserve(N);
-    for (size_t i = 0; i < N; ++i) kv.emplace_back(keys[i], indices[i]);
-
-    std::stable_sort(kv.begin(), kv.end(),
-        [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
-            return a.first < b.first;
-        });
-
-    // Write back sorted indices
-    for (size_t i = 0; i < N; ++i) indices[i] = kv[i].second;
-
-    // Unmap
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER); // sortIdxSSBO
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, cellKeySSBO);
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER); // cellKeySSBO
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-}
 
 // Simple helper (currently just returns param_boxHalf; extend if you need fitted logic)
 Vec3 SPHFluidGPU::ComputeAABBFittedHalf() const {
