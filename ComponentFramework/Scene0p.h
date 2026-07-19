@@ -6,7 +6,6 @@
 #include "SPHFluid3D.h"
 #include <SDL.h>
 #include "window.h" 
-#include "Body.h"
 #include "Mesh.h"
 #include "Shader.h"
 #include "AudioReactive.h"
@@ -19,13 +18,11 @@ union SDL_Event;
 
 class Scene0p : public Scene {
 private:
-    Body* sphere = nullptr;
     Shader* shader = nullptr;
     Mesh* mesh = nullptr;
     Matrix4 projectionMatrix;
     Matrix4 viewMatrix;
     Matrix4 modelMatrix;
-    bool    drawInWireMode = true;
     bool    mouseDown = false;
     int     mouseX = 0, mouseY = 0;
     int     mouseButton = -1;       // -1=none, 1=left, 3=right
@@ -48,7 +45,6 @@ private:
     float   dtAccumulator = 0.0f;
     int     maxSubstepsPerFrame = 16;
 
-    bool    renderFromSSBO = true;
     int     uiParticleCount = 50000;   // Performance panel slider; applied on reset
 
     Vec3    lastBoxCenter{};
@@ -254,10 +250,6 @@ private:
     GLuint  terrainEBO        = 0;
     int     terrainIndexCount = 0;
     void    BuildTerrainMesh();
-
-    // River generation UI state
-    int     riverSeed         = 1;
-    bool    pendingRiverRegen = false;
 
     // --- River bank / flow lines ---
     GLuint  riverBankVAO      = 0;

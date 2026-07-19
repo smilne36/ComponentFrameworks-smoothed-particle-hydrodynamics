@@ -146,7 +146,6 @@
     <ClCompile Include="Scene0p.cpp" />
     <ClCompile Include="SceneManager.cpp" />
     <ClCompile Include="Main.cpp" />
-    <ClCompile Include="Scene0g.cpp" />
     <ClCompile Include="Shader.cpp" />
     <ClCompile Include="SPHFluid3D.cpp" />
     <ClCompile Include="stb_image_write_impl.cpp" />
@@ -171,7 +170,6 @@
     <ClInclude Include="Scene0p.h" />
     <ClInclude Include="SceneManager.h" />
     <ClInclude Include="Scene.h" />
-    <ClInclude Include="Scene0g.h" />
     <ClInclude Include="Shader.h" />
     <ClInclude Include="SPHFluid3D.h" />
     <ClInclude Include="stb_image_write.h" />
@@ -192,7 +190,6 @@
     <None Include="shaders\particleImpostor.frag" />
     <None Include="shaders\skyGradient.frag" />
     <None Include="shaders\particleImpostor.vert" />
-    <None Include="shaders\RadixSort.comp" />
     <None Include="shaders\SPHFluid.comp" />
     <None Include="shaders\VortexImpulse.comp" />
     <None Include="shaders\WaveImpulse.comp" />

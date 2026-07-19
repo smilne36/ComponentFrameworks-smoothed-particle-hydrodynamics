@@ -14,7 +14,6 @@
 #include "Scene0p.h"
 #include "Debug.h"
 #include "Mesh.h"
-#include "Body.h"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "SceneManager.h"
@@ -46,9 +45,6 @@ Scene0p::~Scene0p() {}
 
 bool Scene0p::OnCreate() {
     Debug::Info("Loading assets Scene0p", __FILE__, __LINE__);
-
-    sphere = new Body(); sphere->OnCreate();
-    sphere->SetPosition(Vec3(0.0f, -20.0f, 0.0f));
 
     mesh = new Mesh("meshes/Sphere.obj"); mesh->OnCreate();
 
@@ -135,7 +131,6 @@ bool Scene0p::OnCreate() {
 void Scene0p::OnDestroy() {
     // First: join the audio capture thread so it never outlives the scene.
     if (audioReactive) { audioReactive->Stop(); delete audioReactive; audioReactive = nullptr; }
-    if (sphere) { sphere->OnDestroy(); delete sphere; sphere = nullptr; }
     if (mesh) { mesh->OnDestroy(); delete mesh; mesh = nullptr; }
     if (shader) { shader->OnDestroy(); delete shader; shader = nullptr; }
     if (impostorShader) { impostorShader->OnDestroy(); delete impostorShader; impostorShader = nullptr; }
@@ -175,7 +170,6 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
         case SDL_SCANCODE_D: cameraTarget.x += 0.3f; break;
         case SDL_SCANCODE_Q: cameraTarget.z += 0.3f; break;
         case SDL_SCANCODE_E: cameraTarget.z -= 0.3f; break;
-        case SDL_SCANCODE_Z: drawInWireMode = !drawInWireMode; break;
         // P captures a screenshot (unless typing in the UI)
         case SDL_SCANCODE_P:
             if (!ImGui::GetIO().WantCaptureKeyboard) captureRequested = true;
@@ -445,9 +439,7 @@ void Scene0p::RebuildOrbitCamera() {
 }
 
 void Scene0p::Update(const float deltaTime) {
-    ballAnimTime += deltaTime;
-    float ballX = std::sin(ballAnimTime) * 3.0f;
-    if (sphere) sphere->SetPosition(Vec3(ballX, 0.0f, 0.0f));
+    ballAnimTime += deltaTime;   // global animation clock (palette flow / patterns)
 
     // Auto orbit: spin the camera around the fluid. orbitSpeedDegLive carries
     // the bass kick (recomputed in DriveAudioReaction). During a reel export
@@ -515,420 +507,374 @@ void Scene0p::Update(const float deltaTime) {
     }
     ImGui::Separator();
 
-    if (ImGui::CollapsingHeader("Presets")) {
-        ImGui::PushID("Presets");
-        if (ImGui::Button("Preset: Stable Water")) {
-            fluidGPU->param_pause = false;
-            fluidGPU->param_h = 0.28f;
-            fluidGPU->param_restDensity = 1000.0f;
-            fluidGPU->param_gasConstant = 2000.0f;
-            fluidGPU->param_viscosity = 3.5f;
-            fluidGPU->param_gravityY = -980.0f;
-            fluidGPU->param_surfaceTension = 0.0f;
-            fluidGPU->param_timeStep = 1.0e-3f;
-            pendingReset = true;
+    if (ImGui::BeginTabBar("##main")) {
+    if (ImGui::BeginTabItem("Look")) {
+        if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Presets");
+            ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
+            if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
+            ImGui::SameLine();
+            if (ImGui::Button("Dream Float"))   ApplyArtPreset(1);
+            ImGui::SameLine();
+            if (ImGui::Button("Acid Trip"))     ApplyArtPreset(2);
+            if (ImGui::Button("Club Water"))    ApplyArtPreset(3);
+            ImGui::SameLine();
+            if (ImGui::Button("Molten Disco"))  ApplyArtPreset(4);
+            ImGui::SameLine();
+            if (ImGui::Button("Vaporwave Orb")) ApplyArtPreset(5);
+            if (ImGui::Button("Chrome Mercury")) ApplyArtPreset(6);
+            ImGui::SameLine();
+            if (ImGui::Button("Plasma Storm"))   ApplyArtPreset(7);
+            if (ImGui::Button("Lava Lamp"))      ApplyArtPreset(8);
+            ImGui::SameLine();
+            if (ImGui::Button("Candy Rain"))     ApplyArtPreset(9);
+            if (ImGui::Button("Donut Vortex"))   ApplyArtPreset(10);
+            ImGui::SameLine();
+            if (ImGui::Button("Capsule Wave"))   ApplyArtPreset(11);
+            if (ImGui::Button("Hourglass Drip")) ApplyArtPreset(12);
+            ImGui::SameLine();
+            if (ImGui::Button("Cosmic Egg"))     ApplyArtPreset(13);
+            ImGui::PopID();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Preset: Splashy Water")) {
-            fluidGPU->param_pause = false;
-            fluidGPU->param_h = 0.22f;
-            fluidGPU->param_restDensity = 1000.0f;
-            fluidGPU->param_gasConstant = 6000.0f;
-            fluidGPU->param_viscosity = 1.2f;
-            fluidGPU->param_gravityY = -980.0f;
-            fluidGPU->param_surfaceTension = 0.12f;
-            fluidGPU->param_timeStep = 5.0e-4f;
-            fluidGPU->param_useJitter = false;
-            fluidGPU->param_jitterAmp = 0.06f;
-            fluidGPU->param_wallRestitution = 0.05f;
-            fluidGPU->param_wallFriction = 0.05f;
-            pendingReset = true;
+        if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Appearance");
+            int renderMode = useWaterRendering ? 0 : (useImpostors ? 1 : 2);
+            if (ImGui::Combo("Render Mode", &renderMode, "Water Surface\0Point Impostors\0Mesh Spheres\0")) {
+                useWaterRendering = (renderMode == 0);
+                useImpostors      = (renderMode == 1);
+            }
+            ImGui::Separator(); ImGui::Text("Color");
+            ImGui::Combo("Palette", &paletteId,
+                "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
+                "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
+                "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
+                "Electric\0Smoke\0RGB Pop\0");
+            ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
+            if (paletteId >= 15)
+                ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
+            ImGui::Combo("Color Drive", &vizMode,
+                "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0");
+            ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
+            ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
+            ImGui::TextDisabled("Height drive uses box Y extents, not Range. Palette & drive\ncolor the Impostor/Mesh modes; Adjustments grade every mode.");
+            if (paletteId == 8 || paletteId == 20) {   // Duotone + Candy Stripes share the pickers
+                ImGui::ColorEdit3("Duotone A", duoColorA);
+                ImGui::ColorEdit3("Duotone B", duoColorB);
+            }
+            if (paletteId == 4 || paletteId == 13) {
+                ImGui::SliderFloat("Irid Frequency", &iridFreq, 0.0f, 8.0f);
+                ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
+            }
+            ImGui::Checkbox("Lit particles", &litParticles);
+
+            ImGui::Separator(); ImGui::Text("Adjustments");
+            ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
+            ImGui::SliderFloat("Saturation", &satMul,      0.0f, 2.0f);
+            ImGui::SliderFloat("Brightness", &brightMul,   0.0f, 2.0f);
+            ImGui::SliderFloat("Contrast",   &contrastMul, 0.0f, 2.0f);
+            ImGui::Checkbox("Invert", &invertColor);
+
+            ImGui::Separator(); ImGui::Text("Background");
+            ImGui::ColorEdit3("Background", bgColor);
+            if (useWaterRendering) {
+                ImGui::Checkbox("Sky Background", &showSkyBackground);
+                ImGui::ColorEdit3("Sky Horizon", skyColor);
+                ImGui::ColorEdit3("Sky Zenith", skyZenith);
+                ImGui::ColorEdit3("Reflect Tint", envReflectColor);
+                ImGui::TextDisabled("Sky colors always drive the water's reflections;\nthe checkbox only draws them as the backdrop.");
+            }
+            if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
+                if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
+                    InitSSFRBuffers(windowW, windowH);
+                ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
+                ImGui::SliderFloat("Smoothing Scale",   &worldFilterScale,   0.0f, 10.0f);
+                ImGui::SliderFloat("Surface Merge",     &surfaceMerge,       0.5f, 8.0f);
+                ImGui::SliderFloat("Render Radius",     &renderRadiusScale,  0.5f, 2.0f);
+                ImGui::Separator();
+                ImGui::ColorEdit3("Water Extinction",   waterExtinction);
+                ImGui::SliderFloat("Thickness Scale",   &thicknessScale,      0.01f, 20.0f);
+                ImGui::SliderFloat("Blob Strength",     &thicknessStrength,   0.005f, 0.3f, "%.3f");
+                ImGui::SliderFloat("Blob Falloff",      &thicknessFalloff,    1.0f, 8.0f);
+                ImGui::ColorEdit3("Deep Water Color",   deepWaterColor);
+                ImGui::Separator();
+                ImGui::SliderFloat3("Sun Dir (World)",  sunDirWorld,         -1.0f,  1.0f);
+                ImGui::ColorEdit3("Sun Color",          sunColor);
+                ImGui::SliderFloat("Specular Power",    &specularPower,       8.0f,  1024.0f);
+                ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
+                ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
+                ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
+                ImGui::Separator();
+                ImGui::SliderFloat("Foam Generation",   &fluidGPU->param_foamGen, 0.0f, 2.0f);
+                ImGui::SliderFloat("Foam Threshold",    &fluidGPU->param_foamVelRef, 1.0f, 30.0f);
+                ImGui::SliderFloat("Foam Amount",       &foamAmount,          0.0f,  4.0f);
+                ImGui::SliderFloat("Exposure",          &exposure,            0.25f, 4.0f);
+                ImGui::TextDisabled("Lower Foam Threshold = foam appears at gentler motion.");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
         }
-        ImGui::Separator();
-        ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
-        if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
-        ImGui::SameLine();
-        if (ImGui::Button("Dream Float"))   ApplyArtPreset(1);
-        ImGui::SameLine();
-        if (ImGui::Button("Acid Trip"))     ApplyArtPreset(2);
-        if (ImGui::Button("Club Water"))    ApplyArtPreset(3);
-        ImGui::SameLine();
-        if (ImGui::Button("Molten Disco"))  ApplyArtPreset(4);
-        ImGui::SameLine();
-        if (ImGui::Button("Vaporwave Orb")) ApplyArtPreset(5);
-        if (ImGui::Button("Chrome Mercury")) ApplyArtPreset(6);
-        ImGui::SameLine();
-        if (ImGui::Button("Plasma Storm"))   ApplyArtPreset(7);
-        if (ImGui::Button("Lava Lamp"))      ApplyArtPreset(8);
-        ImGui::SameLine();
-        if (ImGui::Button("Candy Rain"))     ApplyArtPreset(9);
-        if (ImGui::Button("Donut Vortex"))   ApplyArtPreset(10);
-        ImGui::SameLine();
-        if (ImGui::Button("Capsule Wave"))   ApplyArtPreset(11);
-        if (ImGui::Button("Hourglass Drip")) ApplyArtPreset(12);
-        ImGui::SameLine();
-        if (ImGui::Button("Cosmic Egg"))     ApplyArtPreset(13);
-        ImGui::PopID();
+        ImGui::EndTabItem();
     }
-
-    if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushID("Simulation");
-        ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
-        ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
-        ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
-        ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
-        ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
-        ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
-        ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
-        ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Container")) {
-        ImGui::PushID("ContainerBox");
-        if (fluidGPU->riverMode) {
-            fluidGPU->param_shapeType = 0;   // river terrain assumes the box
-            ImGui::TextDisabled("River mode uses the Box container.");
-        } else {
+    if (ImGui::BeginTabItem("Motion")) {
+        if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Simulation");
+            if (ImGui::Button("Physics: Stable Water")) {
+                fluidGPU->param_pause = false;
+                fluidGPU->param_h = 0.28f;
+                fluidGPU->param_restDensity = 1000.0f;
+                fluidGPU->param_gasConstant = 2000.0f;
+                fluidGPU->param_viscosity = 3.5f;
+                fluidGPU->param_gravityY = -980.0f;
+                fluidGPU->param_surfaceTension = 0.0f;
+                fluidGPU->param_timeStep = 1.0e-3f;
+                pendingReset = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Physics: Splashy Water")) {
+                fluidGPU->param_pause = false;
+                fluidGPU->param_h = 0.22f;
+                fluidGPU->param_restDensity = 1000.0f;
+                fluidGPU->param_gasConstant = 6000.0f;
+                fluidGPU->param_viscosity = 1.2f;
+                fluidGPU->param_gravityY = -980.0f;
+                fluidGPU->param_surfaceTension = 0.12f;
+                fluidGPU->param_timeStep = 5.0e-4f;
+                fluidGPU->param_useJitter = false;
+                fluidGPU->param_jitterAmp = 0.06f;
+                fluidGPU->param_wallRestitution = 0.05f;
+                fluidGPU->param_wallFriction = 0.05f;
+                pendingReset = true;
+            }
+            ImGui::SliderFloat("h (smoothing)", &fluidGPU->param_h, 0.10f, 1.00f);
+            ImGui::SliderFloat("mass", &fluidGPU->param_mass, 1.0f, 50.0f);
+            ImGui::SliderFloat("restDensity", &fluidGPU->param_restDensity, 100.0f, 2000.0f);
+            ImGui::SliderFloat("gasConstant", &fluidGPU->param_gasConstant, 100.0f, 30000.0f);
+            ImGui::SliderFloat("viscosity", &fluidGPU->param_viscosity, 0.0f, 20.0f);
+            ImGui::SliderFloat("gravityY", &fluidGPU->param_gravityY, -5000.0f, 0.0f);
+            ImGui::SliderFloat("surfaceTension", &fluidGPU->param_surfaceTension, 0.0f, 1.0f);
+            ImGui::SliderFloat("timeStep", &fluidGPU->param_timeStep, 1e-5f, 5e-3f, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Container")) {
+            ImGui::PushID("ContainerBox");
             ImGui::Combo("Shape", &fluidGPU->param_shapeType,
                 "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0");
-        }
-        ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
-        if (fluidGPU->param_shapeType == 1) {
-            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-        } else if (fluidGPU->param_shapeType == 2) {
-            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-            ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
-        } else if (fluidGPU->param_shapeType == 3) {
-            ImGui::DragFloat("Ring Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
-            ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
-            // A tube fatter than the ring degenerates the donut
-            fluidGPU->param_boxHalf.y = std::min(fluidGPU->param_boxHalf.y, fluidGPU->param_boxHalf.x);
-        } else if (fluidGPU->param_shapeType == 4) {
-            ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-            ImGui::DragFloat("Core Half Length", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
-        } else if (fluidGPU->param_shapeType == 5) {
-            ImGui::DragFloat("Base Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
-            ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
-            ImGui::DragFloat("Neck Radius", &fluidGPU->param_boxHalf.z, 0.05f, 0.05f, 100.0f);
-            fluidGPU->param_boxHalf.z = std::max(0.05f,
-                std::min(fluidGPU->param_boxHalf.z, fluidGPU->param_boxHalf.x * 0.95f));
-        } else if (fluidGPU->param_shapeType == 6) {
-            ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-            ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
-        } else {
-            ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
-        }
-        if (fluidGPU->param_shapeType != 1)   // rotation is meaningless for a sphere
-            ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
-        ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
-        ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
-        ImGui::Separator();
-        ImGui::Checkbox("Show Outline", &showContainerOutline);
-        if (showContainerOutline)
-            ImGui::ColorEdit3("Outline Color", containerOutlineColor);
-        ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Camera Orbit")) {
-        ImGui::PushID("CameraOrbit");
-        ImGui::Checkbox("Auto Orbit", &autoOrbitEnabled);
-        ImGui::SliderFloat("Speed (deg/s)", &autoOrbitSpeedDeg, -60.0f, 60.0f);
-        ImGui::SliderFloat("Bass Speed Kick", &audioOrbitKick, 0.0f, 3.0f);
-        ImGui::TextDisabled("Slow cinematic spin around the fluid. Negative = other way.\nWorks in Reel Export too (frame-accurate). Drag still steers.");
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Spawn Layout")) {
-        ImGui::PushID("SpawnLayout");
-        ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
-        ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
-        if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Waves")) {
-        ImGui::PushID("Waves");
-        ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
-        ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
-        ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
-        ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
-        ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
-        ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
-        ImGui::InputFloat("Band Y min", &yBandMin);
-        ImGui::InputFloat("Band Y max", &yBandMax);
-        ImGui::Checkbox("Continuous wave", &continuousWave);
-        if (ImGui::Button("Impulse Now")) {
-            Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
-            fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
-        }
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Vortex Swirl")) {
-        ImGui::PushID("VortexSwirl");
-        ImGui::SliderFloat("Base Swirl", &vortexBaseSwirl, -30.0f, 30.0f);
-        ImGui::SliderFloat("Audio Swirl (mid)", &audioVortexForce, 0.0f, 30.0f);
-        ImGui::SliderFloat("Inward Pull", &vortexInwardPull, 0.0f, 10.0f);
-        ImGui::TextDisabled("Whirlpool around the container's axis. Base Swirl works\nwithout audio; the mid band spins it up with the music.");
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Audio Reactive")) {
-        ImGui::PushID("AudioReactive");
-        ImGui::Checkbox("Enable", &audioReactiveEnabled);   // thread start/stop happens in Update()
-        ImGui::TextDisabled("%s", audioReactive->GetStatusText().c_str());
-        ImGui::TextDisabled("Reacts to whatever your computer is playing.");
-
-        if (ImGui::SliderFloat("Master Gain", &audioMasterGain, 0.0f, 4.0f))
-            audioReactive->gain.store(audioMasterGain);
-
-        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetBass()),   ImVec2(-1.0f, 0.0f), "Bass");
-        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetMid()),    ImVec2(-1.0f, 0.0f), "Mid");
-        ImGui::ProgressBar(std::min(1.0f, audioReactive->GetTreble()), ImVec2(-1.0f, 0.0f), "Treble");
-
-        ImGui::Separator(); ImGui::Text("Physical (splashes)");
-        ImGui::SliderFloat("Bass Force",       &audioBassForce,       0.0f, 30.0f);
-        ImGui::SliderFloat("Bass Threshold",   &audioBassThreshold,   0.0f, 1.0f);
-        ImGui::SliderFloat("Mid Force",        &audioMidForce,        0.0f, 30.0f);
-        ImGui::SliderFloat("Mid Threshold",    &audioMidThreshold,    0.0f, 1.0f);
-        ImGui::SliderFloat("Treble Force",     &audioTrebleForce,     0.0f, 30.0f);
-        ImGui::SliderFloat("Treble Threshold", &audioTrebleThreshold, 0.0f, 1.0f);
-
-        ImGui::Separator(); ImGui::Text("Visual (pulses)");
-        ImGui::SliderFloat("Size Kick (bass)", &audioSizeKick,    0.0f, 2.0f);
-        ImGui::SliderFloat("Shimmer (treble)", &audioShimmerKick, 0.0f, 2.0f);
-        ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
-        ImGui::SliderFloat("Hue Kick (bass)",  &audioHueKickDeg,  0.0f, 180.0f);
-        ImGui::SliderFloat("Flash (bass)",     &audioFlashKick,   0.0f, 2.0f);
-
-        if (ImGui::TreeNode("Advanced")) {
-            float atk = audioReactive->attackMs.load();
-            float rel = audioReactive->releaseMs.load();
-            if (ImGui::SliderFloat("Attack (ms)",  &atk, 1.0f, 100.0f)) audioReactive->attackMs.store(atk);
-            if (ImGui::SliderFloat("Release (ms)", &rel, 20.0f, 800.0f)) audioReactive->releaseMs.store(rel);
-            ImGui::SliderFloat("Bass Wavelength",    &audioBassWavelength,   1.0f, 30.0f);
-            ImGui::SliderFloat("Mid Wavelength",     &audioMidWavelength,    0.5f, 10.0f);
-            ImGui::SliderFloat("Treble Wavelength",  &audioTrebleWavelength, 0.2f, 3.0f);
-            ImGui::SliderFloat("Bass Phase Speed",   &audioBassPhaseSpeed,   0.0f, 10.0f);
-            ImGui::SliderFloat("Mid Rotation Speed", &audioMidRotSpeed,      0.0f, 5.0f);
-            ImGui::SliderFloat("Treble Phase Speed", &audioTreblePhaseSpeed, 0.0f, 30.0f);
-            ImGui::TreePop();
-        }
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Reels Export")) {
-        ImGui::PushID("ReelsExport");
-        if (reelExporting) {
-            float prog = reelBands.frameCount > 0
-                ? float(reelFrame) / float(reelBands.frameCount) : 0.0f;
-            ImGui::ProgressBar(prog, ImVec2(-1.0f, 0.0f));
-            float elapsed = (SDL_GetTicks() - reelStartMs) / 1000.0f;
-            float rate = (reelFrame > 0 && elapsed > 0.01f) ? reelFrame / elapsed : 0.0f;
-            int etaSec = (rate > 0.01f) ? int((reelBands.frameCount - reelFrame) / rate) : 0;
-            ImGui::Text("Frame %d / %d  (%.0f%%)", reelFrame, reelBands.frameCount, prog * 100.0f);
-            ImGui::Text("%.1f fps  |  ETA %d:%02d", rate, etaSec / 60, etaSec % 60);
-            ImGui::TextDisabled("Live preview on the left updates as it renders.");
-            if (ImGui::Button("Cancel")) FinishReelExport(false);
-        } else {
-            ImGui::TextDisabled("Drag an audio file onto the window, or type its path:");
-            ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
-            ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
-            ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
-            if (ImGui::Combo("Aspect", &reelResIdx,
-                    "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0")) {
-                // Keep reelW/reelH live so the preview framing follows the combo
-                // (StartReelExport also sets these; harmless to do it here too).
-                switch (reelResIdx) {
-                    case 1:  reelW = 1080; reelH = 1350; break;
-                    case 2:  reelW = 1920; reelH = 1080; break;
-                    default: reelW = 1080; reelH = 1920; break;
-                }
+            ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
+            if (fluidGPU->param_shapeType == 1) {
+                ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+            } else if (fluidGPU->param_shapeType == 2) {
+                ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            } else if (fluidGPU->param_shapeType == 3) {
+                ImGui::DragFloat("Ring Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                // A tube fatter than the ring degenerates the donut
+                fluidGPU->param_boxHalf.y = std::min(fluidGPU->param_boxHalf.y, fluidGPU->param_boxHalf.x);
+            } else if (fluidGPU->param_shapeType == 4) {
+                ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Core Half Length", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            } else if (fluidGPU->param_shapeType == 5) {
+                ImGui::DragFloat("Base Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Neck Radius", &fluidGPU->param_boxHalf.z, 0.05f, 0.05f, 100.0f);
+                fluidGPU->param_boxHalf.z = std::max(0.05f,
+                    std::min(fluidGPU->param_boxHalf.z, fluidGPU->param_boxHalf.x * 0.95f));
+            } else if (fluidGPU->param_shapeType == 6) {
+                ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            } else {
+                ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             }
-
-            // Live "record-safe" framing for OBS: shows the scene at the exact
-            // reel aspect (black bars fill the rest of the window) so a quick
-            // OBS grab matches what the offline export would produce.
-            ImGui::Checkbox("Reel Preview (frame view for OBS)", &reelPreview);
-            if (reelPreview)
-                ImGui::TextDisabled("Recording %d x %d framing. Crop the black bars in OBS.",
-                                    reelW, reelH);
-
-            ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
-            ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
-            ImGui::Checkbox("Crisp 2x Supersample (slower)", &reelSupersample);
-            if (reelSupersample)
-                ImGui::TextDisabled("Renders each frame at double size + full-res fluid,\nthen downsamples. Sharpest result, ~4x render time.");
-            if (ImGui::Button("Export Reel")) StartReelExport();
-            if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
-            ImGui::TextDisabled(
-                "Reel Preview = quick OBS captures (live, audio-reactive).\n"
-                "Export Reel = frame-accurate render for longer/final videos.\n"
-                "Export is heavy, so:\n"
-                " - Test with Max seconds = 5 first.\n"
-                " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
-                " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
-                "Writes PNGs, then double-click mux_reel.bat to build the mp4.\n"
-                "That needs ffmpeg: install it (ffmpeg.org) and add to PATH, OR\n"
-                "just drop ffmpeg.exe into the output folder next to the .bat.");
-        }
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("River / Stream Mode")) {
-        ImGui::PushID("River");
-        bool wasRiver = fluidGPU->riverMode;
-        ImGui::Checkbox("Enable River Mode", &fluidGPU->riverMode);
-        ImGui::SliderInt("River Seed", &riverSeed, 1, 999);
-        if (ImGui::Button("Generate New River")) {
-            if (!fluidGPU->riverMode) fluidGPU->riverMode = true;
-            // Elongate box in Z for a longer channel
-            fluidGPU->param_boxHalf = Vec3(7.0f, 8.0f, 10.0f);
-            fluidGPU->param_boxCenter = Vec3(0.0f, 0.0f, 0.0f);
-            fluidGPU->param_boxEulerDeg = Vec3(0, 0, 0);
-            fluidGPU->GenerateRiverTerrain(riverSeed);
-            BuildTerrainMesh();
-            BuildRiverBankLines();
-            pendingReset = true;
-            // Auto-position camera for a clear river view
-            cameraTarget  = Vec3(fluidGPU->param_boxCenter.x, 0.0f, fluidGPU->param_boxCenter.z);
-            camDist       = 28.0f;
-            camAzimuth    = 0.0f;
-            camElevation  = 0.75f; // ~43 degrees — nice angled top-down
-        }
-        if (fluidGPU->riverMode) {
-            ImGui::Text("Emitter: (%.1f, %.1f, %.1f)", fluidGPU->riverEmitterPos.x, fluidGPU->riverEmitterPos.y, fluidGPU->riverEmitterPos.z);
-            ImGui::SliderFloat("Emitter vel Z", &fluidGPU->riverEmitterVel.z, 0.0f, 15.0f);
-            ImGui::SliderFloat("Gravity Z (flow)", &fluidGPU->param_gravityZ, 0.0f, 400.0f);
-            ImGui::SliderFloat("Gravity Y",         &fluidGPU->param_gravityY, -980.0f, -50.0f);
-            ImGui::Checkbox("Show bank lines", &showRiverLines);
-        }
-        if (!fluidGPU->riverMode && wasRiver) {
-            // Restore box to default when river mode is turned off
-            fluidGPU->param_boxHalf = Vec3(7, 7, 7);
-            fluidGPU->param_boxCenter = Vec3(0, 0, 0);
-            fluidGPU->param_gravityY = -980.0f;
-            fluidGPU->param_gravityZ =    0.0f;
-            pendingReset = true;
-        }
-        ImGui::PopID();
-    }
-
-    if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushID("Appearance");
-        int renderMode = useWaterRendering ? 0 : (useImpostors ? 1 : 2);
-        if (ImGui::Combo("Render Mode", &renderMode, "Water Surface\0Point Impostors\0Mesh Spheres\0")) {
-            useWaterRendering = (renderMode == 0);
-            useImpostors      = (renderMode == 1);
-        }
-        ImGui::Separator(); ImGui::Text("Color");
-        ImGui::Combo("Palette", &paletteId,
-            "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
-            "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
-            "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
-            "Electric\0Smoke\0RGB Pop\0");
-        ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
-        if (paletteId >= 15)
-            ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
-        ImGui::Combo("Color Drive", &vizMode,
-            "Height\0Speed\0Pressure\0Density\0View Depth\0Velocity Direction\0Distance from Center\0Instance Color\0");
-        ImGui::DragFloat("Range Min", &vizRangeMin, 0.1f);
-        ImGui::DragFloat("Range Max", &vizRangeMax, 0.1f);
-        ImGui::TextDisabled("Height drive uses box Y extents, not Range. Palette & drive\ncolor the Impostor/Mesh modes; Adjustments grade every mode.");
-        if (paletteId == 8 || paletteId == 20) {   // Duotone + Candy Stripes share the pickers
-            ImGui::ColorEdit3("Duotone A", duoColorA);
-            ImGui::ColorEdit3("Duotone B", duoColorB);
-        }
-        if (paletteId == 4 || paletteId == 13) {
-            ImGui::SliderFloat("Irid Frequency", &iridFreq, 0.0f, 8.0f);
-            ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
-        }
-        ImGui::Checkbox("Lit particles", &litParticles);
-
-        ImGui::Separator(); ImGui::Text("Adjustments");
-        ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
-        ImGui::SliderFloat("Saturation", &satMul,      0.0f, 2.0f);
-        ImGui::SliderFloat("Brightness", &brightMul,   0.0f, 2.0f);
-        ImGui::SliderFloat("Contrast",   &contrastMul, 0.0f, 2.0f);
-        ImGui::Checkbox("Invert", &invertColor);
-
-        ImGui::Separator(); ImGui::Text("Background");
-        ImGui::ColorEdit3("Background", bgColor);
-        if (useWaterRendering) {
-            ImGui::Checkbox("Sky Background", &showSkyBackground);
-            ImGui::ColorEdit3("Sky Horizon", skyColor);
-            ImGui::ColorEdit3("Sky Zenith", skyZenith);
-            ImGui::ColorEdit3("Reflect Tint", envReflectColor);
-            ImGui::TextDisabled("Sky colors always drive the water's reflections;\nthe checkbox only draws them as the backdrop.");
-        }
-        if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
-            if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
-                InitSSFRBuffers(windowW, windowH);
-            ImGui::SliderInt("Smooth Iterations",  &smoothIterations,    0,    20);
-            ImGui::SliderFloat("Smoothing Scale",   &worldFilterScale,   0.0f, 10.0f);
-            ImGui::SliderFloat("Surface Merge",     &surfaceMerge,       0.5f, 8.0f);
-            ImGui::SliderFloat("Render Radius",     &renderRadiusScale,  0.5f, 2.0f);
+            if (fluidGPU->param_shapeType != 1)   // rotation is meaningless for a sphere
+                ImGui::DragFloat3("Euler XYZ", &fluidGPU->param_boxEulerDeg.x, 0.5f, -180.0f, 180.0f);
+            ImGui::SliderFloat("Wall Restitution", &fluidGPU->param_wallRestitution, 0.0f, 1.0f);
+            ImGui::SliderFloat("Wall Friction", &fluidGPU->param_wallFriction, 0.0f, 1.0f);
             ImGui::Separator();
-            ImGui::ColorEdit3("Water Extinction",   waterExtinction);
-            ImGui::SliderFloat("Thickness Scale",   &thicknessScale,      0.01f, 20.0f);
-            ImGui::SliderFloat("Blob Strength",     &thicknessStrength,   0.005f, 0.3f, "%.3f");
-            ImGui::SliderFloat("Blob Falloff",      &thicknessFalloff,    1.0f, 8.0f);
-            ImGui::ColorEdit3("Deep Water Color",   deepWaterColor);
-            ImGui::Separator();
-            ImGui::SliderFloat3("Sun Dir (World)",  sunDirWorld,         -1.0f,  1.0f);
-            ImGui::ColorEdit3("Sun Color",          sunColor);
-            ImGui::SliderFloat("Specular Power",    &specularPower,       8.0f,  1024.0f);
-            ImGui::SliderFloat("Specular Strength", &specularStrength,    0.0f,  3.0f);
-            ImGui::SliderFloat("Refraction",        &refractionStrength,  0.0f,  0.2f);
-            ImGui::SliderFloat("Fresnel Bias",      &fresnelBias,         0.0f,  0.3f);
-            ImGui::Separator();
-            ImGui::SliderFloat("Foam Generation",   &fluidGPU->param_foamGen, 0.0f, 2.0f);
-            ImGui::SliderFloat("Foam Threshold",    &fluidGPU->param_foamVelRef, 1.0f, 30.0f);
-            ImGui::SliderFloat("Foam Amount",       &foamAmount,          0.0f,  4.0f);
-            ImGui::SliderFloat("Exposure",          &exposure,            0.25f, 4.0f);
-            ImGui::TextDisabled("Lower Foam Threshold = foam appears at gentler motion.");
-            ImGui::TreePop();
+            ImGui::Checkbox("Show Outline", &showContainerOutline);
+            if (showContainerOutline)
+                ImGui::ColorEdit3("Outline Color", containerOutlineColor);
+            ImGui::TextDisabled("The sim grid follows container edits automatically;\nfluid is squeezed to stay inside as walls move.");
+            ImGui::PopID();
         }
-        ImGui::PopID();
+        if (ImGui::CollapsingHeader("Camera Orbit")) {
+            ImGui::PushID("CameraOrbit");
+            ImGui::Checkbox("Auto Orbit", &autoOrbitEnabled);
+            ImGui::SliderFloat("Speed (deg/s)", &autoOrbitSpeedDeg, -60.0f, 60.0f);
+            ImGui::SliderFloat("Bass Speed Kick", &audioOrbitKick, 0.0f, 3.0f);
+            ImGui::TextDisabled("Slow cinematic spin around the fluid. Negative = other way.\nWorks in Reel Export too (frame-accurate). Drag still steers.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Spawn Layout")) {
+            ImGui::PushID("SpawnLayout");
+            ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
+            ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
+            if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Waves")) {
+            ImGui::PushID("Waves");
+            ImGui::SliderFloat("Amplitude", &waveAmplitude, 0.0f, 25.0f);
+            ImGui::SliderFloat("Wavelength", &waveWavelength, 0.5f, 10.0f);
+            ImGui::SliderFloat("Phase speed", &wavePhaseSpeed, 0.0f, 20.0f);
+            ImGui::RadioButton("Dir X", &waveDirIdx, 0); ImGui::SameLine();
+            ImGui::RadioButton("Dir Y", &waveDirIdx, 1); ImGui::SameLine();
+            ImGui::RadioButton("Dir Z", &waveDirIdx, 2);
+            ImGui::InputFloat("Band Y min", &yBandMin);
+            ImGui::InputFloat("Band Y max", &yBandMax);
+            ImGui::Checkbox("Continuous wave", &continuousWave);
+            if (ImGui::Button("Impulse Now")) {
+                Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
+                fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
+            }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Vortex Swirl")) {
+            ImGui::PushID("VortexSwirl");
+            ImGui::SliderFloat("Base Swirl", &vortexBaseSwirl, -30.0f, 30.0f);
+            ImGui::SliderFloat("Audio Swirl (mid)", &audioVortexForce, 0.0f, 30.0f);
+            ImGui::SliderFloat("Inward Pull", &vortexInwardPull, 0.0f, 10.0f);
+            ImGui::TextDisabled("Whirlpool around the container's axis. Base Swirl works\nwithout audio; the mid band spins it up with the music.");
+            ImGui::PopID();
+        }
+        ImGui::EndTabItem();
     }
+    if (ImGui::BeginTabItem("Audio")) {
+        if (ImGui::CollapsingHeader("Audio Reactive", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("AudioReactive");
+            ImGui::Checkbox("Enable", &audioReactiveEnabled);   // thread start/stop happens in Update()
+            ImGui::TextDisabled("%s", audioReactive->GetStatusText().c_str());
+            ImGui::TextDisabled("Reacts to whatever your computer is playing.");
 
-    if (ImGui::CollapsingHeader("Performance")) {
-        ImGui::PushID("Performance");
-        // One-click modes: trade fluid-surface quality for capture framerate
-        if (ImGui::Button("Fast Capture")) {
-            ssfrHalfRes = true;  smoothIterations = 3; maxSubstepsPerFrame = 8;  reelSubstepCap = 10;
-            if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
+            if (ImGui::SliderFloat("Master Gain", &audioMasterGain, 0.0f, 4.0f))
+                audioReactive->gain.store(audioMasterGain);
+
+            ImGui::ProgressBar(std::min(1.0f, audioReactive->GetBass()),   ImVec2(-1.0f, 0.0f), "Bass");
+            ImGui::ProgressBar(std::min(1.0f, audioReactive->GetMid()),    ImVec2(-1.0f, 0.0f), "Mid");
+            ImGui::ProgressBar(std::min(1.0f, audioReactive->GetTreble()), ImVec2(-1.0f, 0.0f), "Treble");
+
+            ImGui::Separator(); ImGui::Text("Physical (splashes)");
+            ImGui::SliderFloat("Bass Force",       &audioBassForce,       0.0f, 30.0f);
+            ImGui::SliderFloat("Bass Threshold",   &audioBassThreshold,   0.0f, 1.0f);
+            ImGui::SliderFloat("Mid Force",        &audioMidForce,        0.0f, 30.0f);
+            ImGui::SliderFloat("Mid Threshold",    &audioMidThreshold,    0.0f, 1.0f);
+            ImGui::SliderFloat("Treble Force",     &audioTrebleForce,     0.0f, 30.0f);
+            ImGui::SliderFloat("Treble Threshold", &audioTrebleThreshold, 0.0f, 1.0f);
+
+            ImGui::Separator(); ImGui::Text("Visual (pulses)");
+            ImGui::SliderFloat("Size Kick (bass)", &audioSizeKick,    0.0f, 2.0f);
+            ImGui::SliderFloat("Shimmer (treble)", &audioShimmerKick, 0.0f, 2.0f);
+            ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
+            ImGui::SliderFloat("Hue Kick (bass)",  &audioHueKickDeg,  0.0f, 180.0f);
+            ImGui::SliderFloat("Flash (bass)",     &audioFlashKick,   0.0f, 2.0f);
+
+            if (ImGui::TreeNode("Advanced")) {
+                float atk = audioReactive->attackMs.load();
+                float rel = audioReactive->releaseMs.load();
+                if (ImGui::SliderFloat("Attack (ms)",  &atk, 1.0f, 100.0f)) audioReactive->attackMs.store(atk);
+                if (ImGui::SliderFloat("Release (ms)", &rel, 20.0f, 800.0f)) audioReactive->releaseMs.store(rel);
+                ImGui::SliderFloat("Bass Wavelength",    &audioBassWavelength,   1.0f, 30.0f);
+                ImGui::SliderFloat("Mid Wavelength",     &audioMidWavelength,    0.5f, 10.0f);
+                ImGui::SliderFloat("Treble Wavelength",  &audioTrebleWavelength, 0.2f, 3.0f);
+                ImGui::SliderFloat("Bass Phase Speed",   &audioBassPhaseSpeed,   0.0f, 10.0f);
+                ImGui::SliderFloat("Mid Rotation Speed", &audioMidRotSpeed,      0.0f, 5.0f);
+                ImGui::SliderFloat("Treble Phase Speed", &audioTreblePhaseSpeed, 0.0f, 30.0f);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Max Quality")) {
-            ssfrHalfRes = false; smoothIterations = 8; maxSubstepsPerFrame = 16; reelSubstepCap = 0;
-            if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
-        }
-        ImGui::SliderInt("Particle Count", &uiParticleCount, 5000, 200000);
-        ImGui::SameLine();
-        if (ImGui::Button("Apply##pcount")) {
-            fluidGPU->numParticles = size_t(std::max(1000, uiParticleCount));
-            pendingReset = true;   // full realloc; the reset block rebinds the instance VBO
-        }
-        ImGui::TextDisabled("Fewer particles = faster + lighter look; more = denser fluid.\nApply respawns the fluid.");
-        ImGui::Separator();
-        ImGui::Checkbox("Render from SSBO (fast)", &renderFromSSBO);
-        ImGui::Checkbox("Enable ghost boundaries", &fluidGPU->param_enableGhosts);
-        ImGui::SameLine();
-        ImGui::Checkbox("Grid sort (unused)", &fluidGPU->param_enableSort);
-        ImGui::PopID();
+        ImGui::EndTabItem();
     }
+    if (ImGui::BeginTabItem("Export")) {
+        if (ImGui::CollapsingHeader("Reels Export", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("ReelsExport");
+            if (reelExporting) {
+                float prog = reelBands.frameCount > 0
+                    ? float(reelFrame) / float(reelBands.frameCount) : 0.0f;
+                ImGui::ProgressBar(prog, ImVec2(-1.0f, 0.0f));
+                float elapsed = (SDL_GetTicks() - reelStartMs) / 1000.0f;
+                float rate = (reelFrame > 0 && elapsed > 0.01f) ? reelFrame / elapsed : 0.0f;
+                int etaSec = (rate > 0.01f) ? int((reelBands.frameCount - reelFrame) / rate) : 0;
+                ImGui::Text("Frame %d / %d  (%.0f%%)", reelFrame, reelBands.frameCount, prog * 100.0f);
+                ImGui::Text("%.1f fps  |  ETA %d:%02d", rate, etaSec / 60, etaSec % 60);
+                ImGui::TextDisabled("Live preview on the left updates as it renders.");
+                if (ImGui::Button("Cancel")) FinishReelExport(false);
+            } else {
+                ImGui::TextDisabled("Drag an audio file onto the window, or type its path:");
+                ImGui::InputText("Audio File", reelAudioPath, sizeof(reelAudioPath));
+                ImGui::InputText("Output Folder", reelOutDir, sizeof(reelOutDir));
+                ImGui::Combo("FPS", &reelFpsIdx, "30\0" "60\0");
+                if (ImGui::Combo("Aspect", &reelResIdx,
+                        "1080 x 1920 (Reel)\0" "1080 x 1350 (4:5)\0" "1920 x 1080 (Wide)\0")) {
+                    // Keep reelW/reelH live so the preview framing follows the combo
+                    // (StartReelExport also sets these; harmless to do it here too).
+                    switch (reelResIdx) {
+                        case 1:  reelW = 1080; reelH = 1350; break;
+                        case 2:  reelW = 1920; reelH = 1080; break;
+                        default: reelW = 1080; reelH = 1920; break;
+                    }
+                }
 
-    if (ImGui::CollapsingHeader("Screenshot", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushID("Screenshot");
-        ImGui::Combo("Resolution", &captureResIdx,
-            "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
-        if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
-        ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.\nRendered 2x supersampled + full-res fluid for crisp edges.");
-        if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
-        ImGui::PopID();
+                // Live "record-safe" framing for OBS: shows the scene at the exact
+                // reel aspect (black bars fill the rest of the window) so a quick
+                // OBS grab matches what the offline export would produce.
+                ImGui::Checkbox("Reel Preview (frame view for OBS)", &reelPreview);
+                if (reelPreview)
+                    ImGui::TextDisabled("Recording %d x %d framing. Crop the black bars in OBS.",
+                                        reelW, reelH);
+
+                ImGui::InputFloat("Max seconds (0 = full)", &reelMaxSeconds);
+                ImGui::SliderInt("Substep Cap (0 = accurate)", &reelSubstepCap, 0, 32);
+                ImGui::Checkbox("Crisp 2x Supersample (slower)", &reelSupersample);
+                if (reelSupersample)
+                    ImGui::TextDisabled("Renders each frame at double size + full-res fluid,\nthen downsamples. Sharpest result, ~4x render time.");
+                if (ImGui::Button("Export Reel")) StartReelExport();
+                if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
+                ImGui::TextDisabled(
+                    "Reel Preview = quick OBS captures (live, audio-reactive).\n"
+                    "Export Reel = frame-accurate render for longer/final videos.\n"
+                    "Export is heavy, so:\n"
+                    " - Test with Max seconds = 5 first.\n"
+                    " - Faster: Point Impostors mode, or Half-Res Fluid (water).\n"
+                    " - Substep Cap ~8-12 speeds it up (may jitter on splashy setups).\n"
+                    "Writes PNGs, then double-click mux_reel.bat to build the mp4.\n"
+                    "That needs ffmpeg: install it (ffmpeg.org) and add to PATH, OR\n"
+                    "just drop ffmpeg.exe into the output folder next to the .bat.");
+            }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Performance")) {
+            ImGui::PushID("Performance");
+            // One-click modes: trade fluid-surface quality for capture framerate
+            if (ImGui::Button("Fast Capture")) {
+                ssfrHalfRes = true;  smoothIterations = 3; maxSubstepsPerFrame = 8;  reelSubstepCap = 10;
+                if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Max Quality")) {
+                ssfrHalfRes = false; smoothIterations = 8; maxSubstepsPerFrame = 16; reelSubstepCap = 0;
+                if (windowW > 0 && windowH > 0) InitSSFRBuffers(windowW, windowH);
+            }
+            ImGui::SliderInt("Particle Count", &uiParticleCount, 5000, 200000);
+            ImGui::SameLine();
+            if (ImGui::Button("Apply##pcount")) {
+                fluidGPU->numParticles = size_t(std::max(1000, uiParticleCount));
+                pendingReset = true;   // full realloc; the reset block rebinds the instance VBO
+            }
+            ImGui::TextDisabled("Fewer particles = faster + lighter look; more = denser fluid.\nApply respawns the fluid.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Screenshot", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("Screenshot");
+            ImGui::Combo("Resolution", &captureResIdx,
+                "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
+            if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
+            ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.\nRendered 2x supersampled + full-res fluid for crisp edges.");
+            if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
     }
     ImGui::End();
 
@@ -1070,7 +1016,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
     glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glPolygonMode(GL_FRONT_AND_BACK, drawInWireMode ? GL_LINE : GL_FILL);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     if (showContainerOutline && lineShader && boxVAO) {
         glUseProgram(lineShader->GetProgram());
@@ -1092,16 +1038,12 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
         return;
     }
 
-    if (!renderFromSSBO) {
-        fluidGPU->UpdateFluidVBOFromGPU();
-    }
-
     glUseProgram(shader->GetProgram());
     glUniformMatrix4fv(shader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
     glUniformMatrix4fv(shader->GetUniformID("viewMatrix"), 1, GL_FALSE, viewMatrix);
 
     if (GLint useLoc = shader->GetUniformID("useSSBO"); useLoc != -1)
-        glUniform1i(useLoc, renderFromSSBO ? 1 : 0);
+        glUniform1i(useLoc, 1);
     SetColorUniforms(shader);
 
     float particleRadius = std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive;

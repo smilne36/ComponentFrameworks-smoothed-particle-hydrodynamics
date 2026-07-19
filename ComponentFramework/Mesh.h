@@ -39,7 +39,6 @@ public:
 	void Render(GLenum drawmode) const;
 	void BindInstanceBuffer(GLuint vbo, GLsizei stride);
 	void SetInstanceData(const std::vector<Vec3>& positions);
-	void SetInstanceColors(const std::vector<Vec3>& colors);
 	void SetInstanceVelocities(const std::vector<Vec3>& velocities);
 	void RenderInstanced(GLenum drawmode, size_t count) const;
 	
