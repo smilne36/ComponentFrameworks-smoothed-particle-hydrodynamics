@@ -58,7 +58,7 @@ bool Scene0p::OnCreate() {
         else std::cerr << "SSBO block 'ParticleBuf' not found in program\n";
     }
 
-    projectionMatrix = MMath::perspective(45.0f, 16.0f / 9.0f, 0.5f, 100.0f);
+    projectionMatrix = MMath::perspective(45.0f, 16.0f / 9.0f, 0.5f, viewFarPlane);   // re-built per frame in Update
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
@@ -460,6 +460,11 @@ void Scene0p::Update(const float deltaTime) {
             windowH = vp[3];
         }
     }
+    // Rebuild the live projection every frame: tracks the real window aspect
+    // (was hardcoded 16:9 and never updated) and the View Depth slider.
+    if (windowW > 0 && windowH > 0)
+        projectionMatrix = MMath::perspective(
+            45.0f, float(windowW) / float(windowH), 0.5f, viewFarPlane);
     if (!reelExporting) {
         if (reelPreview) {
             EnsurePreviewTarget();
@@ -576,6 +581,8 @@ void Scene0p::Update(const float deltaTime) {
 
             ImGui::Separator(); ImGui::Text("Background");
             ImGui::ColorEdit3("Background", bgColor);
+            ImGui::SliderFloat("View Depth", &viewFarPlane, 50.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::TextDisabled("Raise if a huge container gets cut off far away.");
             if (useWaterRendering) {
                 ImGui::Checkbox("Sky Background", &showSkyBackground);
                 ImGui::ColorEdit3("Sky Horizon", skyColor);
@@ -978,7 +985,7 @@ void Scene0p::Render() const {
     // capture a true 9:16 frame. Same framing the offline export produces.
     if (reelPreview && previewFBO && previewW > 0 && previewH > 0) {
         const Matrix4 previewProj = MMath::perspective(
-            45.0f, float(reelW) / float(reelH), 0.5f, 100.0f);
+            45.0f, float(reelW) / float(reelH), 0.5f, viewFarPlane);
         RenderSceneTo(previewFBO, previewW, previewH, previewProj);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2173,7 +2180,7 @@ void Scene0p::ReelExportStep() {
     const int fps = (reelFpsIdx == 1) ? 60 : 30;
     const float frameDt = 1.0f / float(fps);
     const Matrix4 reelProj = MMath::perspective(
-        45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, 100.0f);
+        45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, viewFarPlane);
 
     // Deterministic substeps. Accurate by default (subDt <= the sim timestep);
     // an optional cap trades physical accuracy for render speed.
@@ -2382,7 +2389,7 @@ void Scene0p::DoCapture() {
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
     const Matrix4 capProj = MMath::perspective(
-        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, 100.0f);
+        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
     RenderSceneTo(capFBO, renderW, renderH, capProj);
 
     GLuint readFBO = capFBO;

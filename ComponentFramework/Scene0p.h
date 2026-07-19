@@ -32,6 +32,7 @@ private:
     float   camDist      = 22.0f;
     float   camAzimuth   = 0.0f;   // radians, rotation around Y
     float   camElevation = 0.22f;  // radians, pitch above horizon
+    float   viewFarPlane = 300.0f; // camera draw distance; raise for huge containers
 
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
