@@ -244,6 +244,35 @@ private:
     void    RenderSSFR(GLuint targetFBO, const Matrix4& proj) const;
     void    DestroySSFRBuffers();
 
+    // --- Post-processing chain (trails -> bloom -> final grade) ---
+    // Runs inside RenderSceneTo whenever any FX slider is nonzero, so it bakes
+    // into the live view, OBS preview, reel exports, and screenshots alike.
+    Shader* postTrailShader  = nullptr;
+    Shader* postBrightShader = nullptr;
+    Shader* postBlurShader   = nullptr;
+    Shader* postFinalShader  = nullptr;
+    GLuint  postSceneFBO = 0, postSceneTex = 0, postSceneRBO = 0;   // RGBA8 + depth
+    GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
+    GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
+    int     postW = 0, postH = 0;
+    mutable int trailPing = 0;      // ping-pong index; flipped during (const) render
+    float   postTime = 0.0f;        // advances in DriveAudioReaction (reel-deterministic)
+    // FX sliders. All defaults off => the post chain is a strict no-op and the
+    // scene renders exactly as before this feature existed.
+    float   bloomStrength = 0.0f, bloomThreshold = 0.6f;
+    float   trailHalfLife = 0.0f;   // seconds; 0 = off
+    float   trailDecayLive = 0.0f;  // exp(-ln2*dt/halfLife), recomputed per frame
+    int     kaleidoSegments = 0;    // < 2 = off
+    float   kaleidoAngleDeg = 0.0f;
+    float   vignetteAmount = 0.0f, grainAmount = 0.0f, chromaticAmount = 0.0f;
+
+    void    InitPostBuffers(int w, int h);
+    void    DestroyPostBuffers();
+    void    ClearTrailHistory();
+    bool    PostChainActive() const;
+    void    RenderSceneRaw(GLuint fbo, int outW, int outH, const Matrix4& proj) const;
+    void    RunPostChain(GLuint targetFBO, int outW, int outH) const;
+
     // --- Terrain mesh ---
     Shader* terrainShader     = nullptr;
     GLuint  terrainVAO        = 0;

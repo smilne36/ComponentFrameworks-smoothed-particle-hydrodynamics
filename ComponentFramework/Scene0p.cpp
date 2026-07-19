@@ -97,6 +97,9 @@ bool Scene0p::OnCreate() {
     skyShader = new Shader("shaders/screenQuad.vert", "shaders/skyGradient.frag");
     if (!skyShader->OnCreate()) { std::cerr << "skyGradient shader failed\n"; return false; }
 
+    postFinalShader = new Shader("shaders/screenQuad.vert", "shaders/postFinal.frag");
+    if (!postFinalShader->OnCreate()) { std::cerr << "postFinal shader failed\n"; return false; }
+
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
 
@@ -146,7 +149,12 @@ void Scene0p::OnDestroy() {
     if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
     if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
+    if (postTrailShader)  { postTrailShader->OnDestroy();  delete postTrailShader;  postTrailShader  = nullptr; }
+    if (postBrightShader) { postBrightShader->OnDestroy(); delete postBrightShader; postBrightShader = nullptr; }
+    if (postBlurShader)   { postBlurShader->OnDestroy();   delete postBlurShader;   postBlurShader   = nullptr; }
+    if (postFinalShader)  { postFinalShader->OnDestroy();  delete postFinalShader;  postFinalShader  = nullptr; }
     DestroySSFRBuffers();
+    DestroyPostBuffers();
     DestroyPreviewTarget();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
     if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
@@ -472,6 +480,8 @@ void Scene0p::Update(const float deltaTime) {
             if (previewFBO) DestroyPreviewTarget();
             if (windowW > 0 && windowH > 0 && (windowW != ssfrW || windowH != ssfrH))
                 InitSSFRBuffers(windowW, windowH);
+            if (windowW > 0 && windowH > 0)
+                InitPostBuffers(windowW, windowH);   // no-op when already sized
         }
     }
 
@@ -618,6 +628,21 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::TextDisabled("Lower Foam Threshold = foam appears at gentler motion.");
                 ImGui::TreePop();
             }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("FX")) {
+            ImGui::PushID("FX");
+            ImGui::SliderFloat("Bloom",           &bloomStrength,  0.0f, 2.0f);
+            ImGui::SliderFloat("Bloom Threshold", &bloomThreshold, 0.0f, 1.0f);
+            ImGui::SliderFloat("Trails (half-life s)", &trailHalfLife, 0.0f, 2.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##trails")) ClearTrailHistory();
+            ImGui::SliderInt("Kaleidoscope",   &kaleidoSegments, 0, 12);
+            ImGui::SliderFloat("Kaleido Angle", &kaleidoAngleDeg, 0.0f, 360.0f);
+            ImGui::SliderFloat("Vignette",  &vignetteAmount,  0.0f, 1.0f);
+            ImGui::SliderFloat("Grain",     &grainAmount,     0.0f, 0.2f);
+            ImGui::SliderFloat("Chromatic", &chromaticAmount, 0.0f, 2.0f);
+            ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
         }
         ImGui::EndTabItem();
@@ -1005,10 +1030,27 @@ void Scene0p::Render() const {
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
 }
 
-// Renders the full scene (whichever render path is active) into targetFBO at
-// outW x outH with the given projection. targetFBO 0 = the window; the
-// screenshot capture passes its own FBO, size, and aspect-corrected projection.
+// Renders the full scene into targetFBO, then applies the post-processing
+// chain (trails/bloom/kaleidoscope/film) when any FX is enabled. targetFBO
+// 0 = the window; preview/reel/capture pass their own FBOs, so the FX bake
+// into every output automatically.
 void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
+    if (outW <= 0 || outH <= 0) return;
+    // Size mismatch (buffers not yet re-inited for this output) falls back to
+    // a direct render -- never allocate GL objects from this const path.
+    const bool post = PostChainActive() && postFinalShader && postSceneFBO &&
+                      postW == outW && postH == outH;
+    RenderSceneRaw(post ? postSceneFBO : targetFBO, outW, outH, proj);
+    if (post) RunPostChain(targetFBO, outW, outH);
+}
+
+bool Scene0p::PostChainActive() const {
+    return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
+           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f;
+}
+
+// The raw scene render (whichever render path is active), no post effects.
+void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
     if (outW <= 0 || outH <= 0) return;
 
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
@@ -1105,6 +1147,9 @@ void Scene0p::ApplyArtPreset(int which) {
     autoOrbitEnabled = false; autoOrbitSpeedDeg = 8.0f; audioOrbitKick = 0.0f;
     audioHueKickDeg  = 0.0f;  audioFlashKick = 0.0f;
     vortexBaseSwirl  = 0.0f;  audioVortexForce = 0.0f;  vortexInwardPull = 0.0f;
+    bloomStrength = 0.0f; bloomThreshold = 0.6f; trailHalfLife = 0.0f;
+    kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
+    vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1550,6 +1595,117 @@ void Scene0p::DestroySSFRBuffers() {
     if (ssfrBgTex)       { glDeleteTextures(1, &ssfrBgTex);           ssfrBgTex = 0; }
     if (ssfrBgRBO)       { glDeleteRenderbuffers(1, &ssfrBgRBO);      ssfrBgRBO = 0; }
     ssfrW = ssfrH = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing chain buffers + passes
+// ---------------------------------------------------------------------------
+
+// Color-only FBO helper for the post chain (format-parameterized MakeR32FFBO)
+static GLuint MakeColorFBO(GLuint& texOut, int w, int h, GLenum internalFmt) {
+    glGenTextures(1, &texOut);
+    glBindTexture(GL_TEXTURE_2D, texOut);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, GL_RGBA,
+                 internalFmt == GL_RGBA16F ? GL_FLOAT : GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texOut, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fbo;
+}
+
+void Scene0p::InitPostBuffers(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (w == postW && h == postH && postSceneFBO) return;   // already sized
+    DestroyPostBuffers();
+    postW = w; postH = h;
+
+    // Scene target: RGBA8 color + depth (the raw render needs a depth buffer)
+    postSceneFBO = MakeColorFBO(postSceneTex, w, h, GL_RGBA8);
+    glGenRenderbuffers(1, &postSceneRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, postSceneRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glBindFramebuffer(GL_FRAMEBUFFER, postSceneFBO);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, postSceneRBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    // Trail history: 16F so the multiplicative decay reaches true zero
+    // (RGBA8 rounds small values back to themselves and streaks stick forever)
+    for (int i = 0; i < 2; ++i)
+        trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
+
+    // Bloom: half-res 16F ping-pong
+    const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
+    for (int i = 0; i < 2; ++i)
+        bloomFBO[i] = MakeColorFBO(bloomTex[i], hw, hh, GL_RGBA16F);
+
+    ClearTrailHistory();
+}
+
+void Scene0p::DestroyPostBuffers() {
+    if (postSceneFBO) { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
+    if (postSceneTex) { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
+    if (postSceneRBO) { glDeleteRenderbuffers(1, &postSceneRBO); postSceneRBO = 0; }
+    for (int i = 0; i < 2; ++i) {
+        if (trailFBO[i]) { glDeleteFramebuffers(1, &trailFBO[i]); trailFBO[i] = 0; }
+        if (trailTex[i]) { glDeleteTextures(1, &trailTex[i]);     trailTex[i] = 0; }
+        if (bloomFBO[i]) { glDeleteFramebuffers(1, &bloomFBO[i]); bloomFBO[i] = 0; }
+        if (bloomTex[i]) { glDeleteTextures(1, &bloomTex[i]);     bloomTex[i] = 0; }
+    }
+    postW = postH = 0;
+}
+
+void Scene0p::ClearTrailHistory() {
+    for (int i = 0; i < 2; ++i) {
+        if (!trailFBO[i]) continue;
+        glBindFramebuffer(GL_FRAMEBUFFER, trailFBO[i]);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    trailPing = 0;
+}
+
+// Post passes: [trails accumulate] -> [bloom bright+blur] -> final grade into
+// targetFBO (kaleidoscope fold + chromatic + bloom add + vignette + grain).
+void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindVertexArray(ssfrQuadVAO);
+
+    GLuint baseTex = postSceneTex;
+
+    // Final grade
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
+    glViewport(0, 0, outW, outH);
+    glUseProgram(postFinalShader->GetProgram());
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, baseTex);
+    glUniform1i(postFinalShader->GetUniformID("baseTex"), 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+    glUniform1i(postFinalShader->GetUniformID("bloomTex"), 1);
+    glUniform2f(postFinalShader->GetUniformID("uResolution"), float(outW), float(outH));
+    glUniform1f(postFinalShader->GetUniformID("uKaleidoSegments"), float(kaleidoSegments));
+    glUniform1f(postFinalShader->GetUniformID("uKaleidoAngle"), kaleidoAngleDeg * (3.14159265f / 180.0f));
+    glUniform1f(postFinalShader->GetUniformID("uChromatic"), chromaticAmount);
+    glUniform1f(postFinalShader->GetUniformID("uVignette"), vignetteAmount);
+    glUniform1f(postFinalShader->GetUniformID("uGrain"), grainAmount);
+    glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uTime"), postTime);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
@@ -2013,6 +2169,12 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
     hueShiftDegLive       = hueShiftDeg       + audioHueKickDeg * bass;
     orbitSpeedDegLive     = autoOrbitSpeedDeg * (1.0f + audioOrbitKick   * bass);
+
+    // Post-FX clock + trail decay: advanced here (not wall-clock) so film
+    // grain and trail fade are framerate-independent and reel-deterministic.
+    postTime += dt;
+    trailDecayLive = (trailHalfLife > 1e-3f)
+        ? std::exp(-0.6931472f * dt / trailHalfLife) : 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -2070,6 +2232,7 @@ void Scene0p::EnsurePreviewTarget() {
     }
 
     if (useWaterRendering) InitSSFRBuffers(previewW, previewH);
+    InitPostBuffers(previewW, previewH);
 }
 
 void Scene0p::StartReelExport() {
@@ -2160,6 +2323,9 @@ void Scene0p::StartReelExport() {
         }
     }
     if (useWaterRendering) InitSSFRBuffers(reelRenderW, reelRenderH);
+    InitPostBuffers(reelRenderW, reelRenderH);
+    ClearTrailHistory();      // deterministic first frame
+    postTime = 0.0f;
 
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
@@ -2300,8 +2466,9 @@ void Scene0p::FinishReelExport(bool wroteBat) {
         // Force the preview target to rebuild; EnsurePreviewTarget re-sizes the
         // SSFR buffers to the portrait preview on the next Update.
         previewW = previewH = 0;
-    } else if (useWaterRendering && windowW > 0 && windowH > 0) {
-        InitSSFRBuffers(windowW, windowH);
+    } else if (windowW > 0 && windowH > 0) {
+        if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+        InitPostBuffers(windowW, windowH);
     }
 }
 
@@ -2388,6 +2555,7 @@ void Scene0p::DoCapture() {
     const bool prevHalfRes = ssfrHalfRes;
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+    InitPostBuffers(renderW, renderH);
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
     RenderSceneTo(capFBO, renderW, renderH, capProj);
@@ -2419,6 +2587,7 @@ void Scene0p::DoCapture() {
     // Restore the on-screen render state
     ssfrHalfRes = prevHalfRes;
     if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+    if (windowW > 0 && windowH > 0) InitPostBuffers(windowW, windowH);
     glViewport(0, 0, windowW, windowH);
 
     std::error_code ec;
