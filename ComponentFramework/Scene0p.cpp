@@ -421,6 +421,90 @@ void Scene0p::UpdateContainerWireframe() {
                 prev = p;
             }
         }
+    } else if (shape == 7) {
+        // Star prism: star outlines at +-H plus verticals at peaks and valleys
+        const float R     = H.x, hh = H.y;
+        const float pts   = std::max(3.0f, fluidGPU->param_shapeAux.x);
+        const float depth = std::min(0.9f, std::max(0.0f, fluidGPU->param_shapeAux.y));
+        auto rMax = [&](float a) { return R * (1.0f - depth * (0.5f + 0.5f * std::cos(pts * a))); };
+        for (int cap = 0; cap < 2; ++cap) {
+            float y = cap ? hh : -hh;
+            Vec3 prev;
+            for (int s = 0; s <= 96; ++s) {
+                float a = (float(s) / 96.0f) * TWO_PI;
+                float r = rMax(a);
+                Vec3 p = xform(std::cos(a) * r, y, std::sin(a) * r);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+        const int nPts = int(pts + 0.5f);
+        for (int k = 0; k < 2 * nPts; ++k) {
+            float a = (float(k) / float(nPts)) * 3.14159265f;   // peaks + valleys
+            float r = rMax(a);
+            seg(xform(std::cos(a) * r, -hh, std::sin(a) * r),
+                xform(std::cos(a) * r,  hh, std::sin(a) * r));
+        }
+    } else if (shape == 8) {
+        // Superellipsoid: three parametric cross-sections
+        const float a = H.x, b = H.y;
+        const float n = std::min(8.0f, std::max(0.6f, fluidGPU->param_shapeAux.z));
+        auto se = [&](float c) {   // signed |c|^(2/n)
+            return (c >= 0.0f ? 1.0f : -1.0f) * std::pow(std::fabs(c), 2.0f / n);
+        };
+        for (int plane = 0; plane < 3; ++plane) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float t = (float(s) / SEGS) * TWO_PI;
+                float u = se(std::cos(t)), v = se(std::sin(t));
+                Vec3 p = (plane == 0) ? xform(a * u, 0.0f, a * v)
+                       : (plane == 1) ? xform(a * u, b * v, 0.0f)
+                       :                xform(0.0f, b * v, a * u);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+    } else if (shape == 9) {
+        // Trefoil knot: the curve polyline + a few tube rings
+        const float S = H.x, r = H.y;
+        auto knot = [&](float t) {
+            return Vec3(S * (std::sin(t) + 2.0f * std::sin(2.0f * t)),
+                        S * 0.35f * (-std::sin(3.0f * t)),
+                        S * (std::cos(t) - 2.0f * std::cos(2.0f * t)));
+        };
+        Vec3 prev;
+        for (int s = 0; s <= 96; ++s) {
+            float t = (float(s) / 96.0f) * TWO_PI;
+            Vec3 c = knot(t);
+            Vec3 p = xform(c.x, c.y, c.z);
+            if (s > 0) seg(prev, p);
+            prev = p;
+        }
+        for (int k = 0; k < 8; ++k) {
+            float t = (float(k) / 8.0f) * TWO_PI;
+            Vec3 c  = knot(t);
+            Vec3 cN = knot(t + 0.05f);
+            Vec3 tan(cN.x - c.x, cN.y - c.y, cN.z - c.z);
+            float tl = std::sqrt(tan.x * tan.x + tan.y * tan.y + tan.z * tan.z);
+            if (tl < 1e-6f) continue;
+            tan = Vec3(tan.x / tl, tan.y / tl, tan.z / tl);
+            // Any perpendicular basis (u, w) to the tangent
+            Vec3 up = (std::fabs(tan.y) < 0.9f) ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+            Vec3 u(tan.y * up.z - tan.z * up.y, tan.z * up.x - tan.x * up.z, tan.x * up.y - tan.y * up.x);
+            float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+            u = Vec3(u.x / ul, u.y / ul, u.z / ul);
+            Vec3 w(tan.y * u.z - tan.z * u.y, tan.z * u.x - tan.x * u.z, tan.x * u.y - tan.y * u.x);
+            Vec3 rp;
+            for (int s = 0; s <= 16; ++s) {
+                float a = (float(s) / 16.0f) * TWO_PI;
+                float ca = std::cos(a) * r, sa = std::sin(a) * r;
+                Vec3 p = xform(c.x + u.x * ca + w.x * sa,
+                               c.y + u.y * ca + w.y * sa,
+                               c.z + u.z * ca + w.z * sa);
+                if (s > 0) seg(rp, p);
+                rp = p;
+            }
+        }
     } else {
         // Box: 12 edges
         Vec3 c[8]; int i = 0;
@@ -758,7 +842,8 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::CollapsingHeader("Container")) {
             ImGui::PushID("ContainerBox");
             ImGui::Combo("Shape", &fluidGPU->param_shapeType,
-                "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0");
+                "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0"
+                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0");
             ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
             if (fluidGPU->param_shapeType == 1) {
                 ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
@@ -782,6 +867,22 @@ void Scene0p::Update(const float deltaTime) {
             } else if (fluidGPU->param_shapeType == 6) {
                 ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
                 ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            } else if (fluidGPU->param_shapeType == 7) {
+                ImGui::DragFloat("Outer Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                int starPts = int(fluidGPU->param_shapeAux.x + 0.5f);
+                if (ImGui::SliderInt("Points", &starPts, 3, 12))
+                    fluidGPU->param_shapeAux.x = float(starPts);
+                ImGui::SliderFloat("Point Depth", &fluidGPU->param_shapeAux.y, 0.0f, 0.85f);
+            } else if (fluidGPU->param_shapeType == 8) {
+                ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                ImGui::SliderFloat("Roundness", &fluidGPU->param_shapeAux.z, 0.6f, 8.0f);
+                ImGui::TextDisabled("~1 = diamond, 2 = sphere, 4+ = rounded cube.");
+            } else if (fluidGPU->param_shapeType == 9) {
+                ImGui::DragFloat("Knot Scale", &fluidGPU->param_boxHalf.x, 0.05f, 0.5f, 20.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.2f, 10.0f);
+                ImGui::TextDisabled("Fluid trapped in a knotted tube. Try Gravity Spin.");
             } else {
                 ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             }
@@ -1028,11 +1129,15 @@ void Scene0p::Update(const float deltaTime) {
         lastBoxEuler.x != fluidGPU->param_boxEulerDeg.x ||
         lastBoxEuler.y != fluidGPU->param_boxEulerDeg.y ||
         lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z ||
+        lastShapeAux.x != fluidGPU->param_shapeAux.x ||
+        lastShapeAux.y != fluidGPU->param_shapeAux.y ||
+        lastShapeAux.z != fluidGPU->param_shapeAux.z ||
         lastShapeType != fluidGPU->param_shapeType) {
         UpdateContainerWireframe();
         lastBoxCenter = fluidGPU->param_boxCenter;
         lastBoxHalf = fluidGPU->param_boxHalf;
         lastBoxEuler = fluidGPU->param_boxEulerDeg;
+        lastShapeAux = fluidGPU->param_shapeAux;
         lastShapeType = fluidGPU->param_shapeType;
     }
 
@@ -1553,13 +1658,21 @@ void Scene0p::SurpriseMe() {
     ApplyArtPreset(0);              // known-clean baseline (also resets new knobs)
     audioReactiveEnabled = prevAudio;   // ApplyArtPreset force-enables; keep user's choice
 
-    // Shape + size
-    fluidGPU->param_shapeType = Ui(0, 6);
+    // Shape + size (star/blob/knot carry extra family params in shapeAux)
+    fluidGPU->param_shapeType = Ui(0, 9);
     switch (fluidGPU->param_shapeType) {
         case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
         case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
         case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
         case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
+        case 7:  fluidGPU->param_boxHalf = Vec3(U(6, 9), U(3, 6), 0);                          // star prism
+                 fluidGPU->param_shapeAux.x = float(Ui(3, 9));
+                 fluidGPU->param_shapeAux.y = U(0.25f, 0.7f);
+                 break;
+        case 8:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(5, 9), 0);                          // blob
+                 fluidGPU->param_shapeAux.z = std::exp(U(std::log(0.8f), std::log(6.0f)));
+                 break;
+        case 9:  fluidGPU->param_boxHalf = Vec3(U(2.2f, 3.2f), U(0.8f, 1.6f), 0); break;       // trefoil knot
         default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
     }
     // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
@@ -1651,6 +1764,8 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF3(kv, "box.half", bh);
     PutF3(kv, "box.euler", be);
     PutI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    const float bax[3] = { fluidGPU->param_shapeAux.x, fluidGPU->param_shapeAux.y, fluidGPU->param_shapeAux.z };
+    PutF3(kv, "box.aux", bax);
     PutB(kv, "box.outline", showContainerOutline);
     PutF3(kv, "box.outlineColor", containerOutlineColor);
     // look
@@ -1793,6 +1908,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     GetF3(kv, "box.half", bh);    fluidGPU->param_boxHalf    = Vec3(bh[0], bh[1], bh[2]);
     GetF3(kv, "box.euler", be);   fluidGPU->param_boxEulerDeg = Vec3(be[0], be[1], be[2]);
     fluidGPU->param_shapeType = GetI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    float bax[3] = { fluidGPU->param_shapeAux.x, fluidGPU->param_shapeAux.y, fluidGPU->param_shapeAux.z };
+    GetF3(kv, "box.aux", bax);
+    fluidGPU->param_shapeAux = Vec3(bax[0], bax[1], bax[2]);
     showContainerOutline = GetB(kv, "box.outline", showContainerOutline);
     GetF3(kv, "box.outlineColor", containerOutlineColor);
     // look

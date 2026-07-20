@@ -105,6 +105,8 @@ public:
                                            // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
     int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
+                                           // 7=Star Prism, 8=Superellipsoid, 9=Trefoil Knot
+    Vec3  param_shapeAux = Vec3(5.0f, 0.35f, 2.5f);   // star: x=points, y=depth | superellipsoid: z=exponent
     int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
@@ -118,6 +120,12 @@ public:
         case 4:  return Vec3(param_boxHalf.x, param_boxHalf.y + param_boxHalf.x, param_boxHalf.x);
         case 5:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
         case 6:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 7:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 8:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 9:  // trefoil curve spans ~3x scale in XZ, ~0.35x in Y, plus the tube
+            return Vec3(3.0f * param_boxHalf.x + param_boxHalf.y,
+                        0.35f * param_boxHalf.x + param_boxHalf.y,
+                        3.0f * param_boxHalf.x + param_boxHalf.y);
         default: return param_boxHalf;
         }
     }

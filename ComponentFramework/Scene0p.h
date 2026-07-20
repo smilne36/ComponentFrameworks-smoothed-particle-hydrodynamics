@@ -52,6 +52,7 @@ private:
     Vec3    lastBoxCenter{};
     Vec3    lastBoxHalf{};
     Vec3    lastBoxEuler{};
+    Vec3    lastShapeAux{};
     int     lastShapeType = -1;
 
     bool    useImpostors = false;
