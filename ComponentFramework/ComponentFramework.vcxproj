@@ -188,6 +188,8 @@
     <None Include="shaders\lineFrag.glsl" />
     <None Include="shaders\lineVert.glsl" />
     <None Include="shaders\particleImpostor.frag" />
+    <None Include="shaders\postBlur.frag" />
+    <None Include="shaders\postBright.frag" />
     <None Include="shaders\postFinal.frag" />
     <None Include="shaders\skyGradient.frag" />
     <None Include="shaders\particleImpostor.vert" />

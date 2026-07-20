@@ -99,6 +99,10 @@ bool Scene0p::OnCreate() {
 
     postFinalShader = new Shader("shaders/screenQuad.vert", "shaders/postFinal.frag");
     if (!postFinalShader->OnCreate()) { std::cerr << "postFinal shader failed\n"; return false; }
+    postBrightShader = new Shader("shaders/screenQuad.vert", "shaders/postBright.frag");
+    if (!postBrightShader->OnCreate()) { std::cerr << "postBright shader failed\n"; return false; }
+    postBlurShader = new Shader("shaders/screenQuad.vert", "shaders/postBlur.frag");
+    if (!postBlurShader->OnCreate()) { std::cerr << "postBlur shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -1682,6 +1686,39 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
 
     GLuint baseTex = postSceneTex;
 
+    // Bloom: bright-pass at half res, then two separable gaussian rounds.
+    // The blur step scales with output height so the glow width matches at
+    // window, reel, and 2x supersampled sizes.
+    const bool bloomOn = bloomStrength > 0.0f && postBrightShader && postBlurShader;
+    if (bloomOn) {
+        const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
+        glViewport(0, 0, hw, hh);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+        glUseProgram(postBrightShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, baseTex);
+        glUniform1i(postBrightShader->GetUniformID("srcTex"), 0);
+        glUniform1f(postBrightShader->GetUniformID("threshold"), bloomThreshold);
+        glUniform1f(postBrightShader->GetUniformID("knee"), 0.5f * bloomThreshold);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glUseProgram(postBlurShader->GetProgram());
+        glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
+        const float radiusScale = float(outH) / 1080.0f;
+        for (int iter = 0; iter < 2; ++iter) {
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+            glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+            glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+            glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
+            glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+    }
+
     // Final grade
     glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
     glViewport(0, 0, outW, outH);
@@ -1698,7 +1735,7 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glUniform1f(postFinalShader->GetUniformID("uChromatic"), chromaticAmount);
     glUniform1f(postFinalShader->GetUniformID("uVignette"), vignetteAmount);
     glUniform1f(postFinalShader->GetUniformID("uGrain"), grainAmount);
-    glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), bloomOn ? bloomStrength : 0.0f);
     glUniform1f(postFinalShader->GetUniformID("uTime"), postTime);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
