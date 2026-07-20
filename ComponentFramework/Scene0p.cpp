@@ -570,6 +570,15 @@ void Scene0p::Update(const float deltaTime) {
                 "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
                 "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
                 "Electric\0Smoke\0RGB Pop\0");
+            ImGui::Checkbox("Two-Color Fluid", &twoColorEnabled);
+            if (twoColorEnabled) {
+                ImGui::Combo("Palette B", &paletteId2,
+                    "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
+                    "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
+                    "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
+                    "Electric\0Smoke\0RGB Pop\0");
+                ImGui::TextDisabled("Two fluids, two palettes (Impostor/Mesh modes).\nPattern under Motion > Spawn Layout.");
+            }
             ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
             if (paletteId >= 15)
                 ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
@@ -747,6 +756,8 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
             ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
             if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
+            if (ImGui::Combo("Mix Pattern", &fluidGPU->param_mixPattern, "Split Half\0Alternating\0Random\0"))
+                pendingReset = true;   // retag (Two-Color groups) needs a respawn
             ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Waves")) {
@@ -1177,6 +1188,7 @@ void Scene0p::ApplyArtPreset(int which) {
     vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
     attractorEnabled = false;
     gravitySpinEnabled = false; camZoomKick = 0.0f;
+    twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1464,6 +1476,8 @@ void Scene0p::ApplyArtPreset(int which) {
 void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("colorDrive"); loc != -1) glUniform1i(loc, vizMode);
     if (GLint loc = s->GetUniformID("paletteId");  loc != -1) glUniform1i(loc, paletteId);
+    if (GLint loc = s->GetUniformID("paletteId2"); loc != -1)
+        glUniform1i(loc, twoColorEnabled ? paletteId2 : -1);
     if (GLint loc = s->GetUniformID("vizRange");   loc != -1) glUniform2f(loc, vizRangeMin, vizRangeMax);
     if (GLint loc = s->GetUniformID("heightMinMax"); loc != -1) {
         // EffectiveHalf: param_boxHalf.y is not the vertical extent for every

@@ -13,6 +13,7 @@ struct Particle {
 layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 
 out flat int vIsGhost;
+out flat int vGroup;
 out vec3 vWorldPos;
 out vec3 vViewPos;
 out vec3 vVel;
@@ -23,6 +24,7 @@ void main() {
     int idx = gl_VertexID;
     Particle p = particles[idx];
     vIsGhost  = p.flags.x;
+    vGroup    = p.flags.z;
     vWorldPos = p.pos.xyz;
     vVel      = p.vel.xyz;
     vPressure = p.pressure;

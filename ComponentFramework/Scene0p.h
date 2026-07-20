@@ -64,6 +64,8 @@ private:
 
     // Artistic color state (palette + adjustments, see shared palette block in the frag shaders)
     int     paletteId    = 0;     // 0=Classic,1=Turbo,2=Neon,3=Fire,4=Iridescent,5=Ice,6=Vaporwave,7=Toxic,8=Duotone
+    bool    twoColorEnabled = false;   // group-1 particles use paletteId2 (impostor/mesh modes)
+    int     paletteId2   = 2;
     float   hueShiftDeg  = 0.0f;
     float   satMul       = 1.0f;
     float   brightMul    = 1.0f;

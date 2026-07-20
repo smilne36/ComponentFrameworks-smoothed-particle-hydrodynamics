@@ -5,6 +5,9 @@ in vec3 vViewPos;
 in vec3 vVel;
 in float vPressure;
 in float vDensity;
+in flat int vGroup;
+
+uniform int paletteId2;   // second palette for group-1 particles; -1 = single palette
 
 out vec4 outColor;
 
@@ -133,52 +136,52 @@ vec3 ramp4(float t, vec3 c1, vec3 c2, vec3 c3, vec3 c4) {
     return mix(c3, c4, (t - 0.66) / 0.34);
 }
 
-vec3 applyPalette(float t, float facing, vec3 worldPos) {
+vec3 applyPalette(int pid, float t, float facing, vec3 worldPos) {
     // Palette Flow scrolls any gradient over time (wrapped so ramps keep cycling)
     if (paletteFlow != 0.0) t = fract(t + paletteFlow * animTime);
 
-    if (paletteId == 0) return heightPalette(t);
-    if (paletteId == 1) return turbo(t);
-    if (paletteId == 2) return ramp4(t, vec3(0.05, 0.01, 0.18), vec3(0.45, 0.05, 0.65),
+    if (pid == 0) return heightPalette(t);
+    if (pid == 1) return turbo(t);
+    if (pid == 2) return ramp4(t, vec3(0.05, 0.01, 0.18), vec3(0.45, 0.05, 0.65),
                                         vec3(1.00, 0.15, 0.55), vec3(0.15, 0.95, 1.00)); // Neon / Synthwave
-    if (paletteId == 3) return ramp4(t, vec3(0.02, 0.00, 0.00), vec3(0.55, 0.05, 0.00),
+    if (pid == 3) return ramp4(t, vec3(0.02, 0.00, 0.00), vec3(0.55, 0.05, 0.00),
                                         vec3(1.00, 0.45, 0.00), vec3(1.00, 0.95, 0.55)); // Fire / Lava
-    if (paletteId == 4) return iqPal(t + iridFreq * (1.0 - facing) + iridShift,
+    if (pid == 4) return iqPal(t + iridFreq * (1.0 - facing) + iridShift,
                                      vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.00, 0.33, 0.67)); // Iridescent / Oil slick
-    if (paletteId == 5) return ramp4(t, vec3(0.02, 0.08, 0.20), vec3(0.15, 0.45, 0.75),
+    if (pid == 5) return ramp4(t, vec3(0.02, 0.08, 0.20), vec3(0.15, 0.45, 0.75),
                                         vec3(0.55, 0.85, 0.95), vec3(0.95, 1.00, 1.00)); // Ice
-    if (paletteId == 6) return ramp4(t, vec3(0.16, 0.06, 0.35), vec3(0.85, 0.35, 0.85),
+    if (pid == 6) return ramp4(t, vec3(0.16, 0.06, 0.35), vec3(0.85, 0.35, 0.85),
                                         vec3(1.00, 0.55, 0.75), vec3(0.35, 0.95, 0.90)); // Vaporwave
-    if (paletteId == 7) return ramp4(t, vec3(0.01, 0.03, 0.01), vec3(0.05, 0.35, 0.05),
+    if (pid == 7) return ramp4(t, vec3(0.01, 0.03, 0.01), vec3(0.05, 0.35, 0.05),
                                         vec3(0.45, 0.95, 0.10), vec3(0.95, 1.00, 0.30)); // Toxic
-    if (paletteId == 8) return mix(duoColorA, duoColorB, t); // Duotone
-    if (paletteId == 9) return iqPal(t, vec3(0.20, 0.10, 0.35), vec3(0.35, 0.25, 0.55),
+    if (pid == 8) return mix(duoColorA, duoColorB, t); // Duotone
+    if (pid == 9) return iqPal(t, vec3(0.20, 0.10, 0.35), vec3(0.35, 0.25, 0.55),
                                         vec3(1.00, 1.20, 0.70), vec3(0.10, 0.35, 0.65))
                               + vec3(0.10, 0.00, 0.25) * (1.0 - facing); // Galaxy / Nebula
-    if (paletteId == 10) {                                              // Plasma
+    if (pid == 10) {                                              // Plasma
         float p = sin(t * 12.566 + facing * 6.2831853) * 0.5 + 0.5;
         float q = sin(t * 8.377  - facing * 9.4248)    * 0.5 + 0.5;
         return vec3(p, q, 1.0 - p * q);
     }
-    if (paletteId == 11) {                                              // Chrome
+    if (pid == 11) {                                              // Chrome
         vec3 base = mix(vec3(0.05), vec3(0.85), t);
         return base + vec3(pow(1.0 - facing, 2.0));
     }
-    if (paletteId == 12) {                                              // Molten Gold
+    if (pid == 12) {                                              // Molten Gold
         vec3 base = ramp4(t, vec3(0.10, 0.04, 0.00), vec3(0.55, 0.28, 0.02),
                               vec3(0.95, 0.65, 0.10), vec3(1.00, 0.92, 0.55));
         return base + vec3(1.00, 0.95, 0.80) * pow(1.0 - facing, 2.5) * 0.6;
     }
-    if (paletteId == 13) return iqPal(t * 3.0 + iridFreq * (1.0 - facing) * 2.0 + iridShift,
+    if (pid == 13) return iqPal(t * 3.0 + iridFreq * (1.0 - facing) * 2.0 + iridShift,
                                       vec3(0.5), vec3(0.5), vec3(2.0, 3.0, 4.0),
                                       vec3(0.00, 0.15, 0.35)); // Acid Rings
-    if (paletteId == 14) return iqPal(t + animTime * 0.15, vec3(0.15, 0.35, 0.35), vec3(0.25, 0.45, 0.45),
+    if (pid == 14) return iqPal(t + animTime * 0.15, vec3(0.15, 0.35, 0.35), vec3(0.25, 0.45, 0.45),
                                       vec3(0.80, 1.00, 1.20), vec3(0.25, 0.55, 0.85)); // Aurora
 
     // ---- World-space pattern palettes: the fluid swims THROUGH these ----
     vec3 wp = (worldPos - boxCenter) * patternScale;
 
-    if (paletteId == 15) {                                              // Marble Ink
+    if (pid == 15) {                                              // Marble Ink
         float veins = sin((wp.x + wp.y * 0.7) * 1.8
                           + fbm(wp * 1.6 + vec3(0.0, animTime * 0.10, 0.0)) * 5.0);
         float v = smoothstep(-0.35, 0.35, veins);
@@ -186,7 +189,7 @@ vec3 applyPalette(float t, float facing, vec3 worldPos) {
         vec3 vein = mix(vec3(0.92, 0.90, 0.85), vec3(0.95, 0.75, 0.35), t);
         return mix(ink, vein, v);
     }
-    if (paletteId == 16) {                                              // Lava Lamp
+    if (pid == 16) {                                              // Lava Lamp
         float blob = fbm(wp * 0.55 + vec3(0.0, -animTime * 0.12, 0.0));
         float m = smoothstep(0.42, 0.58, blob);
         vec3 goo = iqPal(t * 0.4 + blob, vec3(0.70, 0.30, 0.10), vec3(0.35, 0.25, 0.10),
@@ -194,14 +197,14 @@ vec3 applyPalette(float t, float facing, vec3 worldPos) {
         vec3 fluidBg = vec3(0.12, 0.02, 0.22);
         return mix(fluidBg, goo, m);
     }
-    if (paletteId == 17) {                                              // Disco Checker
+    if (pid == 17) {                                              // Disco Checker
         vec3 cp = wp * 1.2 + vec3(animTime * 0.25);
         float checker = mod(floor(cp.x) + floor(cp.y) + floor(cp.z), 2.0);
         vec3 cA = hsv2rgb(vec3(fract(t + animTime * 0.05), 0.85, 1.0));
         vec3 cB = hsv2rgb(vec3(fract(t + animTime * 0.05 + 0.5), 0.85, 0.35));
         return mix(cA, cB, checker);
     }
-    if (paletteId == 18) {                                              // Stained Glass
+    if (pid == 18) {                                              // Stained Glass
         vec3 cell = floor(wp * 1.1);
         vec3 g = fract(wp * 1.1) - 0.5;
         float edge = max(abs(g.x), max(abs(g.y), abs(g.z)));
@@ -209,24 +212,24 @@ vec3 applyPalette(float t, float facing, vec3 worldPos) {
         vec3 glass = hsv2rgb(vec3(hash13(cell), 0.75, 0.9));
         return glass * (0.15 + 0.85 * grout) * (0.6 + 0.4 * t);
     }
-    if (paletteId == 19) {                                              // Psycho Swirl
+    if (pid == 19) {                                              // Psycho Swirl
         float ang = atan(wp.z, wp.x) / 6.2831853;
         float rad = length(wp.xz);
         float hue = fract(ang + rad * 0.20 + animTime * 0.08 + t * 0.30);
         return hsv2rgb(vec3(hue, 0.90, 0.95));
     }
-    if (paletteId == 20) {                                              // Candy Stripes
+    if (pid == 20) {                                              // Candy Stripes
         float s = sin(dot(wp, normalize(vec3(1.0, 0.35, 0.6))) * 5.0 + animTime * 0.8);
         float band = smoothstep(-0.25, 0.25, s);
         return mix(duoColorA, duoColorB, band) * (0.65 + 0.35 * t);
     }
-    if (paletteId == 21) {                                              // Electric (hologram edge glow)
+    if (pid == 21) {                                              // Electric (hologram edge glow)
         vec3 body = vec3(0.02, 0.02, 0.05);
         vec3 glow = hsv2rgb(vec3(fract(0.50 + t * 0.35), 0.90, 1.0));
         float rim = pow(1.0 - facing, 1.5);
         return body + glow * (rim * 1.4 + 0.08);
     }
-    if (paletteId == 22) {                                              // Smoke (moody monochrome)
+    if (pid == 22) {                                              // Smoke (moody monochrome)
         float n = fbm(wp * 0.8 + vec3(0.0, animTime * 0.05, 0.0));
         float v = clamp(0.15 + 0.85 * n * (0.4 + 0.6 * t), 0.0, 1.0);
         return vec3(v);
@@ -267,12 +270,9 @@ void main() {
     vec3 V = normalize(-vViewPos);
     float facing = clamp(dot(N, V), 0.0, 1.0);
 
-    vec3 col;
-    if (colorDrive == 7) {
-        col = vec3(1.0);   // instance color is not available in the impostor path
-    } else {
-        col = applyPalette(computeDrive(vWorldPos, vViewPos, vVel, vPressure, vDensity), facing, vWorldPos);
-    }
+    // Two-color mode: particles tagged group 1 use Palette B (paletteId2 >= 0)
+    int pid = (vGroup == 1 && paletteId2 >= 0) ? paletteId2 : paletteId;
+    vec3 col = applyPalette(pid, computeDrive(vWorldPos, vViewPos, vVel, vPressure, vDensity), facing, vWorldPos);
     if (litSphere == 1) col = shadeLit(col, N, V, facing);
 
     outColor = vec4(applyColorAdjust(col), 1.0);

@@ -129,7 +129,7 @@ void SPHFluidGPU::InitializeParticles() {
                     p.vel = Vec4(0, 0, 0.5f, 0); // channel constraint drives flow
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
-                    p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    p.isGhost = 0; p.isActive = 0; p.padC = count & 1; p.pad0 = 0;
                     particles.push_back(p); ++count;
                 }
             }
@@ -146,7 +146,7 @@ void SPHFluidGPU::InitializeParticles() {
             p.vel = Vec4(0, 0, 2.0f, 0);
             p.acc = Vec4(0, 0, 0, 0);
             p.density = p.pressure = 0.0f;
-            p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+            p.isGhost = 0; p.isActive = 0; p.padC = count & 1; p.pad0 = 0;
             particles.push_back(p); ++count;
         }
     } else {
@@ -209,6 +209,12 @@ void SPHFluidGPU::InitializeParticles() {
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
                     p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    // Color-group tag for Two-Color mode (read as flags.z in shaders)
+                    switch (param_mixPattern) {
+                        case 1:  p.padC = (x + y + z) & 1; break;         // alternating lattice
+                        case 2:  p.padC = int(rng() & 1u); break;         // random
+                        default: p.padC = (lx < 0.0f) ? 0 : 1; break;     // split halves along X
+                    }
                     particles.push_back(p); ++count;
                 }
     }

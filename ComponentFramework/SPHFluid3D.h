@@ -104,6 +104,7 @@ public:
                                            // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
     int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
+    int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
 
