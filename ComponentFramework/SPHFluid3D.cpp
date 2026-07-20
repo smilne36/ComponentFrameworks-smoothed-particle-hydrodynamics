@@ -38,6 +38,7 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
+    attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -67,6 +68,7 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
+    if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -491,6 +493,24 @@ void SPHFluidGPU::ApplyVortexImpulse(float tangentKick, float inwardKick) {
     glUniform1f(glGetUniformLocation(vortexImpulseShader, "uInward"), inwardKick);
     const Vec3 half = EffectiveHalf();
     glUniform1f(glGetUniformLocation(vortexImpulseShader, "uRadius"), std::max(half.x, half.z));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Movable gravity well: softened inverse-distance pull toward a point.
+// pullKick is a velocity delta (callers pre-multiply by dt).
+void SPHFluidGPU::ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius) {
+    if (std::fabs(pullKick) < 1e-6f) return;
+
+    glUseProgram(attractorImpulseShader);
+    glUniform1i(glGetUniformLocation(attractorImpulseShader, "N"), int(particles.size()));
+    glUniform3f(glGetUniformLocation(attractorImpulseShader, "uPoint"), point.x, point.y, point.z);
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uPull"), pullKick);
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uRadius"), std::max(radius, 0.1f));
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uSoften"), std::max(0.15f * radius, 0.2f));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);

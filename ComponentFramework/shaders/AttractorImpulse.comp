@@ -1,0 +1,45 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// Match CPU side SPHParticle layout (80 bytes)
+struct SPHParticle {
+    vec4  pos;
+    vec4  vel;
+    vec4  acc;
+    float density;
+    float pressure;
+    float padA;
+    float padB;
+    int   isGhost;
+    int   isActive;
+    int   padC;
+    int   pad0;
+};
+
+layout(std430, binding = 0) buffer ParticleBuf { SPHParticle particles[]; };
+
+// Movable gravity well. uPull arrives pre-multiplied by dt on the CPU
+// (it is a velocity kick), so the pull is framerate-independent.
+uniform int   N;
+uniform vec3  uPoint;    // attractor position (world)
+uniform float uPull;     // velocity kick this call
+uniform float uRadius;   // outer falloff radius
+uniform float uSoften;   // softened core, prevents slingshots at the point
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(N)) return;
+
+    SPHParticle p = particles[i];
+    if (p.isGhost != 0) return;
+
+    vec3  rel = uPoint - p.pos.xyz;
+    float d   = length(rel);
+    if (d < 1e-5) return;
+
+    // Inverse-distance pull with a softened core, fading out by uRadius
+    float pull = uPull * uSoften / (d + uSoften);
+    pull *= 1.0 - smoothstep(0.6 * uRadius, uRadius, d);
+    p.vel.xyz += (rel / d) * pull;
+    particles[i] = p;
+}

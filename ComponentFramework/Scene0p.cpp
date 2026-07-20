@@ -774,6 +774,16 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::TextDisabled("Whirlpool around the container's axis. Base Swirl works\nwithout audio; the mid band spins it up with the music.");
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Attractor Orb")) {
+            ImGui::PushID("Attractor");
+            ImGui::Checkbox("Enable", &attractorEnabled);
+            ImGui::SliderFloat3("Position (rel.)", attractorPos, -10.0f, 10.0f);
+            ImGui::SliderFloat("Pull", &attractorStrength, 0.0f, 40.0f);
+            ImGui::SliderFloat("Radius", &attractorRadius, 1.0f, 15.0f);
+            ImGui::SliderFloat("Bass Pulse", &attractorBassKick, 0.0f, 80.0f);
+            ImGui::TextDisabled("A movable gravity well; bass yanks the fluid toward it.");
+            ImGui::PopID();
+        }
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Audio")) {
@@ -1156,6 +1166,7 @@ void Scene0p::ApplyArtPreset(int which) {
     bloomStrength = 0.0f; bloomThreshold = 0.6f; trailHalfLife = 0.0f;
     kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
     vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
+    attractorEnabled = false;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -2228,6 +2239,16 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
     hueShiftDegLive       = hueShiftDeg       + audioHueKickDeg * bass;
     orbitSpeedDegLive     = autoOrbitSpeedDeg * (1.0f + audioOrbitKick   * bass);
+
+    // Attractor orb: constant pull + bass-pulse kick (kick pre-multiplied by
+    // dt). Position is container-relative so presets stay portable.
+    if (attractorEnabled) {
+        float pull = attractorStrength;
+        if (bass > audioBassThreshold) pull += attractorBassKick * bass;
+        fluidGPU->ApplyAttractorImpulse(
+            fluidGPU->param_boxCenter + Vec3(attractorPos[0], attractorPos[1], attractorPos[2]),
+            pull * dt, attractorRadius);
+    }
 
     // Post-FX clock + trail decay: advanced here (not wall-clock) so film
     // grain and trail fade are framerate-independent and reel-deterministic.

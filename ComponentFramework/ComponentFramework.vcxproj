@@ -181,6 +181,7 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="shaders\AttractorImpulse.comp" />
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />

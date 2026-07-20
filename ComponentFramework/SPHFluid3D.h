@@ -43,6 +43,9 @@ public:
     // Whirlpool: tangential kick around the container's local Y axis, plus an
     // optional inward pull. Pass kicks pre-multiplied by dt (velocity change).
     void   ApplyVortexImpulse(float tangentKick, float inwardKick);
+    // Movable gravity well: softened inverse-distance pull toward a point,
+    // fading out by radius. Pass the kick pre-multiplied by dt.
+    void   ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius);
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -69,6 +72,7 @@ public:
     GLuint obbConstraintShader = 0;
     GLuint waveImpulseShader = 0;
     GLuint vortexImpulseShader = 0;
+    GLuint attractorImpulseShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;

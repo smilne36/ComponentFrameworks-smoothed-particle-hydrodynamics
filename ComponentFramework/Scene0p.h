@@ -135,6 +135,13 @@ private:
     float   audioVortexForce  = 0.0f;  // mid -> extra swirl
     float   vortexInwardPull  = 0.0f;  // radial pull toward the axis
 
+    // --- Attractor orb (movable gravity well; bass pulses the pull) ---
+    bool    attractorEnabled  = false;
+    float   attractorPos[3]   = {0.0f, 2.0f, 0.0f};   // container-relative
+    float   attractorStrength = 8.0f;
+    float   attractorRadius   = 6.0f;
+    float   attractorBassKick = 25.0f;
+
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
     // (base, or base*(1+kick*envelope) when audio-reactive is on), so there is
