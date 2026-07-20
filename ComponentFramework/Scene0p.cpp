@@ -931,6 +931,15 @@ void Scene0p::Update(const float deltaTime) {
             }
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Silk Flow")) {
+            ImGui::PushID("SilkFlow");
+            ImGui::SliderFloat("Strength", &silkStrength, 0.0f, 12.0f);
+            ImGui::SliderFloat("Flow Scale", &silkScale, 0.03f, 0.5f);
+            ImGui::SliderFloat("Evolve Speed", &silkDrift, 0.0f, 2.0f);
+            ImGui::SliderFloat("Audio Silk (mid)", &silkAudioKick, 0.0f, 12.0f);
+            ImGui::TextDisabled("Smoke/silk drift along a turbulent flow field.\nLower gravity + trails = flowing ink ribbons.");
+            ImGui::PopID();
+        }
         if (ImGui::CollapsingHeader("Vortex Swirl")) {
             ImGui::PushID("VortexSwirl");
             ImGui::SliderFloat("Base Swirl", &vortexBaseSwirl, -30.0f, 30.0f);
@@ -1361,6 +1370,7 @@ void Scene0p::ApplyArtPreset(int which) {
     gravitySpinEnabled = false; camZoomKick = 0.0f;
     twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
     fluidGPU->fountainMode = false;
+    silkStrength = 0.0f; silkAudioKick = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1714,6 +1724,10 @@ void Scene0p::SurpriseMe() {
         fluidGPU->fountainMode = true;
         fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f);
     }
+    if (chance(0.35f)) {
+        silkStrength = U(2, 8); silkScale = U(0.08f, 0.3f); silkDrift = U(0.1f, 0.8f);
+        silkAudioKick = U(0, 6);
+    }
     // Audio kicks (moderate; they only fire when the reactor is on)
     audioSizeKick = U(0.2f, 0.6f);
     audioShimmerKick = U(0.3f, 1.0f);
@@ -1830,6 +1844,10 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "motion.vortexBase", vortexBaseSwirl);
     PutF(kv, "motion.vortexAudio", audioVortexForce);
     PutF(kv, "motion.vortexInward", vortexInwardPull);
+    PutF(kv, "motion.silkStrength", silkStrength);
+    PutF(kv, "motion.silkScale", silkScale);
+    PutF(kv, "motion.silkDrift", silkDrift);
+    PutF(kv, "motion.silkAudio", silkAudioKick);
     PutB(kv, "motion.spinOn", gravitySpinEnabled);
     PutF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
     PutF(kv, "motion.spinTilt", gravitySpinTiltDeg);
@@ -1977,6 +1995,10 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     vortexBaseSwirl = GetF(kv, "motion.vortexBase", vortexBaseSwirl);
     audioVortexForce = GetF(kv, "motion.vortexAudio", audioVortexForce);
     vortexInwardPull = GetF(kv, "motion.vortexInward", vortexInwardPull);
+    silkStrength = GetF(kv, "motion.silkStrength", silkStrength);
+    silkScale = GetF(kv, "motion.silkScale", silkScale);
+    silkDrift = GetF(kv, "motion.silkDrift", silkDrift);
+    silkAudioKick = GetF(kv, "motion.silkAudio", silkAudioKick);
     gravitySpinEnabled = GetB(kv, "motion.spinOn", gravitySpinEnabled);
     gravitySpinSpeedDeg = GetF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
     gravitySpinTiltDeg = GetF(kv, "motion.spinTilt", gravitySpinTiltDeg);
@@ -2853,6 +2875,13 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     // Fountain: bass boosts the jet; DispatchCompute reads this per substep
     fluidGPU->fountainJetSpeedLive = fountainJetSpeed * (1.0f + fountainBassKick * bass);
 
+    // Silk Flow: curl-noise drift; the mid band tightens/strengthens the silk
+    if (silkStrength > 0.0f || silkAudioKick * mid > 0.0f) {
+        silkTime += silkDrift * dt;
+        const float silk = silkStrength + silkAudioKick * mid;
+        fluidGPU->ApplyCurlFlow(silk * dt, silkScale, silkTime);
+    }
+
     // Post-FX clock + trail decay: advanced here (not wall-clock) so film
     // grain and trail fade are framerate-independent and reel-deterministic.
     postTime += dt;
@@ -2937,6 +2966,7 @@ void Scene0p::StartReelExport() {
     // Deterministic start: fresh fluid + zeroed reaction phases.
     audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
     gravitySpinPhase = 0.0f;
+    silkTime = 0.0f;
     fluidGPU->ResetSimulation();
     fluidGPU->param_pause = false;
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));

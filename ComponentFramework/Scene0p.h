@@ -169,6 +169,13 @@ private:
     float   fountainJetSpeed = 25.0f;
     float   fountainBassKick = 0.6f;   // bass -> jet speed boost
 
+    // --- Silk Flow (curl-noise drift; smoke/silk motion) ---
+    float   silkStrength  = 0.0f;   // 0 = off
+    float   silkScale     = 0.15f;  // spatial frequency
+    float   silkDrift     = 0.3f;   // field evolution speed
+    float   silkAudioKick = 0.0f;   // mid -> extra strength
+    float   silkTime      = 0.0f;   // advances by dt*drift (reel-deterministic)
+
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
     // (base, or base*(1+kick*envelope) when audio-reactive is on), so there is

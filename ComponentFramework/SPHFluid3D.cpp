@@ -40,6 +40,7 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
     attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
     fountainShader = LoadComputeShader("shaders/FountainRecycle.comp");
+    curlFlowShader = LoadComputeShader("shaders/CurlFlow.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -71,6 +72,7 @@ SPHFluidGPU::~SPHFluidGPU() {
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
     if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
     if (fountainShader)           glDeleteProgram(fountainShader);
+    if (curlFlowShader)           glDeleteProgram(curlFlowShader);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -579,6 +581,23 @@ void SPHFluidGPU::ApplyAttractorImpulse(const Vec3& point, float pullKick, float
     glUniform1f(glGetUniformLocation(attractorImpulseShader, "uPull"), pullKick);
     glUniform1f(glGetUniformLocation(attractorImpulseShader, "uRadius"), std::max(radius, 0.1f));
     glUniform1f(glGetUniformLocation(attractorImpulseShader, "uSoften"), std::max(0.15f * radius, 0.2f));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Silk Flow: curl-noise drift (divergence-free, so it swirls instead of
+// clumping). kick is a velocity delta (callers pre-multiply by dt).
+void SPHFluidGPU::ApplyCurlFlow(float kick, float scale, float time) {
+    if (std::fabs(kick) < 1e-6f) return;
+
+    glUseProgram(curlFlowShader);
+    glUniform1i(glGetUniformLocation(curlFlowShader, "N"), int(particles.size()));
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uKick"), kick);
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uScale"), std::max(scale, 1e-3f));
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uTime"), time);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);

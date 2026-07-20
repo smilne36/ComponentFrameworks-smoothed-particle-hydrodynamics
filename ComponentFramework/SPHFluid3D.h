@@ -46,6 +46,8 @@ public:
     // Movable gravity well: softened inverse-distance pull toward a point,
     // fading out by radius. Pass the kick pre-multiplied by dt.
     void   ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius);
+    // Silk Flow: divergence-free curl-noise drift. Kick pre-multiplied by dt.
+    void   ApplyCurlFlow(float kick, float scale, float time);
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -74,6 +76,7 @@ public:
     GLuint vortexImpulseShader = 0;
     GLuint attractorImpulseShader = 0;
     GLuint fountainShader = 0;
+    GLuint curlFlowShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;
