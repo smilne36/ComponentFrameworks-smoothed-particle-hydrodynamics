@@ -130,6 +130,7 @@
   <ItemGroup>
     <ClCompile Include="AudioReactive.cpp" />
     <ClCompile Include="dr_libs_impl.cpp" />
+    <ClCompile Include="PresetIO.cpp" />
     <ClCompile Include="ReelExport.cpp" />
     <ClCompile Include="Body.cpp" />
     <ClCompile Include="Debug.cpp" />
@@ -157,6 +158,7 @@
     <ClInclude Include="AudioBands.h" />
     <ClInclude Include="dr_wav.h" />
     <ClInclude Include="dr_mp3.h" />
+    <ClInclude Include="PresetIO.h" />
     <ClInclude Include="ReelExport.h" />
     <ClInclude Include="Body.h" />
     <ClInclude Include="Debug.h" />
@@ -181,13 +183,19 @@
     <Text Include="GameEngineLog.txt" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="shaders\AttractorImpulse.comp" />
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />
+    <None Include="shaders\FountainRecycle.comp" />
     <None Include="shaders\defaultVert.glsl" />
     <None Include="shaders\lineFrag.glsl" />
     <None Include="shaders\lineVert.glsl" />
     <None Include="shaders\particleImpostor.frag" />
+    <None Include="shaders\postBlur.frag" />
+    <None Include="shaders\postBright.frag" />
+    <None Include="shaders\postFinal.frag" />
+    <None Include="shaders\postTrails.frag" />
     <None Include="shaders\skyGradient.frag" />
     <None Include="shaders\particleImpostor.vert" />
     <None Include="shaders\SPHFluid.comp" />

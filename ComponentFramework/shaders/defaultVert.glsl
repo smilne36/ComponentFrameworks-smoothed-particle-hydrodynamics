@@ -17,6 +17,7 @@ struct Particle {
 layout(std430, binding=0) buffer ParticleBuf { Particle particles[]; };
 
 flat out int fragGhost;
+flat out int vGroup;
 out vec3 vWorldPos;
 out vec3 vViewPos;
 out vec3 vNormal;
@@ -29,6 +30,7 @@ void main() {
     int idx = gl_InstanceID;
     Particle p = particles[idx];
     fragGhost = p.flags.x;
+    vGroup    = p.flags.z;
 
     vec3 basePos = (useSSBO == 1) ? p.pos.xyz : instancePos.xyz;
 

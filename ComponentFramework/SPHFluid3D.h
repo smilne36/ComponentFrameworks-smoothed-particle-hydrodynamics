@@ -43,6 +43,9 @@ public:
     // Whirlpool: tangential kick around the container's local Y axis, plus an
     // optional inward pull. Pass kicks pre-multiplied by dt (velocity change).
     void   ApplyVortexImpulse(float tangentKick, float inwardKick);
+    // Movable gravity well: softened inverse-distance pull toward a point,
+    // fading out by radius. Pass the kick pre-multiplied by dt.
+    void   ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius);
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -69,6 +72,8 @@ public:
     GLuint obbConstraintShader = 0;
     GLuint waveImpulseShader = 0;
     GLuint vortexImpulseShader = 0;
+    GLuint attractorImpulseShader = 0;
+    GLuint fountainShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;
@@ -100,6 +105,7 @@ public:
                                            // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
     int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
+    int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
 
@@ -115,6 +121,17 @@ public:
         default: return param_boxHalf;
         }
     }
+
+    // --- Fountain mode (jet from a nozzle; pooled water recycles) ---
+    bool  fountainMode = false;
+    Vec3  fountainOffset = Vec3(0.0f, -5.0f, 0.0f);   // nozzle, container-relative
+    float fountainRadius = 1.0f;
+    float fountainSpread = 0.25f;
+    float fountainJetSpeedLive = 25.0f;   // written per frame (audio-kicked)
+    float fountainDrainLevel = 1.0f;      // height above container bottom that drains
+    float fountainDrainPerSec = 2.0f;
+    unsigned fountainSeed = 0;
+    void  DispatchFountainRecycle(float dt);
 
     // --- River / Stream mode ---
     bool  riverMode = false;

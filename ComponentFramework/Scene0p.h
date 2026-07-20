@@ -10,6 +10,7 @@
 #include "Shader.h"
 #include "AudioReactive.h"
 #include "ReelExport.h"
+#include "PresetIO.h"
 #include <glad.h>
 #include <limits>
 using namespace MATH;
@@ -32,6 +33,7 @@ private:
     float   camDist      = 22.0f;
     float   camAzimuth   = 0.0f;   // radians, rotation around Y
     float   camElevation = 0.22f;  // radians, pitch above horizon
+    float   viewFarPlane = 300.0f; // camera draw distance; raise for huge containers
 
     Shader* lineShader = nullptr;
     GLuint  boxVAO = 0, boxVBO = 0;
@@ -63,6 +65,8 @@ private:
 
     // Artistic color state (palette + adjustments, see shared palette block in the frag shaders)
     int     paletteId    = 0;     // 0=Classic,1=Turbo,2=Neon,3=Fire,4=Iridescent,5=Ice,6=Vaporwave,7=Toxic,8=Duotone
+    bool    twoColorEnabled = false;   // group-1 particles use paletteId2 (impostor/mesh modes)
+    int     paletteId2   = 2;
     float   hueShiftDeg  = 0.0f;
     float   satMul       = 1.0f;
     float   brightMul    = 1.0f;
@@ -84,6 +88,15 @@ private:
     float   exposure     = 1.0f;
 
     void    ApplyArtPreset(int which);
+    void    SurpriseMe();   // randomize a whole look within curated ranges
+
+    // --- My Presets: save/load the full current look to presets/<name>.txt ---
+    void    GatherPreset(PresetIO::KV& kv) const;
+    void    ApplyPresetKV(const PresetIO::KV& kv);
+    char    presetNameBuf[64] = "";
+    std::vector<std::string> presetList;
+    int     presetSelIdx = -1;
+    std::string presetStatus;
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 
@@ -133,6 +146,27 @@ private:
     float   vortexBaseSwirl   = 0.0f;  // constant tangential accel; works without audio
     float   audioVortexForce  = 0.0f;  // mid -> extra swirl
     float   vortexInwardPull  = 0.0f;  // radial pull toward the axis
+
+    // --- Attractor orb (movable gravity well; bass pulses the pull) ---
+    bool    attractorEnabled  = false;
+    float   attractorPos[3]   = {0.0f, 2.0f, 0.0f};   // container-relative
+    float   attractorStrength = 8.0f;
+    float   attractorRadius   = 6.0f;
+    float   attractorBassKick = 25.0f;
+
+    // --- Gravity spin (gravity direction sweeps around; fluid rolls) ---
+    bool    gravitySpinEnabled  = false;
+    float   gravitySpinSpeedDeg = 45.0f;
+    float   gravitySpinTiltDeg  = 25.0f;
+    float   gravitySpinPhase    = 0.0f;
+
+    // --- Beat camera zoom (bass pulls the camera in) ---
+    float   camZoomKick = 0.0f;
+    float   camDistLive = 22.0f;   // camDist with the bass kick applied
+
+    // --- Fountain (UI-side jet controls; mode lives on fluidGPU) ---
+    float   fountainJetSpeed = 25.0f;
+    float   fountainBassKick = 0.6f;   // bass -> jet speed boost
 
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
@@ -242,6 +276,35 @@ private:
     void    InitSSFRBuffers(int w, int h);
     void    RenderSSFR(GLuint targetFBO, const Matrix4& proj) const;
     void    DestroySSFRBuffers();
+
+    // --- Post-processing chain (trails -> bloom -> final grade) ---
+    // Runs inside RenderSceneTo whenever any FX slider is nonzero, so it bakes
+    // into the live view, OBS preview, reel exports, and screenshots alike.
+    Shader* postTrailShader  = nullptr;
+    Shader* postBrightShader = nullptr;
+    Shader* postBlurShader   = nullptr;
+    Shader* postFinalShader  = nullptr;
+    GLuint  postSceneFBO = 0, postSceneTex = 0, postSceneRBO = 0;   // RGBA8 + depth
+    GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
+    GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
+    int     postW = 0, postH = 0;
+    mutable int trailPing = 0;      // ping-pong index; flipped during (const) render
+    float   postTime = 0.0f;        // advances in DriveAudioReaction (reel-deterministic)
+    // FX sliders. All defaults off => the post chain is a strict no-op and the
+    // scene renders exactly as before this feature existed.
+    float   bloomStrength = 0.0f, bloomThreshold = 0.6f;
+    float   trailHalfLife = 0.0f;   // seconds; 0 = off
+    float   trailDecayLive = 0.0f;  // exp(-ln2*dt/halfLife), recomputed per frame
+    int     kaleidoSegments = 0;    // < 2 = off
+    float   kaleidoAngleDeg = 0.0f;
+    float   vignetteAmount = 0.0f, grainAmount = 0.0f, chromaticAmount = 0.0f;
+
+    void    InitPostBuffers(int w, int h);
+    void    DestroyPostBuffers();
+    void    ClearTrailHistory();
+    bool    PostChainActive() const;
+    void    RenderSceneRaw(GLuint fbo, int outW, int outH, const Matrix4& proj) const;
+    void    RunPostChain(GLuint targetFBO, int outW, int outH) const;
 
     // --- Terrain mesh ---
     Shader* terrainShader     = nullptr;

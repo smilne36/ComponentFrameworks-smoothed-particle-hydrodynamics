@@ -38,6 +38,8 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     obbConstraintShader = LoadComputeShader("shaders/OBBConstraints.comp");
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
+    attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
+    fountainShader = LoadComputeShader("shaders/FountainRecycle.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -67,6 +69,8 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(obbConstraintShader);
     glDeleteProgram(waveImpulseShader);
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
+    if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
+    if (fountainShader)           glDeleteProgram(fountainShader);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -127,7 +131,7 @@ void SPHFluidGPU::InitializeParticles() {
                     p.vel = Vec4(0, 0, 0.5f, 0); // channel constraint drives flow
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
-                    p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    p.isGhost = 0; p.isActive = 0; p.padC = count & 1; p.pad0 = 0;
                     particles.push_back(p); ++count;
                 }
             }
@@ -144,7 +148,7 @@ void SPHFluidGPU::InitializeParticles() {
             p.vel = Vec4(0, 0, 2.0f, 0);
             p.acc = Vec4(0, 0, 0, 0);
             p.density = p.pressure = 0.0f;
-            p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+            p.isGhost = 0; p.isActive = 0; p.padC = count & 1; p.pad0 = 0;
             particles.push_back(p); ++count;
         }
     } else {
@@ -207,6 +211,12 @@ void SPHFluidGPU::InitializeParticles() {
                     p.acc = Vec4(0, 0, 0, 0);
                     p.density = p.pressure = 0.0f;
                     p.isGhost = 0; p.isActive = 0; p.pad0 = 0;
+                    // Color-group tag for Two-Color mode (read as flags.z in shaders)
+                    switch (param_mixPattern) {
+                        case 1:  p.padC = (x + y + z) & 1; break;         // alternating lattice
+                        case 2:  p.padC = int(rng() & 1u); break;         // random
+                        default: p.padC = (lx < 0.0f) ? 0 : 1; break;     // split halves along X
+                    }
                     particles.push_back(p); ++count;
                 }
     }
@@ -393,7 +403,32 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
         DispatchStreamEmit();
     }
 
+    // 6) Fountain: recycle pooled bottom water back into the upward jet
+    if (fountainMode && !riverMode) DispatchFountainRecycle(timeStep);
+
     glUseProgram(0);
+}
+
+// Recycles pooled water below the drain plane back to the nozzle as a jet.
+// Relies on SSBO binding 0 set by the constraint pass just above.
+void SPHFluidGPU::DispatchFountainRecycle(float dt) {
+    if (!fountainShader) return;
+    const Vec3 half = EffectiveHalf();
+    const Vec3 emit = param_boxCenter + fountainOffset;
+    glUseProgram(fountainShader);
+    glUniform1i(glGetUniformLocation(fountainShader, "numParticles"), int(particles.size()));
+    glUniform3f(glGetUniformLocation(fountainShader, "uEmitterPos"), emit.x, emit.y, emit.z);
+    glUniform1f(glGetUniformLocation(fountainShader, "uEmitterRadius"), fountainRadius);
+    glUniform1f(glGetUniformLocation(fountainShader, "uJetSpeed"), fountainJetSpeedLive);
+    glUniform1f(glGetUniformLocation(fountainShader, "uJetSpread"), fountainSpread);
+    glUniform1f(glGetUniformLocation(fountainShader, "uDrainY"),
+        (param_boxCenter.y - half.y) + fountainDrainLevel);
+    glUniform1f(glGetUniformLocation(fountainShader, "uDrainChance"),
+        std::min(1.0f, fountainDrainPerSec * dt));
+    glUniform1f(glGetUniformLocation(fountainShader, "uRestDensity"), param_restDensity);
+    glUniform1ui(glGetUniformLocation(fountainShader, "uSeed"), fountainSeed++);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
 void SPHFluidGPU::DispatchTerrainConstraints() {
@@ -491,6 +526,24 @@ void SPHFluidGPU::ApplyVortexImpulse(float tangentKick, float inwardKick) {
     glUniform1f(glGetUniformLocation(vortexImpulseShader, "uInward"), inwardKick);
     const Vec3 half = EffectiveHalf();
     glUniform1f(glGetUniformLocation(vortexImpulseShader, "uRadius"), std::max(half.x, half.z));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Movable gravity well: softened inverse-distance pull toward a point.
+// pullKick is a velocity delta (callers pre-multiply by dt).
+void SPHFluidGPU::ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius) {
+    if (std::fabs(pullKick) < 1e-6f) return;
+
+    glUseProgram(attractorImpulseShader);
+    glUniform1i(glGetUniformLocation(attractorImpulseShader, "N"), int(particles.size()));
+    glUniform3f(glGetUniformLocation(attractorImpulseShader, "uPoint"), point.x, point.y, point.z);
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uPull"), pullKick);
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uRadius"), std::max(radius, 0.1f));
+    glUniform1f(glGetUniformLocation(attractorImpulseShader, "uSoften"), std::max(0.15f * radius, 0.2f));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);

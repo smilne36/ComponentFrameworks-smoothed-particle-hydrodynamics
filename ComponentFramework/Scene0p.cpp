@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <random>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -58,7 +59,7 @@ bool Scene0p::OnCreate() {
         else std::cerr << "SSBO block 'ParticleBuf' not found in program\n";
     }
 
-    projectionMatrix = MMath::perspective(45.0f, 16.0f / 9.0f, 0.5f, 100.0f);
+    projectionMatrix = MMath::perspective(45.0f, 16.0f / 9.0f, 0.5f, viewFarPlane);   // re-built per frame in Update
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
     modelMatrix.loadIdentity();
 
@@ -96,6 +97,15 @@ bool Scene0p::OnCreate() {
 
     skyShader = new Shader("shaders/screenQuad.vert", "shaders/skyGradient.frag");
     if (!skyShader->OnCreate()) { std::cerr << "skyGradient shader failed\n"; return false; }
+
+    postFinalShader = new Shader("shaders/screenQuad.vert", "shaders/postFinal.frag");
+    if (!postFinalShader->OnCreate()) { std::cerr << "postFinal shader failed\n"; return false; }
+    postBrightShader = new Shader("shaders/screenQuad.vert", "shaders/postBright.frag");
+    if (!postBrightShader->OnCreate()) { std::cerr << "postBright shader failed\n"; return false; }
+    postBlurShader = new Shader("shaders/screenQuad.vert", "shaders/postBlur.frag");
+    if (!postBlurShader->OnCreate()) { std::cerr << "postBlur shader failed\n"; return false; }
+    postTrailShader = new Shader("shaders/screenQuad.vert", "shaders/postTrails.frag");
+    if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -146,7 +156,12 @@ void Scene0p::OnDestroy() {
     if (ssfrCompositeShader) { ssfrCompositeShader->OnDestroy(); delete ssfrCompositeShader; ssfrCompositeShader = nullptr; }
     if (skyShader)           { skyShader->OnDestroy();           delete skyShader;           skyShader           = nullptr; }
     if (ssfrQuadVAO)         glDeleteVertexArrays(1, &ssfrQuadVAO);
+    if (postTrailShader)  { postTrailShader->OnDestroy();  delete postTrailShader;  postTrailShader  = nullptr; }
+    if (postBrightShader) { postBrightShader->OnDestroy(); delete postBrightShader; postBrightShader = nullptr; }
+    if (postBlurShader)   { postBlurShader->OnDestroy();   delete postBlurShader;   postBlurShader   = nullptr; }
+    if (postFinalShader)  { postFinalShader->OnDestroy();  delete postFinalShader;  postFinalShader  = nullptr; }
     DestroySSFRBuffers();
+    DestroyPostBuffers();
     DestroyPreviewTarget();
     if (terrainShader) { terrainShader->OnDestroy(); delete terrainShader; terrainShader = nullptr; }
     if (terrainVAO) glDeleteVertexArrays(1, &terrainVAO);
@@ -434,7 +449,7 @@ void Scene0p::RebuildOrbitCamera() {
     cameraPos = cameraTarget + Vec3(
         std::sin(camAzimuth) * cosEl,
         sinEl,
-        std::cos(camAzimuth) * cosEl) * camDist;
+        std::cos(camAzimuth) * cosEl) * camDistLive;   // camDist + beat zoom kick
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 }
 
@@ -460,6 +475,11 @@ void Scene0p::Update(const float deltaTime) {
             windowH = vp[3];
         }
     }
+    // Rebuild the live projection every frame: tracks the real window aspect
+    // (was hardcoded 16:9 and never updated) and the View Depth slider.
+    if (windowW > 0 && windowH > 0)
+        projectionMatrix = MMath::perspective(
+            45.0f, float(windowW) / float(windowH), 0.5f, viewFarPlane);
     if (!reelExporting) {
         if (reelPreview) {
             EnsurePreviewTarget();
@@ -467,6 +487,8 @@ void Scene0p::Update(const float deltaTime) {
             if (previewFBO) DestroyPreviewTarget();
             if (windowW > 0 && windowH > 0 && (windowW != ssfrW || windowH != ssfrH))
                 InitSSFRBuffers(windowW, windowH);
+            if (windowW > 0 && windowH > 0)
+                InitPostBuffers(windowW, windowH);   // no-op when already sized
         }
     }
 
@@ -509,8 +531,60 @@ void Scene0p::Update(const float deltaTime) {
 
     if (ImGui::BeginTabBar("##main")) {
     if (ImGui::BeginTabItem("Look")) {
+        if (ImGui::CollapsingHeader("My Presets")) {
+            ImGui::PushID("MyPresets");
+            ImGui::InputText("Name", presetNameBuf, sizeof(presetNameBuf));
+            ImGui::SameLine();
+            if (ImGui::Button("Save")) {
+                const std::string name = PresetIO::SanitizeName(presetNameBuf);
+                std::error_code ec;
+                std::filesystem::create_directories("presets", ec);
+                PresetIO::KV kv;
+                GatherPreset(kv);
+                if (PresetIO::SaveFile("presets/" + name + ".txt", kv)) {
+                    presetStatus = "Saved " + name;
+                    presetList = PresetIO::ListPresets("presets");
+                } else {
+                    presetStatus = "FAILED to save " + name;
+                }
+            }
+            if (ImGui::Button("Refresh List")) presetList = PresetIO::ListPresets("presets");
+            if (!presetList.empty()) {
+                std::string comboItems;
+                for (const auto& n : presetList) { comboItems += n; comboItems += '\0'; }
+                comboItems += '\0';
+                ImGui::Combo("Preset", &presetSelIdx, comboItems.c_str());
+                const bool haveSel = presetSelIdx >= 0 && presetSelIdx < int(presetList.size());
+                if (ImGui::Button("Load") && haveSel) {
+                    PresetIO::KV kv;
+                    if (PresetIO::LoadFile("presets/" + presetList[presetSelIdx] + ".txt", kv)) {
+                        ApplyPresetKV(kv);
+                        presetStatus = "Loaded " + presetList[presetSelIdx];
+                    } else {
+                        presetStatus = "FAILED to load " + presetList[presetSelIdx];
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete") && haveSel) {
+                    std::error_code ec;
+                    std::filesystem::remove("presets/" + presetList[presetSelIdx] + ".txt", ec);
+                    presetStatus = ec ? "FAILED to delete" : ("Deleted " + presetList[presetSelIdx]);
+                    presetList = PresetIO::ListPresets("presets");
+                    presetSelIdx = -1;
+                }
+            } else {
+                ImGui::TextDisabled("No saved presets yet. Dial in a look and hit Save.");
+            }
+            if (!presetStatus.empty()) ImGui::TextWrapped("%s", presetStatus.c_str());
+            ImGui::TextDisabled("Saves the FULL look (physics + colors + audio + FX) to\npresets/<name>.txt -- share the file to share the look.");
+            ImGui::PopID();
+        }
         if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("Presets");
+            if (ImGui::Button("Surprise Me!")) SurpriseMe();
+            ImGui::SameLine();
+            ImGui::TextDisabled("random look you'd never dial in by hand");
+            ImGui::Separator();
             ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
             if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
             ImGui::SameLine();
@@ -549,6 +623,15 @@ void Scene0p::Update(const float deltaTime) {
                 "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
                 "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
                 "Electric\0Smoke\0RGB Pop\0");
+            ImGui::Checkbox("Two-Color Fluid", &twoColorEnabled);
+            if (twoColorEnabled) {
+                ImGui::Combo("Palette B", &paletteId2,
+                    "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
+                    "Galaxy / Nebula\0Plasma\0Chrome\0Molten Gold\0Acid Rings\0Aurora\0"
+                    "Marble Ink\0Lava Lamp\0Disco Checker\0Stained Glass\0Psycho Swirl\0Candy Stripes\0"
+                    "Electric\0Smoke\0RGB Pop\0");
+                ImGui::TextDisabled("Two fluids, two palettes (Impostor/Mesh modes).\nPattern under Motion > Spawn Layout.");
+            }
             ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
             if (paletteId >= 15)
                 ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
@@ -576,6 +659,8 @@ void Scene0p::Update(const float deltaTime) {
 
             ImGui::Separator(); ImGui::Text("Background");
             ImGui::ColorEdit3("Background", bgColor);
+            ImGui::SliderFloat("View Depth", &viewFarPlane, 50.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            ImGui::TextDisabled("Raise if a huge container gets cut off far away.");
             if (useWaterRendering) {
                 ImGui::Checkbox("Sky Background", &showSkyBackground);
                 ImGui::ColorEdit3("Sky Horizon", skyColor);
@@ -611,6 +696,21 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::TextDisabled("Lower Foam Threshold = foam appears at gentler motion.");
                 ImGui::TreePop();
             }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("FX")) {
+            ImGui::PushID("FX");
+            ImGui::SliderFloat("Bloom",           &bloomStrength,  0.0f, 2.0f);
+            ImGui::SliderFloat("Bloom Threshold", &bloomThreshold, 0.0f, 1.0f);
+            ImGui::SliderFloat("Trails (half-life s)", &trailHalfLife, 0.0f, 2.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##trails")) ClearTrailHistory();
+            ImGui::SliderInt("Kaleidoscope",   &kaleidoSegments, 0, 12);
+            ImGui::SliderFloat("Kaleido Angle", &kaleidoAngleDeg, 0.0f, 360.0f);
+            ImGui::SliderFloat("Vignette",  &vignetteAmount,  0.0f, 1.0f);
+            ImGui::SliderFloat("Grain",     &grainAmount,     0.0f, 0.2f);
+            ImGui::SliderFloat("Chromatic", &chromaticAmount, 0.0f, 2.0f);
+            ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
         }
         ImGui::EndTabItem();
@@ -709,6 +809,8 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::Checkbox("Use jitter", &fluidGPU->param_useJitter); ImGui::SameLine();
             ImGui::SliderFloat("Jitter amp * spacing", &fluidGPU->param_jitterAmp, 0.0f, 0.5f, "%.2f"); ImGui::SameLine();
             if (ImGui::Button("Rebuild Layout")) { pendingReset = true; }
+            if (ImGui::Combo("Mix Pattern", &fluidGPU->param_mixPattern, "Split Half\0Alternating\0Random\0"))
+                pendingReset = true;   // retag (Two-Color groups) needs a respawn
             ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Waves")) {
@@ -734,6 +836,37 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Audio Swirl (mid)", &audioVortexForce, 0.0f, 30.0f);
             ImGui::SliderFloat("Inward Pull", &vortexInwardPull, 0.0f, 10.0f);
             ImGui::TextDisabled("Whirlpool around the container's axis. Base Swirl works\nwithout audio; the mid band spins it up with the music.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Attractor Orb")) {
+            ImGui::PushID("Attractor");
+            ImGui::Checkbox("Enable", &attractorEnabled);
+            ImGui::SliderFloat3("Position (rel.)", attractorPos, -10.0f, 10.0f);
+            ImGui::SliderFloat("Pull", &attractorStrength, 0.0f, 40.0f);
+            ImGui::SliderFloat("Radius", &attractorRadius, 1.0f, 15.0f);
+            ImGui::SliderFloat("Bass Pulse", &attractorBassKick, 0.0f, 80.0f);
+            ImGui::TextDisabled("A movable gravity well; bass yanks the fluid toward it.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Gravity Spin")) {
+            ImGui::PushID("GravitySpin");
+            ImGui::Checkbox("Enable", &gravitySpinEnabled);
+            ImGui::SliderFloat("Spin (deg/s)", &gravitySpinSpeedDeg, -180.0f, 180.0f);
+            ImGui::SliderFloat("Tilt (deg)", &gravitySpinTiltDeg, 0.0f, 60.0f);
+            ImGui::TextDisabled("Tips gravity sideways and sweeps it around -- the fluid\nrolls around the container. Great with capsule and torus.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Fountain")) {
+            ImGui::PushID("Fountain");
+            ImGui::Checkbox("Fountain Mode", &fluidGPU->fountainMode);
+            ImGui::SliderFloat3("Nozzle (rel.)", &fluidGPU->fountainOffset.x, -10.0f, 10.0f);
+            ImGui::SliderFloat("Jet Speed", &fountainJetSpeed, 5.0f, 60.0f);
+            ImGui::SliderFloat("Spread", &fluidGPU->fountainSpread, 0.0f, 1.0f);
+            ImGui::SliderFloat("Nozzle Radius", &fluidGPU->fountainRadius, 0.2f, 4.0f);
+            ImGui::SliderFloat("Pool Drain Height", &fluidGPU->fountainDrainLevel, 0.2f, 5.0f);
+            ImGui::SliderFloat("Drain Rate (/s)", &fluidGPU->fountainDrainPerSec, 0.2f, 10.0f);
+            ImGui::SliderFloat("Bass Jet Kick", &fountainBassKick, 0.0f, 2.0f);
+            ImGui::TextDisabled("Pooled water at the bottom recycles into an upward jet.\nBass makes the jet surge.");
             ImGui::PopID();
         }
         ImGui::EndTabItem();
@@ -766,6 +899,7 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
             ImGui::SliderFloat("Hue Kick (bass)",  &audioHueKickDeg,  0.0f, 180.0f);
             ImGui::SliderFloat("Flash (bass)",     &audioFlashKick,   0.0f, 2.0f);
+            ImGui::SliderFloat("Zoom Kick (bass)", &camZoomKick,      0.0f, 0.5f);
 
             if (ImGui::TreeNode("Advanced")) {
                 float atk = audioReactive->attackMs.load();
@@ -978,7 +1112,7 @@ void Scene0p::Render() const {
     // capture a true 9:16 frame. Same framing the offline export produces.
     if (reelPreview && previewFBO && previewW > 0 && previewH > 0) {
         const Matrix4 previewProj = MMath::perspective(
-            45.0f, float(reelW) / float(reelH), 0.5f, 100.0f);
+            45.0f, float(reelW) / float(reelH), 0.5f, viewFarPlane);
         RenderSceneTo(previewFBO, previewW, previewH, previewProj);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -998,10 +1132,27 @@ void Scene0p::Render() const {
     RenderSceneTo(0, windowW, windowH, projectionMatrix);
 }
 
-// Renders the full scene (whichever render path is active) into targetFBO at
-// outW x outH with the given projection. targetFBO 0 = the window; the
-// screenshot capture passes its own FBO, size, and aspect-corrected projection.
+// Renders the full scene into targetFBO, then applies the post-processing
+// chain (trails/bloom/kaleidoscope/film) when any FX is enabled. targetFBO
+// 0 = the window; preview/reel/capture pass their own FBOs, so the FX bake
+// into every output automatically.
 void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
+    if (outW <= 0 || outH <= 0) return;
+    // Size mismatch (buffers not yet re-inited for this output) falls back to
+    // a direct render -- never allocate GL objects from this const path.
+    const bool post = PostChainActive() && postFinalShader && postSceneFBO &&
+                      postW == outW && postH == outH;
+    RenderSceneRaw(post ? postSceneFBO : targetFBO, outW, outH, proj);
+    if (post) RunPostChain(targetFBO, outW, outH);
+}
+
+bool Scene0p::PostChainActive() const {
+    return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
+           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f;
+}
+
+// The raw scene render (whichever render path is active), no post effects.
+void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const {
     if (outW <= 0 || outH <= 0) return;
 
     // Water surface rendering: all 5 passes handled inside RenderSSFR()
@@ -1098,6 +1249,13 @@ void Scene0p::ApplyArtPreset(int which) {
     autoOrbitEnabled = false; autoOrbitSpeedDeg = 8.0f; audioOrbitKick = 0.0f;
     audioHueKickDeg  = 0.0f;  audioFlashKick = 0.0f;
     vortexBaseSwirl  = 0.0f;  audioVortexForce = 0.0f;  vortexInwardPull = 0.0f;
+    bloomStrength = 0.0f; bloomThreshold = 0.6f; trailHalfLife = 0.0f;
+    kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
+    vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
+    attractorEnabled = false;
+    gravitySpinEnabled = false; camZoomKick = 0.0f;
+    twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
+    fluidGPU->fountainMode = false;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1381,10 +1539,386 @@ void Scene0p::ApplyArtPreset(int which) {
     pendingReset = true;
 }
 
+// One click, one new look: randomizes shape, physics, palettes, motion, and
+// FX within ranges curated to stay art-worthy. Builds on ApplyArtPreset(0)'s
+// common reset so leftovers from previous looks never leak through.
+void Scene0p::SurpriseMe() {
+    if (!fluidGPU) return;
+    std::mt19937 rng{ unsigned(time(nullptr)) };
+    auto U  = [&](float a, float b) { return a + (b - a) * float(rng() & 0xFFFFFF) / 16777215.0f; };
+    auto Ui = [&](int a, int b) { return a + int(rng() % unsigned(b - a + 1)); };
+    auto chance = [&](float p) { return U(0.0f, 1.0f) < p; };
+
+    const bool prevAudio = audioReactiveEnabled;
+    ApplyArtPreset(0);              // known-clean baseline (also resets new knobs)
+    audioReactiveEnabled = prevAudio;   // ApplyArtPreset force-enables; keep user's choice
+
+    // Shape + size
+    fluidGPU->param_shapeType = Ui(0, 6);
+    switch (fluidGPU->param_shapeType) {
+        case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
+        case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
+        case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
+        case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
+        default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
+    }
+    // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
+    fluidGPU->param_gravityY = -std::exp(U(std::log(30.0f), std::log(900.0f)));
+    fluidGPU->param_viscosity = U(1, 8);
+    fluidGPU->param_gasConstant = U(1200, 9000);
+    fluidGPU->param_surfaceTension = U(0.0f, 0.12f);
+    // Render mode + palettes
+    const float rmRoll = U(0, 1);
+    useWaterRendering = rmRoll < 0.25f;
+    useImpostors = !useWaterRendering && rmRoll < 0.85f;
+    litParticles = true;
+    paletteId = Ui(0, 23);
+    twoColorEnabled = chance(0.30f);
+    if (twoColorEnabled) {
+        do { paletteId2 = Ui(0, 23); } while (paletteId2 == paletteId);
+        fluidGPU->param_mixPattern = Ui(0, 2);
+    }
+    const int vizChoices[5] = {0, 1, 4, 5, 6};
+    vizMode = vizChoices[Ui(0, 4)];
+    vizRangeMin = 0.0f; vizRangeMax = U(6, 14);
+    paletteFlow = chance(0.5f) ? U(0.05f, 0.25f) : 0.0f;
+    if (paletteId >= 15) patternScale = U(0.6f, 2.0f);
+    // Motion
+    autoOrbitEnabled = chance(0.5f);
+    autoOrbitSpeedDeg = (chance(0.5f) ? 1.0f : -1.0f) * U(4, 20);
+    audioOrbitKick = U(0.0f, 1.0f);
+    if (chance(0.5f)) { vortexBaseSwirl = U(2, 10); vortexInwardPull = U(0, 2); }
+    if (chance(0.25f)) {
+        attractorEnabled = true;
+        attractorStrength = U(4, 15); attractorRadius = U(4, 8); attractorBassKick = U(10, 40);
+        attractorPos[0] = U(-3, 3); attractorPos[1] = U(-2, 4); attractorPos[2] = U(-3, 3);
+    }
+    if (chance(0.20f)) {
+        gravitySpinEnabled = true;
+        gravitySpinSpeedDeg = U(20, 90); gravitySpinTiltDeg = U(15, 40);
+    }
+    if (!attractorEnabled && chance(0.15f)) {
+        fluidGPU->fountainMode = true;
+        fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f);
+    }
+    // Audio kicks (moderate; they only fire when the reactor is on)
+    audioSizeKick = U(0.2f, 0.6f);
+    audioShimmerKick = U(0.3f, 1.0f);
+    audioFoamKick = U(0.2f, 0.8f);
+    audioHueKickDeg = chance(0.4f) ? U(30, 90) : 0.0f;
+    audioFlashKick = U(0.0f, 0.8f);
+    camZoomKick = U(0.0f, 0.25f);
+    // FX (always tasteful, never all maxed)
+    if (chance(0.5f)) { bloomStrength = U(0.2f, 0.7f); bloomThreshold = U(0.45f, 0.75f); }
+    if (chance(0.4f)) trailHalfLife = U(0.15f, 0.7f);
+    if (chance(0.25f)) { const int segs[3] = {4, 6, 8}; kaleidoSegments = segs[Ui(0, 2)]; kaleidoAngleDeg = U(0, 360); }
+    vignetteAmount = U(0.0f, 0.35f);
+    grainAmount = U(0.0f, 0.07f);
+    chromaticAmount = U(0.0f, 0.5f);
+
+    pendingReset = true;
+}
+
+// ---------------------------------------------------------------------------
+// My Presets: the full current look as key=value pairs. Unknown keys are
+// ignored on load and missing keys keep current values, so preset files stay
+// compatible as the app grows. Transient state (phases, *Live mirrors, camera
+// pose, GL handles) is deliberately NOT serialized.
+// ---------------------------------------------------------------------------
+void Scene0p::GatherPreset(PresetIO::KV& kv) const {
+    using namespace PresetIO;
+    // sim / physics
+    PutF(kv, "sim.h", fluidGPU->param_h);
+    PutF(kv, "sim.mass", fluidGPU->param_mass);
+    PutF(kv, "sim.restDensity", fluidGPU->param_restDensity);
+    PutF(kv, "sim.gasConstant", fluidGPU->param_gasConstant);
+    PutF(kv, "sim.viscosity", fluidGPU->param_viscosity);
+    PutF(kv, "sim.gravityY", fluidGPU->param_gravityY);
+    PutF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
+    PutF(kv, "sim.timeStep", fluidGPU->param_timeStep);
+    PutB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+    PutF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    PutF(kv, "sim.foamGen", fluidGPU->param_foamGen);
+    PutF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
+    PutF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
+    PutF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
+    PutI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+    // container
+    const float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
+    const float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
+    const float be[3] = { fluidGPU->param_boxEulerDeg.x, fluidGPU->param_boxEulerDeg.y, fluidGPU->param_boxEulerDeg.z };
+    PutF3(kv, "box.center", bc);
+    PutF3(kv, "box.half", bh);
+    PutF3(kv, "box.euler", be);
+    PutI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    PutB(kv, "box.outline", showContainerOutline);
+    PutF3(kv, "box.outlineColor", containerOutlineColor);
+    // look
+    PutI(kv, "look.renderMode", useWaterRendering ? 0 : (useImpostors ? 1 : 2));
+    PutI(kv, "look.vizMode", vizMode);
+    PutF(kv, "look.vizRangeMin", vizRangeMin);
+    PutF(kv, "look.vizRangeMax", vizRangeMax);
+    PutI(kv, "look.paletteId", paletteId);
+    PutB(kv, "look.twoColor", twoColorEnabled);
+    PutI(kv, "look.paletteId2", paletteId2);
+    PutI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    PutF(kv, "look.hueShift", hueShiftDeg);
+    PutF(kv, "look.satMul", satMul);
+    PutF(kv, "look.brightMul", brightMul);
+    PutF(kv, "look.contrastMul", contrastMul);
+    PutB(kv, "look.invert", invertColor);
+    PutB(kv, "look.lit", litParticles);
+    PutF(kv, "look.iridFreq", iridFreq);
+    PutF(kv, "look.iridShift", iridShift);
+    PutF(kv, "look.paletteFlow", paletteFlow);
+    PutF(kv, "look.patternScale", patternScale);
+    PutF3(kv, "look.duoA", duoColorA);
+    PutF3(kv, "look.duoB", duoColorB);
+    PutB(kv, "look.skyOn", showSkyBackground);
+    PutF3(kv, "look.bg", bgColor);
+    PutF3(kv, "look.skyHorizon", skyColor);
+    PutF3(kv, "look.skyZenith", skyZenith);
+    PutF3(kv, "look.reflect", envReflectColor);
+    PutF(kv, "look.foamAmount", foamAmount);
+    PutF(kv, "look.exposure", exposure);
+    PutF(kv, "look.farPlane", viewFarPlane);
+    // water surface
+    PutB(kv, "water.halfRes", ssfrHalfRes);
+    PutI(kv, "water.smoothIter", smoothIterations);
+    PutF(kv, "water.filterScale", worldFilterScale);
+    PutF(kv, "water.surfaceMerge", surfaceMerge);
+    PutF(kv, "water.thickStrength", thicknessStrength);
+    PutF(kv, "water.thickFalloff", thicknessFalloff);
+    PutF(kv, "water.radiusScale", renderRadiusScale);
+    PutF3(kv, "water.extinction", waterExtinction);
+    PutF(kv, "water.thicknessScale", thicknessScale);
+    PutF3(kv, "water.sunDir", sunDirWorld);
+    PutF3(kv, "water.sunColor", sunColor);
+    PutF3(kv, "water.deepColor", deepWaterColor);
+    PutF(kv, "water.specPower", specularPower);
+    PutF(kv, "water.specStrength", specularStrength);
+    PutF(kv, "water.refraction", refractionStrength);
+    PutF(kv, "water.fresnelBias", fresnelBias);
+    // fx
+    PutF(kv, "fx.bloom", bloomStrength);
+    PutF(kv, "fx.bloomThreshold", bloomThreshold);
+    PutF(kv, "fx.trailHalfLife", trailHalfLife);
+    PutI(kv, "fx.kaleidoSegments", kaleidoSegments);
+    PutF(kv, "fx.kaleidoAngle", kaleidoAngleDeg);
+    PutF(kv, "fx.vignette", vignetteAmount);
+    PutF(kv, "fx.grain", grainAmount);
+    PutF(kv, "fx.chromatic", chromaticAmount);
+    // motion
+    PutB(kv, "motion.orbitOn", autoOrbitEnabled);
+    PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
+    PutF(kv, "motion.orbitKick", audioOrbitKick);
+    PutF(kv, "motion.vortexBase", vortexBaseSwirl);
+    PutF(kv, "motion.vortexAudio", audioVortexForce);
+    PutF(kv, "motion.vortexInward", vortexInwardPull);
+    PutB(kv, "motion.spinOn", gravitySpinEnabled);
+    PutF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
+    PutF(kv, "motion.spinTilt", gravitySpinTiltDeg);
+    PutB(kv, "motion.attractorOn", attractorEnabled);
+    PutF3(kv, "motion.attractorPos", attractorPos);
+    PutF(kv, "motion.attractorPull", attractorStrength);
+    PutF(kv, "motion.attractorRadius", attractorRadius);
+    PutF(kv, "motion.attractorKick", attractorBassKick);
+    PutB(kv, "motion.fountainOn", fluidGPU->fountainMode);
+    const float fo[3] = { fluidGPU->fountainOffset.x, fluidGPU->fountainOffset.y, fluidGPU->fountainOffset.z };
+    PutF3(kv, "motion.fountainPos", fo);
+    PutF(kv, "motion.fountainRadius", fluidGPU->fountainRadius);
+    PutF(kv, "motion.fountainJet", fountainJetSpeed);
+    PutF(kv, "motion.fountainSpread", fluidGPU->fountainSpread);
+    PutF(kv, "motion.fountainDrainLevel", fluidGPU->fountainDrainLevel);
+    PutF(kv, "motion.fountainDrainRate", fluidGPU->fountainDrainPerSec);
+    PutF(kv, "motion.fountainKick", fountainBassKick);
+    // waves (manual panel)
+    PutF(kv, "waves.amplitude", waveAmplitude);
+    PutF(kv, "waves.wavelength", waveWavelength);
+    PutF(kv, "waves.phaseSpeed", wavePhaseSpeed);
+    PutI(kv, "waves.dir", waveDirIdx);
+    PutB(kv, "waves.continuous", continuousWave);
+    // audio
+    PutB(kv, "audio.enabled", audioReactiveEnabled);
+    PutF(kv, "audio.masterGain", audioMasterGain);
+    if (audioReactive) {
+        PutF(kv, "audio.attackMs", audioReactive->attackMs.load());
+        PutF(kv, "audio.releaseMs", audioReactive->releaseMs.load());
+    }
+    PutF(kv, "audio.bassForce", audioBassForce);
+    PutF(kv, "audio.bassThreshold", audioBassThreshold);
+    PutF(kv, "audio.bassWavelength", audioBassWavelength);
+    PutF(kv, "audio.bassPhaseSpeed", audioBassPhaseSpeed);
+    PutF(kv, "audio.midForce", audioMidForce);
+    PutF(kv, "audio.midThreshold", audioMidThreshold);
+    PutF(kv, "audio.midWavelength", audioMidWavelength);
+    PutF(kv, "audio.midRotSpeed", audioMidRotSpeed);
+    PutF(kv, "audio.trebleForce", audioTrebleForce);
+    PutF(kv, "audio.trebleThreshold", audioTrebleThreshold);
+    PutF(kv, "audio.trebleWavelength", audioTrebleWavelength);
+    PutF(kv, "audio.treblePhaseSpeed", audioTreblePhaseSpeed);
+    PutF(kv, "audio.sizeKick", audioSizeKick);
+    PutF(kv, "audio.shimmerKick", audioShimmerKick);
+    PutF(kv, "audio.foamKick", audioFoamKick);
+    PutF(kv, "audio.hueKick", audioHueKickDeg);
+    PutF(kv, "audio.flashKick", audioFlashKick);
+    PutF(kv, "audio.zoomKick", camZoomKick);
+}
+
+void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
+    using namespace PresetIO;
+    // sim / physics
+    fluidGPU->param_h = GetF(kv, "sim.h", fluidGPU->param_h);
+    fluidGPU->param_mass = GetF(kv, "sim.mass", fluidGPU->param_mass);
+    fluidGPU->param_restDensity = GetF(kv, "sim.restDensity", fluidGPU->param_restDensity);
+    fluidGPU->param_gasConstant = GetF(kv, "sim.gasConstant", fluidGPU->param_gasConstant);
+    fluidGPU->param_viscosity = GetF(kv, "sim.viscosity", fluidGPU->param_viscosity);
+    fluidGPU->param_gravityY = GetF(kv, "sim.gravityY", fluidGPU->param_gravityY);
+    fluidGPU->param_surfaceTension = GetF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
+    fluidGPU->param_timeStep = GetF(kv, "sim.timeStep", fluidGPU->param_timeStep);
+    fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+    fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    fluidGPU->param_foamGen = GetF(kv, "sim.foamGen", fluidGPU->param_foamGen);
+    fluidGPU->param_foamVelRef = GetF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
+    fluidGPU->param_wallRestitution = GetF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
+    fluidGPU->param_wallFriction = GetF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
+    const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+    fluidGPU->numParticles = size_t(std::max(1000, pc));
+    uiParticleCount = int(fluidGPU->numParticles);
+    // container
+    float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
+    float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
+    float be[3] = { fluidGPU->param_boxEulerDeg.x, fluidGPU->param_boxEulerDeg.y, fluidGPU->param_boxEulerDeg.z };
+    GetF3(kv, "box.center", bc);  fluidGPU->param_boxCenter  = Vec3(bc[0], bc[1], bc[2]);
+    GetF3(kv, "box.half", bh);    fluidGPU->param_boxHalf    = Vec3(bh[0], bh[1], bh[2]);
+    GetF3(kv, "box.euler", be);   fluidGPU->param_boxEulerDeg = Vec3(be[0], be[1], be[2]);
+    fluidGPU->param_shapeType = GetI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    showContainerOutline = GetB(kv, "box.outline", showContainerOutline);
+    GetF3(kv, "box.outlineColor", containerOutlineColor);
+    // look
+    const int rm = GetI(kv, "look.renderMode", useWaterRendering ? 0 : (useImpostors ? 1 : 2));
+    useWaterRendering = (rm == 0);
+    useImpostors      = (rm == 1);
+    vizMode = GetI(kv, "look.vizMode", vizMode);
+    vizRangeMin = GetF(kv, "look.vizRangeMin", vizRangeMin);
+    vizRangeMax = GetF(kv, "look.vizRangeMax", vizRangeMax);
+    paletteId = GetI(kv, "look.paletteId", paletteId);
+    twoColorEnabled = GetB(kv, "look.twoColor", twoColorEnabled);
+    paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
+    fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
+    satMul = GetF(kv, "look.satMul", satMul);
+    brightMul = GetF(kv, "look.brightMul", brightMul);
+    contrastMul = GetF(kv, "look.contrastMul", contrastMul);
+    invertColor = GetB(kv, "look.invert", invertColor);
+    litParticles = GetB(kv, "look.lit", litParticles);
+    iridFreq = GetF(kv, "look.iridFreq", iridFreq);
+    iridShift = GetF(kv, "look.iridShift", iridShift);
+    paletteFlow = GetF(kv, "look.paletteFlow", paletteFlow);
+    patternScale = GetF(kv, "look.patternScale", patternScale);
+    GetF3(kv, "look.duoA", duoColorA);
+    GetF3(kv, "look.duoB", duoColorB);
+    showSkyBackground = GetB(kv, "look.skyOn", showSkyBackground);
+    GetF3(kv, "look.bg", bgColor);
+    GetF3(kv, "look.skyHorizon", skyColor);
+    GetF3(kv, "look.skyZenith", skyZenith);
+    GetF3(kv, "look.reflect", envReflectColor);
+    foamAmount = GetF(kv, "look.foamAmount", foamAmount);
+    exposure = GetF(kv, "look.exposure", exposure);
+    viewFarPlane = GetF(kv, "look.farPlane", viewFarPlane);
+    // water surface
+    ssfrHalfRes = GetB(kv, "water.halfRes", ssfrHalfRes);
+    smoothIterations = GetI(kv, "water.smoothIter", smoothIterations);
+    worldFilterScale = GetF(kv, "water.filterScale", worldFilterScale);
+    surfaceMerge = GetF(kv, "water.surfaceMerge", surfaceMerge);
+    thicknessStrength = GetF(kv, "water.thickStrength", thicknessStrength);
+    thicknessFalloff = GetF(kv, "water.thickFalloff", thicknessFalloff);
+    renderRadiusScale = GetF(kv, "water.radiusScale", renderRadiusScale);
+    GetF3(kv, "water.extinction", waterExtinction);
+    thicknessScale = GetF(kv, "water.thicknessScale", thicknessScale);
+    GetF3(kv, "water.sunDir", sunDirWorld);
+    GetF3(kv, "water.sunColor", sunColor);
+    GetF3(kv, "water.deepColor", deepWaterColor);
+    specularPower = GetF(kv, "water.specPower", specularPower);
+    specularStrength = GetF(kv, "water.specStrength", specularStrength);
+    refractionStrength = GetF(kv, "water.refraction", refractionStrength);
+    fresnelBias = GetF(kv, "water.fresnelBias", fresnelBias);
+    // fx
+    bloomStrength = GetF(kv, "fx.bloom", bloomStrength);
+    bloomThreshold = GetF(kv, "fx.bloomThreshold", bloomThreshold);
+    trailHalfLife = GetF(kv, "fx.trailHalfLife", trailHalfLife);
+    kaleidoSegments = GetI(kv, "fx.kaleidoSegments", kaleidoSegments);
+    kaleidoAngleDeg = GetF(kv, "fx.kaleidoAngle", kaleidoAngleDeg);
+    vignetteAmount = GetF(kv, "fx.vignette", vignetteAmount);
+    grainAmount = GetF(kv, "fx.grain", grainAmount);
+    chromaticAmount = GetF(kv, "fx.chromatic", chromaticAmount);
+    // motion
+    autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
+    autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
+    audioOrbitKick = GetF(kv, "motion.orbitKick", audioOrbitKick);
+    vortexBaseSwirl = GetF(kv, "motion.vortexBase", vortexBaseSwirl);
+    audioVortexForce = GetF(kv, "motion.vortexAudio", audioVortexForce);
+    vortexInwardPull = GetF(kv, "motion.vortexInward", vortexInwardPull);
+    gravitySpinEnabled = GetB(kv, "motion.spinOn", gravitySpinEnabled);
+    gravitySpinSpeedDeg = GetF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
+    gravitySpinTiltDeg = GetF(kv, "motion.spinTilt", gravitySpinTiltDeg);
+    attractorEnabled = GetB(kv, "motion.attractorOn", attractorEnabled);
+    GetF3(kv, "motion.attractorPos", attractorPos);
+    attractorStrength = GetF(kv, "motion.attractorPull", attractorStrength);
+    attractorRadius = GetF(kv, "motion.attractorRadius", attractorRadius);
+    attractorBassKick = GetF(kv, "motion.attractorKick", attractorBassKick);
+    fluidGPU->fountainMode = GetB(kv, "motion.fountainOn", fluidGPU->fountainMode);
+    float fo[3] = { fluidGPU->fountainOffset.x, fluidGPU->fountainOffset.y, fluidGPU->fountainOffset.z };
+    GetF3(kv, "motion.fountainPos", fo);
+    fluidGPU->fountainOffset = Vec3(fo[0], fo[1], fo[2]);
+    fluidGPU->fountainRadius = GetF(kv, "motion.fountainRadius", fluidGPU->fountainRadius);
+    fountainJetSpeed = GetF(kv, "motion.fountainJet", fountainJetSpeed);
+    fluidGPU->fountainSpread = GetF(kv, "motion.fountainSpread", fluidGPU->fountainSpread);
+    fluidGPU->fountainDrainLevel = GetF(kv, "motion.fountainDrainLevel", fluidGPU->fountainDrainLevel);
+    fluidGPU->fountainDrainPerSec = GetF(kv, "motion.fountainDrainRate", fluidGPU->fountainDrainPerSec);
+    fountainBassKick = GetF(kv, "motion.fountainKick", fountainBassKick);
+    // waves
+    waveAmplitude = GetF(kv, "waves.amplitude", waveAmplitude);
+    waveWavelength = GetF(kv, "waves.wavelength", waveWavelength);
+    wavePhaseSpeed = GetF(kv, "waves.phaseSpeed", wavePhaseSpeed);
+    waveDirIdx = GetI(kv, "waves.dir", waveDirIdx);
+    continuousWave = GetB(kv, "waves.continuous", continuousWave);
+    // audio
+    audioReactiveEnabled = GetB(kv, "audio.enabled", audioReactiveEnabled);
+    audioMasterGain = GetF(kv, "audio.masterGain", audioMasterGain);
+    audioBassForce = GetF(kv, "audio.bassForce", audioBassForce);
+    audioBassThreshold = GetF(kv, "audio.bassThreshold", audioBassThreshold);
+    audioBassWavelength = GetF(kv, "audio.bassWavelength", audioBassWavelength);
+    audioBassPhaseSpeed = GetF(kv, "audio.bassPhaseSpeed", audioBassPhaseSpeed);
+    audioMidForce = GetF(kv, "audio.midForce", audioMidForce);
+    audioMidThreshold = GetF(kv, "audio.midThreshold", audioMidThreshold);
+    audioMidWavelength = GetF(kv, "audio.midWavelength", audioMidWavelength);
+    audioMidRotSpeed = GetF(kv, "audio.midRotSpeed", audioMidRotSpeed);
+    audioTrebleForce = GetF(kv, "audio.trebleForce", audioTrebleForce);
+    audioTrebleThreshold = GetF(kv, "audio.trebleThreshold", audioTrebleThreshold);
+    audioTrebleWavelength = GetF(kv, "audio.trebleWavelength", audioTrebleWavelength);
+    audioTreblePhaseSpeed = GetF(kv, "audio.treblePhaseSpeed", audioTreblePhaseSpeed);
+    audioSizeKick = GetF(kv, "audio.sizeKick", audioSizeKick);
+    audioShimmerKick = GetF(kv, "audio.shimmerKick", audioShimmerKick);
+    audioFoamKick = GetF(kv, "audio.foamKick", audioFoamKick);
+    audioHueKickDeg = GetF(kv, "audio.hueKick", audioHueKickDeg);
+    audioFlashKick = GetF(kv, "audio.flashKick", audioFlashKick);
+    camZoomKick = GetF(kv, "audio.zoomKick", camZoomKick);
+    if (audioReactive) {
+        audioReactive->gain.store(audioMasterGain);
+        audioReactive->attackMs.store(GetF(kv, "audio.attackMs", audioReactive->attackMs.load()));
+        audioReactive->releaseMs.store(GetF(kv, "audio.releaseMs", audioReactive->releaseMs.load()));
+    }
+
+    pendingReset = true;   // respawn with the loaded shape/count/mix pattern
+}
+
 // Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
 void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("colorDrive"); loc != -1) glUniform1i(loc, vizMode);
     if (GLint loc = s->GetUniformID("paletteId");  loc != -1) glUniform1i(loc, paletteId);
+    if (GLint loc = s->GetUniformID("paletteId2"); loc != -1)
+        glUniform1i(loc, twoColorEnabled ? paletteId2 : -1);
     if (GLint loc = s->GetUniformID("vizRange");   loc != -1) glUniform2f(loc, vizRangeMin, vizRangeMax);
     if (GLint loc = s->GetUniformID("heightMinMax"); loc != -1) {
         // EffectiveHalf: param_boxHalf.y is not the vertical extent for every
@@ -1543,6 +2077,170 @@ void Scene0p::DestroySSFRBuffers() {
     if (ssfrBgTex)       { glDeleteTextures(1, &ssfrBgTex);           ssfrBgTex = 0; }
     if (ssfrBgRBO)       { glDeleteRenderbuffers(1, &ssfrBgRBO);      ssfrBgRBO = 0; }
     ssfrW = ssfrH = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing chain buffers + passes
+// ---------------------------------------------------------------------------
+
+// Color-only FBO helper for the post chain (format-parameterized MakeR32FFBO)
+static GLuint MakeColorFBO(GLuint& texOut, int w, int h, GLenum internalFmt) {
+    glGenTextures(1, &texOut);
+    glBindTexture(GL_TEXTURE_2D, texOut);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, w, h, 0, GL_RGBA,
+                 internalFmt == GL_RGBA16F ? GL_FLOAT : GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texOut, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fbo;
+}
+
+void Scene0p::InitPostBuffers(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (w == postW && h == postH && postSceneFBO) return;   // already sized
+    DestroyPostBuffers();
+    postW = w; postH = h;
+
+    // Scene target: RGBA8 color + depth (the raw render needs a depth buffer)
+    postSceneFBO = MakeColorFBO(postSceneTex, w, h, GL_RGBA8);
+    glGenRenderbuffers(1, &postSceneRBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, postSceneRBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glBindFramebuffer(GL_FRAMEBUFFER, postSceneFBO);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, postSceneRBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    // Trail history: 16F so the multiplicative decay reaches true zero
+    // (RGBA8 rounds small values back to themselves and streaks stick forever)
+    for (int i = 0; i < 2; ++i)
+        trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
+
+    // Bloom: half-res 16F ping-pong
+    const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
+    for (int i = 0; i < 2; ++i)
+        bloomFBO[i] = MakeColorFBO(bloomTex[i], hw, hh, GL_RGBA16F);
+
+    ClearTrailHistory();
+}
+
+void Scene0p::DestroyPostBuffers() {
+    if (postSceneFBO) { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
+    if (postSceneTex) { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
+    if (postSceneRBO) { glDeleteRenderbuffers(1, &postSceneRBO); postSceneRBO = 0; }
+    for (int i = 0; i < 2; ++i) {
+        if (trailFBO[i]) { glDeleteFramebuffers(1, &trailFBO[i]); trailFBO[i] = 0; }
+        if (trailTex[i]) { glDeleteTextures(1, &trailTex[i]);     trailTex[i] = 0; }
+        if (bloomFBO[i]) { glDeleteFramebuffers(1, &bloomFBO[i]); bloomFBO[i] = 0; }
+        if (bloomTex[i]) { glDeleteTextures(1, &bloomTex[i]);     bloomTex[i] = 0; }
+    }
+    postW = postH = 0;
+}
+
+void Scene0p::ClearTrailHistory() {
+    for (int i = 0; i < 2; ++i) {
+        if (!trailFBO[i]) continue;
+        glBindFramebuffer(GL_FRAMEBUFFER, trailFBO[i]);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    trailPing = 0;
+}
+
+// Post passes: [trails accumulate] -> [bloom bright+blur] -> final grade into
+// targetFBO (kaleidoscope fold + chromatic + bloom add + vignette + grain).
+void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindVertexArray(ssfrQuadVAO);
+
+    GLuint baseTex = postSceneTex;
+
+    // Trails: fold this frame into the decaying history buffer; everything
+    // downstream (bloom, kaleidoscope, grade) then reads the trailed image.
+    if (trailHalfLife > 1e-3f && postTrailShader && trailFBO[0]) {
+        const int dst = trailPing ^ 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, trailFBO[dst]);
+        glViewport(0, 0, postW, postH);
+        glUseProgram(postTrailShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, postSceneTex);
+        glUniform1i(postTrailShader->GetUniformID("sceneTex"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, trailTex[trailPing]);
+        glUniform1i(postTrailShader->GetUniformID("historyTex"), 1);
+        glUniform1f(postTrailShader->GetUniformID("decay"), trailDecayLive);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE0);
+        trailPing = dst;                 // mutable: ping-pong advances per frame
+        baseTex = trailTex[dst];
+    }
+
+    // Bloom: bright-pass at half res, then two separable gaussian rounds.
+    // The blur step scales with output height so the glow width matches at
+    // window, reel, and 2x supersampled sizes.
+    const bool bloomOn = bloomStrength > 0.0f && postBrightShader && postBlurShader;
+    if (bloomOn) {
+        const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
+        glViewport(0, 0, hw, hh);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+        glUseProgram(postBrightShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, baseTex);
+        glUniform1i(postBrightShader->GetUniformID("srcTex"), 0);
+        glUniform1f(postBrightShader->GetUniformID("threshold"), bloomThreshold);
+        glUniform1f(postBrightShader->GetUniformID("knee"), 0.5f * bloomThreshold);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glUseProgram(postBlurShader->GetProgram());
+        glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
+        const float radiusScale = float(outH) / 1080.0f;
+        for (int iter = 0; iter < 2; ++iter) {
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+            glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+            glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+            glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
+            glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+    }
+
+    // Final grade
+    glBindFramebuffer(GL_FRAMEBUFFER, targetFBO);
+    glViewport(0, 0, outW, outH);
+    glUseProgram(postFinalShader->GetProgram());
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, baseTex);
+    glUniform1i(postFinalShader->GetUniformID("baseTex"), 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+    glUniform1i(postFinalShader->GetUniformID("bloomTex"), 1);
+    glUniform2f(postFinalShader->GetUniformID("uResolution"), float(outW), float(outH));
+    glUniform1f(postFinalShader->GetUniformID("uKaleidoSegments"), float(kaleidoSegments));
+    glUniform1f(postFinalShader->GetUniformID("uKaleidoAngle"), kaleidoAngleDeg * (3.14159265f / 180.0f));
+    glUniform1f(postFinalShader->GetUniformID("uChromatic"), chromaticAmount);
+    glUniform1f(postFinalShader->GetUniformID("uVignette"), vignetteAmount);
+    glUniform1f(postFinalShader->GetUniformID("uGrain"), grainAmount);
+    glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), bloomOn ? bloomStrength : 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uTime"), postTime);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
 }
 
 void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
@@ -2006,6 +2704,42 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     foamAmountLive        = foamAmount        * (1.0f + audioFoamKick    * mid);
     hueShiftDegLive       = hueShiftDeg       + audioHueKickDeg * bass;
     orbitSpeedDegLive     = autoOrbitSpeedDeg * (1.0f + audioOrbitKick   * bass);
+
+    // Beat camera zoom: bass pulls the camera in (RebuildOrbitCamera reads
+    // camDistLive; recomputed every frame from the untouched camDist base).
+    camDistLive = camDist * (1.0f - camZoomKick * std::min(bass, 1.5f));
+
+    // Gravity spin: tip gravity sideways and sweep it around Y, so the fluid
+    // rolls around the container. Phase advances by dt (reel-deterministic).
+    if (gravitySpinEnabled) {
+        gravitySpinPhase += gravitySpinSpeedDeg * (3.14159265f / 180.0f) * dt;
+        const float g    = std::fabs(fluidGPU->param_gravityY);
+        const float tilt = gravitySpinTiltDeg * (3.14159265f / 180.0f);
+        fluidGPU->param_gravityX = g * std::sin(tilt) * std::cos(gravitySpinPhase);
+        fluidGPU->param_gravityZ = g * std::sin(tilt) * std::sin(gravitySpinPhase);
+    } else {
+        fluidGPU->param_gravityX = 0.0f;
+        fluidGPU->param_gravityZ = 0.0f;
+    }
+
+    // Attractor orb: constant pull + bass-pulse kick (kick pre-multiplied by
+    // dt). Position is container-relative so presets stay portable.
+    if (attractorEnabled) {
+        float pull = attractorStrength;
+        if (bass > audioBassThreshold) pull += attractorBassKick * bass;
+        fluidGPU->ApplyAttractorImpulse(
+            fluidGPU->param_boxCenter + Vec3(attractorPos[0], attractorPos[1], attractorPos[2]),
+            pull * dt, attractorRadius);
+    }
+
+    // Fountain: bass boosts the jet; DispatchCompute reads this per substep
+    fluidGPU->fountainJetSpeedLive = fountainJetSpeed * (1.0f + fountainBassKick * bass);
+
+    // Post-FX clock + trail decay: advanced here (not wall-clock) so film
+    // grain and trail fade are framerate-independent and reel-deterministic.
+    postTime += dt;
+    trailDecayLive = (trailHalfLife > 1e-3f)
+        ? std::exp(-0.6931472f * dt / trailHalfLife) : 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -2063,6 +2797,7 @@ void Scene0p::EnsurePreviewTarget() {
     }
 
     if (useWaterRendering) InitSSFRBuffers(previewW, previewH);
+    InitPostBuffers(previewW, previewH);
 }
 
 void Scene0p::StartReelExport() {
@@ -2083,6 +2818,7 @@ void Scene0p::StartReelExport() {
 
     // Deterministic start: fresh fluid + zeroed reaction phases.
     audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
+    gravitySpinPhase = 0.0f;
     fluidGPU->ResetSimulation();
     fluidGPU->param_pause = false;
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
@@ -2153,6 +2889,9 @@ void Scene0p::StartReelExport() {
         }
     }
     if (useWaterRendering) InitSSFRBuffers(reelRenderW, reelRenderH);
+    InitPostBuffers(reelRenderW, reelRenderH);
+    ClearTrailHistory();      // deterministic first frame
+    postTime = 0.0f;
 
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(reelOutDir) / "frames", ec);
@@ -2173,7 +2912,7 @@ void Scene0p::ReelExportStep() {
     const int fps = (reelFpsIdx == 1) ? 60 : 30;
     const float frameDt = 1.0f / float(fps);
     const Matrix4 reelProj = MMath::perspective(
-        45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, 100.0f);
+        45.0f, static_cast<float>(reelW) / static_cast<float>(reelH), 0.5f, viewFarPlane);
 
     // Deterministic substeps. Accurate by default (subDt <= the sim timestep);
     // an optional cap trades physical accuracy for render speed.
@@ -2293,8 +3032,9 @@ void Scene0p::FinishReelExport(bool wroteBat) {
         // Force the preview target to rebuild; EnsurePreviewTarget re-sizes the
         // SSFR buffers to the portrait preview on the next Update.
         previewW = previewH = 0;
-    } else if (useWaterRendering && windowW > 0 && windowH > 0) {
-        InitSSFRBuffers(windowW, windowH);
+    } else if (windowW > 0 && windowH > 0) {
+        if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+        InitPostBuffers(windowW, windowH);
     }
 }
 
@@ -2381,8 +3121,9 @@ void Scene0p::DoCapture() {
     const bool prevHalfRes = ssfrHalfRes;
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+    InitPostBuffers(renderW, renderH);
     const Matrix4 capProj = MMath::perspective(
-        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, 100.0f);
+        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
     RenderSceneTo(capFBO, renderW, renderH, capProj);
 
     GLuint readFBO = capFBO;
@@ -2412,6 +3153,7 @@ void Scene0p::DoCapture() {
     // Restore the on-screen render state
     ssfrHalfRes = prevHalfRes;
     if (useWaterRendering) InitSSFRBuffers(windowW, windowH);
+    if (windowW > 0 && windowH > 0) InitPostBuffers(windowW, windowH);
     glViewport(0, 0, windowW, windowH);
 
     std::error_code ec;
