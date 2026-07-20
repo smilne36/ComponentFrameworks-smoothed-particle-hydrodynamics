@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <random>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -580,6 +581,10 @@ void Scene0p::Update(const float deltaTime) {
         }
         if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("Presets");
+            if (ImGui::Button("Surprise Me!")) SurpriseMe();
+            ImGui::SameLine();
+            ImGui::TextDisabled("random look you'd never dial in by hand");
+            ImGui::Separator();
             ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
             if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
             ImGui::SameLine();
@@ -1531,6 +1536,86 @@ void Scene0p::ApplyArtPreset(int which) {
         audioReactive->attackMs.store(presetAttackMs);
         audioReactive->releaseMs.store(presetReleaseMs);
     }
+    pendingReset = true;
+}
+
+// One click, one new look: randomizes shape, physics, palettes, motion, and
+// FX within ranges curated to stay art-worthy. Builds on ApplyArtPreset(0)'s
+// common reset so leftovers from previous looks never leak through.
+void Scene0p::SurpriseMe() {
+    if (!fluidGPU) return;
+    std::mt19937 rng{ unsigned(time(nullptr)) };
+    auto U  = [&](float a, float b) { return a + (b - a) * float(rng() & 0xFFFFFF) / 16777215.0f; };
+    auto Ui = [&](int a, int b) { return a + int(rng() % unsigned(b - a + 1)); };
+    auto chance = [&](float p) { return U(0.0f, 1.0f) < p; };
+
+    const bool prevAudio = audioReactiveEnabled;
+    ApplyArtPreset(0);              // known-clean baseline (also resets new knobs)
+    audioReactiveEnabled = prevAudio;   // ApplyArtPreset force-enables; keep user's choice
+
+    // Shape + size
+    fluidGPU->param_shapeType = Ui(0, 6);
+    switch (fluidGPU->param_shapeType) {
+        case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
+        case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
+        case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
+        case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
+        default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
+    }
+    // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
+    fluidGPU->param_gravityY = -std::exp(U(std::log(30.0f), std::log(900.0f)));
+    fluidGPU->param_viscosity = U(1, 8);
+    fluidGPU->param_gasConstant = U(1200, 9000);
+    fluidGPU->param_surfaceTension = U(0.0f, 0.12f);
+    // Render mode + palettes
+    const float rmRoll = U(0, 1);
+    useWaterRendering = rmRoll < 0.25f;
+    useImpostors = !useWaterRendering && rmRoll < 0.85f;
+    litParticles = true;
+    paletteId = Ui(0, 23);
+    twoColorEnabled = chance(0.30f);
+    if (twoColorEnabled) {
+        do { paletteId2 = Ui(0, 23); } while (paletteId2 == paletteId);
+        fluidGPU->param_mixPattern = Ui(0, 2);
+    }
+    const int vizChoices[5] = {0, 1, 4, 5, 6};
+    vizMode = vizChoices[Ui(0, 4)];
+    vizRangeMin = 0.0f; vizRangeMax = U(6, 14);
+    paletteFlow = chance(0.5f) ? U(0.05f, 0.25f) : 0.0f;
+    if (paletteId >= 15) patternScale = U(0.6f, 2.0f);
+    // Motion
+    autoOrbitEnabled = chance(0.5f);
+    autoOrbitSpeedDeg = (chance(0.5f) ? 1.0f : -1.0f) * U(4, 20);
+    audioOrbitKick = U(0.0f, 1.0f);
+    if (chance(0.5f)) { vortexBaseSwirl = U(2, 10); vortexInwardPull = U(0, 2); }
+    if (chance(0.25f)) {
+        attractorEnabled = true;
+        attractorStrength = U(4, 15); attractorRadius = U(4, 8); attractorBassKick = U(10, 40);
+        attractorPos[0] = U(-3, 3); attractorPos[1] = U(-2, 4); attractorPos[2] = U(-3, 3);
+    }
+    if (chance(0.20f)) {
+        gravitySpinEnabled = true;
+        gravitySpinSpeedDeg = U(20, 90); gravitySpinTiltDeg = U(15, 40);
+    }
+    if (!attractorEnabled && chance(0.15f)) {
+        fluidGPU->fountainMode = true;
+        fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f);
+    }
+    // Audio kicks (moderate; they only fire when the reactor is on)
+    audioSizeKick = U(0.2f, 0.6f);
+    audioShimmerKick = U(0.3f, 1.0f);
+    audioFoamKick = U(0.2f, 0.8f);
+    audioHueKickDeg = chance(0.4f) ? U(30, 90) : 0.0f;
+    audioFlashKick = U(0.0f, 0.8f);
+    camZoomKick = U(0.0f, 0.25f);
+    // FX (always tasteful, never all maxed)
+    if (chance(0.5f)) { bloomStrength = U(0.2f, 0.7f); bloomThreshold = U(0.45f, 0.75f); }
+    if (chance(0.4f)) trailHalfLife = U(0.15f, 0.7f);
+    if (chance(0.25f)) { const int segs[3] = {4, 6, 8}; kaleidoSegments = segs[Ui(0, 2)]; kaleidoAngleDeg = U(0, 360); }
+    vignetteAmount = U(0.0f, 0.35f);
+    grainAmount = U(0.0f, 0.07f);
+    chromaticAmount = U(0.0f, 0.5f);
+
     pendingReset = true;
 }
 

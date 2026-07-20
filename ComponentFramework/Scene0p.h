@@ -88,6 +88,7 @@ private:
     float   exposure     = 1.0f;
 
     void    ApplyArtPreset(int which);
+    void    SurpriseMe();   // randomize a whole look within curated ranges
 
     // --- My Presets: save/load the full current look to presets/<name>.txt ---
     void    GatherPreset(PresetIO::KV& kv) const;
