@@ -39,6 +39,7 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     waveImpulseShader = LoadComputeShader("shaders/WaveImpulse.comp");
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
     attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
+    fountainShader = LoadComputeShader("shaders/FountainRecycle.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -69,6 +70,7 @@ SPHFluidGPU::~SPHFluidGPU() {
     glDeleteProgram(waveImpulseShader);
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
     if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
+    if (fountainShader)           glDeleteProgram(fountainShader);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -401,7 +403,32 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
         DispatchStreamEmit();
     }
 
+    // 6) Fountain: recycle pooled bottom water back into the upward jet
+    if (fountainMode && !riverMode) DispatchFountainRecycle(timeStep);
+
     glUseProgram(0);
+}
+
+// Recycles pooled water below the drain plane back to the nozzle as a jet.
+// Relies on SSBO binding 0 set by the constraint pass just above.
+void SPHFluidGPU::DispatchFountainRecycle(float dt) {
+    if (!fountainShader) return;
+    const Vec3 half = EffectiveHalf();
+    const Vec3 emit = param_boxCenter + fountainOffset;
+    glUseProgram(fountainShader);
+    glUniform1i(glGetUniformLocation(fountainShader, "numParticles"), int(particles.size()));
+    glUniform3f(glGetUniformLocation(fountainShader, "uEmitterPos"), emit.x, emit.y, emit.z);
+    glUniform1f(glGetUniformLocation(fountainShader, "uEmitterRadius"), fountainRadius);
+    glUniform1f(glGetUniformLocation(fountainShader, "uJetSpeed"), fountainJetSpeedLive);
+    glUniform1f(glGetUniformLocation(fountainShader, "uJetSpread"), fountainSpread);
+    glUniform1f(glGetUniformLocation(fountainShader, "uDrainY"),
+        (param_boxCenter.y - half.y) + fountainDrainLevel);
+    glUniform1f(glGetUniformLocation(fountainShader, "uDrainChance"),
+        std::min(1.0f, fountainDrainPerSec * dt));
+    glUniform1f(glGetUniformLocation(fountainShader, "uRestDensity"), param_restDensity);
+    glUniform1ui(glGetUniformLocation(fountainShader, "uSeed"), fountainSeed++);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
 void SPHFluidGPU::DispatchTerrainConstraints() {

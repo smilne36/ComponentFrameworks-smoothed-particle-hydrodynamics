@@ -154,6 +154,10 @@ private:
     float   camZoomKick = 0.0f;
     float   camDistLive = 22.0f;   // camDist with the bass kick applied
 
+    // --- Fountain (UI-side jet controls; mode lives on fluidGPU) ---
+    float   fountainJetSpeed = 25.0f;
+    float   fountainBassKick = 0.6f;   // bass -> jet speed boost
+
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
     // (base, or base*(1+kick*envelope) when audio-reactive is on), so there is

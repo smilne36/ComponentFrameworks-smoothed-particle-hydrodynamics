@@ -73,6 +73,7 @@ public:
     GLuint waveImpulseShader = 0;
     GLuint vortexImpulseShader = 0;
     GLuint attractorImpulseShader = 0;
+    GLuint fountainShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;
@@ -120,6 +121,17 @@ public:
         default: return param_boxHalf;
         }
     }
+
+    // --- Fountain mode (jet from a nozzle; pooled water recycles) ---
+    bool  fountainMode = false;
+    Vec3  fountainOffset = Vec3(0.0f, -5.0f, 0.0f);   // nozzle, container-relative
+    float fountainRadius = 1.0f;
+    float fountainSpread = 0.25f;
+    float fountainJetSpeedLive = 25.0f;   // written per frame (audio-kicked)
+    float fountainDrainLevel = 1.0f;      // height above container bottom that drains
+    float fountainDrainPerSec = 2.0f;
+    unsigned fountainSeed = 0;
+    void  DispatchFountainRecycle(float dt);
 
     // --- River / Stream mode ---
     bool  riverMode = false;

@@ -185,6 +185,7 @@
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\defaultFrag.glsl" />
+    <None Include="shaders\FountainRecycle.comp" />
     <None Include="shaders\defaultVert.glsl" />
     <None Include="shaders\lineFrag.glsl" />
     <None Include="shaders\lineVert.glsl" />

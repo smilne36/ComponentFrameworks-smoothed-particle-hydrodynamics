@@ -803,6 +803,19 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::TextDisabled("Tips gravity sideways and sweeps it around -- the fluid\nrolls around the container. Great with capsule and torus.");
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Fountain")) {
+            ImGui::PushID("Fountain");
+            ImGui::Checkbox("Fountain Mode", &fluidGPU->fountainMode);
+            ImGui::SliderFloat3("Nozzle (rel.)", &fluidGPU->fountainOffset.x, -10.0f, 10.0f);
+            ImGui::SliderFloat("Jet Speed", &fountainJetSpeed, 5.0f, 60.0f);
+            ImGui::SliderFloat("Spread", &fluidGPU->fountainSpread, 0.0f, 1.0f);
+            ImGui::SliderFloat("Nozzle Radius", &fluidGPU->fountainRadius, 0.2f, 4.0f);
+            ImGui::SliderFloat("Pool Drain Height", &fluidGPU->fountainDrainLevel, 0.2f, 5.0f);
+            ImGui::SliderFloat("Drain Rate (/s)", &fluidGPU->fountainDrainPerSec, 0.2f, 10.0f);
+            ImGui::SliderFloat("Bass Jet Kick", &fountainBassKick, 0.0f, 2.0f);
+            ImGui::TextDisabled("Pooled water at the bottom recycles into an upward jet.\nBass makes the jet surge.");
+            ImGui::PopID();
+        }
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Audio")) {
@@ -1189,6 +1202,7 @@ void Scene0p::ApplyArtPreset(int which) {
     attractorEnabled = false;
     gravitySpinEnabled = false; camZoomKick = 0.0f;
     twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
+    fluidGPU->fountainMode = false;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -2290,6 +2304,9 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
             fluidGPU->param_boxCenter + Vec3(attractorPos[0], attractorPos[1], attractorPos[2]),
             pull * dt, attractorRadius);
     }
+
+    // Fountain: bass boosts the jet; DispatchCompute reads this per substep
+    fluidGPU->fountainJetSpeedLive = fountainJetSpeed * (1.0f + fountainBassKick * bass);
 
     // Post-FX clock + trail decay: advanced here (not wall-clock) so film
     // grain and trail fade are framerate-independent and reel-deterministic.
