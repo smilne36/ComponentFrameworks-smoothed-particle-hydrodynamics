@@ -103,6 +103,8 @@ bool Scene0p::OnCreate() {
     if (!postBrightShader->OnCreate()) { std::cerr << "postBright shader failed\n"; return false; }
     postBlurShader = new Shader("shaders/screenQuad.vert", "shaders/postBlur.frag");
     if (!postBlurShader->OnCreate()) { std::cerr << "postBlur shader failed\n"; return false; }
+    postTrailShader = new Shader("shaders/screenQuad.vert", "shaders/postTrails.frag");
+    if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -1685,6 +1687,26 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glBindVertexArray(ssfrQuadVAO);
 
     GLuint baseTex = postSceneTex;
+
+    // Trails: fold this frame into the decaying history buffer; everything
+    // downstream (bloom, kaleidoscope, grade) then reads the trailed image.
+    if (trailHalfLife > 1e-3f && postTrailShader && trailFBO[0]) {
+        const int dst = trailPing ^ 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, trailFBO[dst]);
+        glViewport(0, 0, postW, postH);
+        glUseProgram(postTrailShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, postSceneTex);
+        glUniform1i(postTrailShader->GetUniformID("sceneTex"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, trailTex[trailPing]);
+        glUniform1i(postTrailShader->GetUniformID("historyTex"), 1);
+        glUniform1f(postTrailShader->GetUniformID("decay"), trailDecayLive);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE0);
+        trailPing = dst;                 // mutable: ping-pong advances per frame
+        baseTex = trailTex[dst];
+    }
 
     // Bloom: bright-pass at half res, then two separable gaussian rounds.
     // The blur step scales with output height so the glow width matches at
