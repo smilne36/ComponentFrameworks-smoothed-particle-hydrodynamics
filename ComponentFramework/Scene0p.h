@@ -142,6 +142,16 @@ private:
     float   attractorRadius   = 6.0f;
     float   attractorBassKick = 25.0f;
 
+    // --- Gravity spin (gravity direction sweeps around; fluid rolls) ---
+    bool    gravitySpinEnabled  = false;
+    float   gravitySpinSpeedDeg = 45.0f;
+    float   gravitySpinTiltDeg  = 25.0f;
+    float   gravitySpinPhase    = 0.0f;
+
+    // --- Beat camera zoom (bass pulls the camera in) ---
+    float   camZoomKick = 0.0f;
+    float   camDistLive = 22.0f;   // camDist with the bass kick applied
+
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
     // (base, or base*(1+kick*envelope) when audio-reactive is on), so there is

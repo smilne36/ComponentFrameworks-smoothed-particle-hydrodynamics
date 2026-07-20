@@ -448,7 +448,7 @@ void Scene0p::RebuildOrbitCamera() {
     cameraPos = cameraTarget + Vec3(
         std::sin(camAzimuth) * cosEl,
         sinEl,
-        std::cos(camAzimuth) * cosEl) * camDist;
+        std::cos(camAzimuth) * cosEl) * camDistLive;   // camDist + beat zoom kick
     viewMatrix = MMath::lookAt(cameraPos, cameraTarget, cameraUp);
 }
 
@@ -784,6 +784,14 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::TextDisabled("A movable gravity well; bass yanks the fluid toward it.");
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Gravity Spin")) {
+            ImGui::PushID("GravitySpin");
+            ImGui::Checkbox("Enable", &gravitySpinEnabled);
+            ImGui::SliderFloat("Spin (deg/s)", &gravitySpinSpeedDeg, -180.0f, 180.0f);
+            ImGui::SliderFloat("Tilt (deg)", &gravitySpinTiltDeg, 0.0f, 60.0f);
+            ImGui::TextDisabled("Tips gravity sideways and sweeps it around -- the fluid\nrolls around the container. Great with capsule and torus.");
+            ImGui::PopID();
+        }
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Audio")) {
@@ -814,6 +822,7 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Foam Kick (mid)",  &audioFoamKick,    0.0f, 2.0f);
             ImGui::SliderFloat("Hue Kick (bass)",  &audioHueKickDeg,  0.0f, 180.0f);
             ImGui::SliderFloat("Flash (bass)",     &audioFlashKick,   0.0f, 2.0f);
+            ImGui::SliderFloat("Zoom Kick (bass)", &camZoomKick,      0.0f, 0.5f);
 
             if (ImGui::TreeNode("Advanced")) {
                 float atk = audioReactive->attackMs.load();
@@ -1167,6 +1176,7 @@ void Scene0p::ApplyArtPreset(int which) {
     kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
     vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
     attractorEnabled = false;
+    gravitySpinEnabled = false; camZoomKick = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -2240,6 +2250,23 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     hueShiftDegLive       = hueShiftDeg       + audioHueKickDeg * bass;
     orbitSpeedDegLive     = autoOrbitSpeedDeg * (1.0f + audioOrbitKick   * bass);
 
+    // Beat camera zoom: bass pulls the camera in (RebuildOrbitCamera reads
+    // camDistLive; recomputed every frame from the untouched camDist base).
+    camDistLive = camDist * (1.0f - camZoomKick * std::min(bass, 1.5f));
+
+    // Gravity spin: tip gravity sideways and sweep it around Y, so the fluid
+    // rolls around the container. Phase advances by dt (reel-deterministic).
+    if (gravitySpinEnabled) {
+        gravitySpinPhase += gravitySpinSpeedDeg * (3.14159265f / 180.0f) * dt;
+        const float g    = std::fabs(fluidGPU->param_gravityY);
+        const float tilt = gravitySpinTiltDeg * (3.14159265f / 180.0f);
+        fluidGPU->param_gravityX = g * std::sin(tilt) * std::cos(gravitySpinPhase);
+        fluidGPU->param_gravityZ = g * std::sin(tilt) * std::sin(gravitySpinPhase);
+    } else {
+        fluidGPU->param_gravityX = 0.0f;
+        fluidGPU->param_gravityZ = 0.0f;
+    }
+
     // Attractor orb: constant pull + bass-pulse kick (kick pre-multiplied by
     // dt). Position is container-relative so presets stay portable.
     if (attractorEnabled) {
@@ -2333,6 +2360,7 @@ void Scene0p::StartReelExport() {
 
     // Deterministic start: fresh fluid + zeroed reaction phases.
     audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
+    gravitySpinPhase = 0.0f;
     fluidGPU->ResetSimulation();
     fluidGPU->param_pause = false;
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
