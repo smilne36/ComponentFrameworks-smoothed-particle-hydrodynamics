@@ -10,6 +10,7 @@
 #include "Shader.h"
 #include "AudioReactive.h"
 #include "ReelExport.h"
+#include "PresetIO.h"
 #include <glad.h>
 #include <limits>
 using namespace MATH;
@@ -87,6 +88,14 @@ private:
     float   exposure     = 1.0f;
 
     void    ApplyArtPreset(int which);
+
+    // --- My Presets: save/load the full current look to presets/<name>.txt ---
+    void    GatherPreset(PresetIO::KV& kv) const;
+    void    ApplyPresetKV(const PresetIO::KV& kv);
+    char    presetNameBuf[64] = "";
+    std::vector<std::string> presetList;
+    int     presetSelIdx = -1;
+    std::string presetStatus;
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 

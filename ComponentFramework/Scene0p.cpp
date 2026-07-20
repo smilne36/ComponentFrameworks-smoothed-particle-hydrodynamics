@@ -530,6 +530,54 @@ void Scene0p::Update(const float deltaTime) {
 
     if (ImGui::BeginTabBar("##main")) {
     if (ImGui::BeginTabItem("Look")) {
+        if (ImGui::CollapsingHeader("My Presets")) {
+            ImGui::PushID("MyPresets");
+            ImGui::InputText("Name", presetNameBuf, sizeof(presetNameBuf));
+            ImGui::SameLine();
+            if (ImGui::Button("Save")) {
+                const std::string name = PresetIO::SanitizeName(presetNameBuf);
+                std::error_code ec;
+                std::filesystem::create_directories("presets", ec);
+                PresetIO::KV kv;
+                GatherPreset(kv);
+                if (PresetIO::SaveFile("presets/" + name + ".txt", kv)) {
+                    presetStatus = "Saved " + name;
+                    presetList = PresetIO::ListPresets("presets");
+                } else {
+                    presetStatus = "FAILED to save " + name;
+                }
+            }
+            if (ImGui::Button("Refresh List")) presetList = PresetIO::ListPresets("presets");
+            if (!presetList.empty()) {
+                std::string comboItems;
+                for (const auto& n : presetList) { comboItems += n; comboItems += '\0'; }
+                comboItems += '\0';
+                ImGui::Combo("Preset", &presetSelIdx, comboItems.c_str());
+                const bool haveSel = presetSelIdx >= 0 && presetSelIdx < int(presetList.size());
+                if (ImGui::Button("Load") && haveSel) {
+                    PresetIO::KV kv;
+                    if (PresetIO::LoadFile("presets/" + presetList[presetSelIdx] + ".txt", kv)) {
+                        ApplyPresetKV(kv);
+                        presetStatus = "Loaded " + presetList[presetSelIdx];
+                    } else {
+                        presetStatus = "FAILED to load " + presetList[presetSelIdx];
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete") && haveSel) {
+                    std::error_code ec;
+                    std::filesystem::remove("presets/" + presetList[presetSelIdx] + ".txt", ec);
+                    presetStatus = ec ? "FAILED to delete" : ("Deleted " + presetList[presetSelIdx]);
+                    presetList = PresetIO::ListPresets("presets");
+                    presetSelIdx = -1;
+                }
+            } else {
+                ImGui::TextDisabled("No saved presets yet. Dial in a look and hit Save.");
+            }
+            if (!presetStatus.empty()) ImGui::TextWrapped("%s", presetStatus.c_str());
+            ImGui::TextDisabled("Saves the FULL look (physics + colors + audio + FX) to\npresets/<name>.txt -- share the file to share the look.");
+            ImGui::PopID();
+        }
         if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("Presets");
             ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
@@ -1484,6 +1532,300 @@ void Scene0p::ApplyArtPreset(int which) {
         audioReactive->releaseMs.store(presetReleaseMs);
     }
     pendingReset = true;
+}
+
+// ---------------------------------------------------------------------------
+// My Presets: the full current look as key=value pairs. Unknown keys are
+// ignored on load and missing keys keep current values, so preset files stay
+// compatible as the app grows. Transient state (phases, *Live mirrors, camera
+// pose, GL handles) is deliberately NOT serialized.
+// ---------------------------------------------------------------------------
+void Scene0p::GatherPreset(PresetIO::KV& kv) const {
+    using namespace PresetIO;
+    // sim / physics
+    PutF(kv, "sim.h", fluidGPU->param_h);
+    PutF(kv, "sim.mass", fluidGPU->param_mass);
+    PutF(kv, "sim.restDensity", fluidGPU->param_restDensity);
+    PutF(kv, "sim.gasConstant", fluidGPU->param_gasConstant);
+    PutF(kv, "sim.viscosity", fluidGPU->param_viscosity);
+    PutF(kv, "sim.gravityY", fluidGPU->param_gravityY);
+    PutF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
+    PutF(kv, "sim.timeStep", fluidGPU->param_timeStep);
+    PutB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+    PutF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    PutF(kv, "sim.foamGen", fluidGPU->param_foamGen);
+    PutF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
+    PutF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
+    PutF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
+    PutI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+    // container
+    const float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
+    const float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
+    const float be[3] = { fluidGPU->param_boxEulerDeg.x, fluidGPU->param_boxEulerDeg.y, fluidGPU->param_boxEulerDeg.z };
+    PutF3(kv, "box.center", bc);
+    PutF3(kv, "box.half", bh);
+    PutF3(kv, "box.euler", be);
+    PutI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    PutB(kv, "box.outline", showContainerOutline);
+    PutF3(kv, "box.outlineColor", containerOutlineColor);
+    // look
+    PutI(kv, "look.renderMode", useWaterRendering ? 0 : (useImpostors ? 1 : 2));
+    PutI(kv, "look.vizMode", vizMode);
+    PutF(kv, "look.vizRangeMin", vizRangeMin);
+    PutF(kv, "look.vizRangeMax", vizRangeMax);
+    PutI(kv, "look.paletteId", paletteId);
+    PutB(kv, "look.twoColor", twoColorEnabled);
+    PutI(kv, "look.paletteId2", paletteId2);
+    PutI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    PutF(kv, "look.hueShift", hueShiftDeg);
+    PutF(kv, "look.satMul", satMul);
+    PutF(kv, "look.brightMul", brightMul);
+    PutF(kv, "look.contrastMul", contrastMul);
+    PutB(kv, "look.invert", invertColor);
+    PutB(kv, "look.lit", litParticles);
+    PutF(kv, "look.iridFreq", iridFreq);
+    PutF(kv, "look.iridShift", iridShift);
+    PutF(kv, "look.paletteFlow", paletteFlow);
+    PutF(kv, "look.patternScale", patternScale);
+    PutF3(kv, "look.duoA", duoColorA);
+    PutF3(kv, "look.duoB", duoColorB);
+    PutB(kv, "look.skyOn", showSkyBackground);
+    PutF3(kv, "look.bg", bgColor);
+    PutF3(kv, "look.skyHorizon", skyColor);
+    PutF3(kv, "look.skyZenith", skyZenith);
+    PutF3(kv, "look.reflect", envReflectColor);
+    PutF(kv, "look.foamAmount", foamAmount);
+    PutF(kv, "look.exposure", exposure);
+    PutF(kv, "look.farPlane", viewFarPlane);
+    // water surface
+    PutB(kv, "water.halfRes", ssfrHalfRes);
+    PutI(kv, "water.smoothIter", smoothIterations);
+    PutF(kv, "water.filterScale", worldFilterScale);
+    PutF(kv, "water.surfaceMerge", surfaceMerge);
+    PutF(kv, "water.thickStrength", thicknessStrength);
+    PutF(kv, "water.thickFalloff", thicknessFalloff);
+    PutF(kv, "water.radiusScale", renderRadiusScale);
+    PutF3(kv, "water.extinction", waterExtinction);
+    PutF(kv, "water.thicknessScale", thicknessScale);
+    PutF3(kv, "water.sunDir", sunDirWorld);
+    PutF3(kv, "water.sunColor", sunColor);
+    PutF3(kv, "water.deepColor", deepWaterColor);
+    PutF(kv, "water.specPower", specularPower);
+    PutF(kv, "water.specStrength", specularStrength);
+    PutF(kv, "water.refraction", refractionStrength);
+    PutF(kv, "water.fresnelBias", fresnelBias);
+    // fx
+    PutF(kv, "fx.bloom", bloomStrength);
+    PutF(kv, "fx.bloomThreshold", bloomThreshold);
+    PutF(kv, "fx.trailHalfLife", trailHalfLife);
+    PutI(kv, "fx.kaleidoSegments", kaleidoSegments);
+    PutF(kv, "fx.kaleidoAngle", kaleidoAngleDeg);
+    PutF(kv, "fx.vignette", vignetteAmount);
+    PutF(kv, "fx.grain", grainAmount);
+    PutF(kv, "fx.chromatic", chromaticAmount);
+    // motion
+    PutB(kv, "motion.orbitOn", autoOrbitEnabled);
+    PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
+    PutF(kv, "motion.orbitKick", audioOrbitKick);
+    PutF(kv, "motion.vortexBase", vortexBaseSwirl);
+    PutF(kv, "motion.vortexAudio", audioVortexForce);
+    PutF(kv, "motion.vortexInward", vortexInwardPull);
+    PutB(kv, "motion.spinOn", gravitySpinEnabled);
+    PutF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
+    PutF(kv, "motion.spinTilt", gravitySpinTiltDeg);
+    PutB(kv, "motion.attractorOn", attractorEnabled);
+    PutF3(kv, "motion.attractorPos", attractorPos);
+    PutF(kv, "motion.attractorPull", attractorStrength);
+    PutF(kv, "motion.attractorRadius", attractorRadius);
+    PutF(kv, "motion.attractorKick", attractorBassKick);
+    PutB(kv, "motion.fountainOn", fluidGPU->fountainMode);
+    const float fo[3] = { fluidGPU->fountainOffset.x, fluidGPU->fountainOffset.y, fluidGPU->fountainOffset.z };
+    PutF3(kv, "motion.fountainPos", fo);
+    PutF(kv, "motion.fountainRadius", fluidGPU->fountainRadius);
+    PutF(kv, "motion.fountainJet", fountainJetSpeed);
+    PutF(kv, "motion.fountainSpread", fluidGPU->fountainSpread);
+    PutF(kv, "motion.fountainDrainLevel", fluidGPU->fountainDrainLevel);
+    PutF(kv, "motion.fountainDrainRate", fluidGPU->fountainDrainPerSec);
+    PutF(kv, "motion.fountainKick", fountainBassKick);
+    // waves (manual panel)
+    PutF(kv, "waves.amplitude", waveAmplitude);
+    PutF(kv, "waves.wavelength", waveWavelength);
+    PutF(kv, "waves.phaseSpeed", wavePhaseSpeed);
+    PutI(kv, "waves.dir", waveDirIdx);
+    PutB(kv, "waves.continuous", continuousWave);
+    // audio
+    PutB(kv, "audio.enabled", audioReactiveEnabled);
+    PutF(kv, "audio.masterGain", audioMasterGain);
+    if (audioReactive) {
+        PutF(kv, "audio.attackMs", audioReactive->attackMs.load());
+        PutF(kv, "audio.releaseMs", audioReactive->releaseMs.load());
+    }
+    PutF(kv, "audio.bassForce", audioBassForce);
+    PutF(kv, "audio.bassThreshold", audioBassThreshold);
+    PutF(kv, "audio.bassWavelength", audioBassWavelength);
+    PutF(kv, "audio.bassPhaseSpeed", audioBassPhaseSpeed);
+    PutF(kv, "audio.midForce", audioMidForce);
+    PutF(kv, "audio.midThreshold", audioMidThreshold);
+    PutF(kv, "audio.midWavelength", audioMidWavelength);
+    PutF(kv, "audio.midRotSpeed", audioMidRotSpeed);
+    PutF(kv, "audio.trebleForce", audioTrebleForce);
+    PutF(kv, "audio.trebleThreshold", audioTrebleThreshold);
+    PutF(kv, "audio.trebleWavelength", audioTrebleWavelength);
+    PutF(kv, "audio.treblePhaseSpeed", audioTreblePhaseSpeed);
+    PutF(kv, "audio.sizeKick", audioSizeKick);
+    PutF(kv, "audio.shimmerKick", audioShimmerKick);
+    PutF(kv, "audio.foamKick", audioFoamKick);
+    PutF(kv, "audio.hueKick", audioHueKickDeg);
+    PutF(kv, "audio.flashKick", audioFlashKick);
+    PutF(kv, "audio.zoomKick", camZoomKick);
+}
+
+void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
+    using namespace PresetIO;
+    // sim / physics
+    fluidGPU->param_h = GetF(kv, "sim.h", fluidGPU->param_h);
+    fluidGPU->param_mass = GetF(kv, "sim.mass", fluidGPU->param_mass);
+    fluidGPU->param_restDensity = GetF(kv, "sim.restDensity", fluidGPU->param_restDensity);
+    fluidGPU->param_gasConstant = GetF(kv, "sim.gasConstant", fluidGPU->param_gasConstant);
+    fluidGPU->param_viscosity = GetF(kv, "sim.viscosity", fluidGPU->param_viscosity);
+    fluidGPU->param_gravityY = GetF(kv, "sim.gravityY", fluidGPU->param_gravityY);
+    fluidGPU->param_surfaceTension = GetF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
+    fluidGPU->param_timeStep = GetF(kv, "sim.timeStep", fluidGPU->param_timeStep);
+    fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+    fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    fluidGPU->param_foamGen = GetF(kv, "sim.foamGen", fluidGPU->param_foamGen);
+    fluidGPU->param_foamVelRef = GetF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
+    fluidGPU->param_wallRestitution = GetF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
+    fluidGPU->param_wallFriction = GetF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
+    const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+    fluidGPU->numParticles = size_t(std::max(1000, pc));
+    uiParticleCount = int(fluidGPU->numParticles);
+    // container
+    float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
+    float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
+    float be[3] = { fluidGPU->param_boxEulerDeg.x, fluidGPU->param_boxEulerDeg.y, fluidGPU->param_boxEulerDeg.z };
+    GetF3(kv, "box.center", bc);  fluidGPU->param_boxCenter  = Vec3(bc[0], bc[1], bc[2]);
+    GetF3(kv, "box.half", bh);    fluidGPU->param_boxHalf    = Vec3(bh[0], bh[1], bh[2]);
+    GetF3(kv, "box.euler", be);   fluidGPU->param_boxEulerDeg = Vec3(be[0], be[1], be[2]);
+    fluidGPU->param_shapeType = GetI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    showContainerOutline = GetB(kv, "box.outline", showContainerOutline);
+    GetF3(kv, "box.outlineColor", containerOutlineColor);
+    // look
+    const int rm = GetI(kv, "look.renderMode", useWaterRendering ? 0 : (useImpostors ? 1 : 2));
+    useWaterRendering = (rm == 0);
+    useImpostors      = (rm == 1);
+    vizMode = GetI(kv, "look.vizMode", vizMode);
+    vizRangeMin = GetF(kv, "look.vizRangeMin", vizRangeMin);
+    vizRangeMax = GetF(kv, "look.vizRangeMax", vizRangeMax);
+    paletteId = GetI(kv, "look.paletteId", paletteId);
+    twoColorEnabled = GetB(kv, "look.twoColor", twoColorEnabled);
+    paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
+    fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
+    satMul = GetF(kv, "look.satMul", satMul);
+    brightMul = GetF(kv, "look.brightMul", brightMul);
+    contrastMul = GetF(kv, "look.contrastMul", contrastMul);
+    invertColor = GetB(kv, "look.invert", invertColor);
+    litParticles = GetB(kv, "look.lit", litParticles);
+    iridFreq = GetF(kv, "look.iridFreq", iridFreq);
+    iridShift = GetF(kv, "look.iridShift", iridShift);
+    paletteFlow = GetF(kv, "look.paletteFlow", paletteFlow);
+    patternScale = GetF(kv, "look.patternScale", patternScale);
+    GetF3(kv, "look.duoA", duoColorA);
+    GetF3(kv, "look.duoB", duoColorB);
+    showSkyBackground = GetB(kv, "look.skyOn", showSkyBackground);
+    GetF3(kv, "look.bg", bgColor);
+    GetF3(kv, "look.skyHorizon", skyColor);
+    GetF3(kv, "look.skyZenith", skyZenith);
+    GetF3(kv, "look.reflect", envReflectColor);
+    foamAmount = GetF(kv, "look.foamAmount", foamAmount);
+    exposure = GetF(kv, "look.exposure", exposure);
+    viewFarPlane = GetF(kv, "look.farPlane", viewFarPlane);
+    // water surface
+    ssfrHalfRes = GetB(kv, "water.halfRes", ssfrHalfRes);
+    smoothIterations = GetI(kv, "water.smoothIter", smoothIterations);
+    worldFilterScale = GetF(kv, "water.filterScale", worldFilterScale);
+    surfaceMerge = GetF(kv, "water.surfaceMerge", surfaceMerge);
+    thicknessStrength = GetF(kv, "water.thickStrength", thicknessStrength);
+    thicknessFalloff = GetF(kv, "water.thickFalloff", thicknessFalloff);
+    renderRadiusScale = GetF(kv, "water.radiusScale", renderRadiusScale);
+    GetF3(kv, "water.extinction", waterExtinction);
+    thicknessScale = GetF(kv, "water.thicknessScale", thicknessScale);
+    GetF3(kv, "water.sunDir", sunDirWorld);
+    GetF3(kv, "water.sunColor", sunColor);
+    GetF3(kv, "water.deepColor", deepWaterColor);
+    specularPower = GetF(kv, "water.specPower", specularPower);
+    specularStrength = GetF(kv, "water.specStrength", specularStrength);
+    refractionStrength = GetF(kv, "water.refraction", refractionStrength);
+    fresnelBias = GetF(kv, "water.fresnelBias", fresnelBias);
+    // fx
+    bloomStrength = GetF(kv, "fx.bloom", bloomStrength);
+    bloomThreshold = GetF(kv, "fx.bloomThreshold", bloomThreshold);
+    trailHalfLife = GetF(kv, "fx.trailHalfLife", trailHalfLife);
+    kaleidoSegments = GetI(kv, "fx.kaleidoSegments", kaleidoSegments);
+    kaleidoAngleDeg = GetF(kv, "fx.kaleidoAngle", kaleidoAngleDeg);
+    vignetteAmount = GetF(kv, "fx.vignette", vignetteAmount);
+    grainAmount = GetF(kv, "fx.grain", grainAmount);
+    chromaticAmount = GetF(kv, "fx.chromatic", chromaticAmount);
+    // motion
+    autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
+    autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
+    audioOrbitKick = GetF(kv, "motion.orbitKick", audioOrbitKick);
+    vortexBaseSwirl = GetF(kv, "motion.vortexBase", vortexBaseSwirl);
+    audioVortexForce = GetF(kv, "motion.vortexAudio", audioVortexForce);
+    vortexInwardPull = GetF(kv, "motion.vortexInward", vortexInwardPull);
+    gravitySpinEnabled = GetB(kv, "motion.spinOn", gravitySpinEnabled);
+    gravitySpinSpeedDeg = GetF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
+    gravitySpinTiltDeg = GetF(kv, "motion.spinTilt", gravitySpinTiltDeg);
+    attractorEnabled = GetB(kv, "motion.attractorOn", attractorEnabled);
+    GetF3(kv, "motion.attractorPos", attractorPos);
+    attractorStrength = GetF(kv, "motion.attractorPull", attractorStrength);
+    attractorRadius = GetF(kv, "motion.attractorRadius", attractorRadius);
+    attractorBassKick = GetF(kv, "motion.attractorKick", attractorBassKick);
+    fluidGPU->fountainMode = GetB(kv, "motion.fountainOn", fluidGPU->fountainMode);
+    float fo[3] = { fluidGPU->fountainOffset.x, fluidGPU->fountainOffset.y, fluidGPU->fountainOffset.z };
+    GetF3(kv, "motion.fountainPos", fo);
+    fluidGPU->fountainOffset = Vec3(fo[0], fo[1], fo[2]);
+    fluidGPU->fountainRadius = GetF(kv, "motion.fountainRadius", fluidGPU->fountainRadius);
+    fountainJetSpeed = GetF(kv, "motion.fountainJet", fountainJetSpeed);
+    fluidGPU->fountainSpread = GetF(kv, "motion.fountainSpread", fluidGPU->fountainSpread);
+    fluidGPU->fountainDrainLevel = GetF(kv, "motion.fountainDrainLevel", fluidGPU->fountainDrainLevel);
+    fluidGPU->fountainDrainPerSec = GetF(kv, "motion.fountainDrainRate", fluidGPU->fountainDrainPerSec);
+    fountainBassKick = GetF(kv, "motion.fountainKick", fountainBassKick);
+    // waves
+    waveAmplitude = GetF(kv, "waves.amplitude", waveAmplitude);
+    waveWavelength = GetF(kv, "waves.wavelength", waveWavelength);
+    wavePhaseSpeed = GetF(kv, "waves.phaseSpeed", wavePhaseSpeed);
+    waveDirIdx = GetI(kv, "waves.dir", waveDirIdx);
+    continuousWave = GetB(kv, "waves.continuous", continuousWave);
+    // audio
+    audioReactiveEnabled = GetB(kv, "audio.enabled", audioReactiveEnabled);
+    audioMasterGain = GetF(kv, "audio.masterGain", audioMasterGain);
+    audioBassForce = GetF(kv, "audio.bassForce", audioBassForce);
+    audioBassThreshold = GetF(kv, "audio.bassThreshold", audioBassThreshold);
+    audioBassWavelength = GetF(kv, "audio.bassWavelength", audioBassWavelength);
+    audioBassPhaseSpeed = GetF(kv, "audio.bassPhaseSpeed", audioBassPhaseSpeed);
+    audioMidForce = GetF(kv, "audio.midForce", audioMidForce);
+    audioMidThreshold = GetF(kv, "audio.midThreshold", audioMidThreshold);
+    audioMidWavelength = GetF(kv, "audio.midWavelength", audioMidWavelength);
+    audioMidRotSpeed = GetF(kv, "audio.midRotSpeed", audioMidRotSpeed);
+    audioTrebleForce = GetF(kv, "audio.trebleForce", audioTrebleForce);
+    audioTrebleThreshold = GetF(kv, "audio.trebleThreshold", audioTrebleThreshold);
+    audioTrebleWavelength = GetF(kv, "audio.trebleWavelength", audioTrebleWavelength);
+    audioTreblePhaseSpeed = GetF(kv, "audio.treblePhaseSpeed", audioTreblePhaseSpeed);
+    audioSizeKick = GetF(kv, "audio.sizeKick", audioSizeKick);
+    audioShimmerKick = GetF(kv, "audio.shimmerKick", audioShimmerKick);
+    audioFoamKick = GetF(kv, "audio.foamKick", audioFoamKick);
+    audioHueKickDeg = GetF(kv, "audio.hueKick", audioHueKickDeg);
+    audioFlashKick = GetF(kv, "audio.flashKick", audioFlashKick);
+    camZoomKick = GetF(kv, "audio.zoomKick", camZoomKick);
+    if (audioReactive) {
+        audioReactive->gain.store(audioMasterGain);
+        audioReactive->attackMs.store(GetF(kv, "audio.attackMs", audioReactive->attackMs.load()));
+        audioReactive->releaseMs.store(GetF(kv, "audio.releaseMs", audioReactive->releaseMs.load()));
+    }
+
+    pendingReset = true;   // respawn with the loaded shape/count/mix pattern
 }
 
 // Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
