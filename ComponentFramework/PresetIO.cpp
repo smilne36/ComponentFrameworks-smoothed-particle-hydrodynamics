@@ -1,3 +1,8 @@
+// std::sscanf (used to parse "x,y,z" triples below) trips MSVC's C4996
+// "consider sscanf_s" deprecation warning; silence it the same way the
+// vendored stb TUs do. Must precede any CRT header include.
+#define _CRT_SECURE_NO_WARNINGS
+
 #include "PresetIO.h"
 
 #include <algorithm>
