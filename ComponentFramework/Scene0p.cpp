@@ -69,6 +69,8 @@ bool Scene0p::OnCreate() {
     uiParticleCount = int(fluidGPU->numParticles);   // keep the Performance slider in sync
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
 
+    presetList = PresetIO::ListPresets("presets");   // sequencer combos need this before the Look tab is opened
+
     lineShader = new Shader("shaders/lineVert.glsl", "shaders/lineFrag.glsl");
     if (!lineShader->OnCreate()) { std::cerr << "line shader failed\n"; return false; }
     glGenVertexArrays(1, &boxVAO);
@@ -1125,6 +1127,107 @@ void Scene0p::Update(const float deltaTime) {
             }
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Drop Sequencer")) {
+            ImGui::PushID("DropSeq");
+            ImGui::Checkbox("Enable in exports", &seqEnabled);
+            ImGui::TextDisabled(
+                "Fires saved presets at set times while a reel renders:\n"
+                "Cut = instant slam on the beat, otherwise a smooth morph.\n"
+                "Particle count / spawn layout never change mid-song.");
+            if (ImGui::Button("Refresh Presets")) presetList = PresetIO::ListPresets("presets");
+
+            std::string comboItems("(none)");
+            comboItems += '\0';
+            for (const auto& n : presetList) { comboItems += n; comboItems += '\0'; }
+            comboItems += '\0';
+
+            int deleteIdx = -1;
+            for (int i = 0; i < int(seqCues.size()); ++i) {
+                SeqCue& c = seqCues[i];
+                ImGui::PushID(i);
+                ImGui::SetNextItemWidth(70.0f);
+                ImGui::InputFloat("s", &c.time, 0.0f, 0.0f, "%.2f");
+                ImGui::SameLine();
+                int sel = 0;
+                for (int k = 0; k < int(presetList.size()); ++k)
+                    if (presetList[k] == c.preset) { sel = k + 1; break; }
+                ImGui::SetNextItemWidth(150.0f);
+                if (ImGui::Combo("##preset", &sel, comboItems.c_str()))
+                    c.preset = (sel <= 0) ? std::string() : presetList[sel - 1];
+                ImGui::SameLine();
+                ImGui::Checkbox("Cut", &c.cut);
+                if (!c.cut) {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputFloat("morph s", &c.morphSec, 0.0f, 0.0f, "%.1f");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("X")) deleteIdx = i;
+                ImGui::PopID();
+            }
+            if (deleteIdx >= 0) seqCues.erase(seqCues.begin() + deleteIdx);
+
+            if (ImGui::Button("+ Add Cue")) {
+                SeqCue c;
+                c.time = seqCues.empty() ? 0.0f : seqCues.back().time + 10.0f;
+                seqCues.push_back(c);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Auto-Detect Drops (bass)")) {
+                const int fps = (reelFpsIdx == 1) ? 60 : 30;
+                ReelAnalysis a = AnalyzeTrack(reelAudioPath, fps, 0.0f);
+                if (!a.error.empty()) {
+                    seqStatus = "Detect FAILED: " + a.error;
+                } else {
+                    std::vector<float> drops = DetectDrops(a.bass, fps, 8.0f);
+                    seqCues.clear();
+                    for (float t : drops) { SeqCue c; c.time = t; seqCues.push_back(c); }
+                    seqStatus = "Found " + std::to_string(int(drops.size())) +
+                                " drops -- pick a preset for each cue.";
+                }
+            }
+
+            if (ImGui::Button("Save Seq")) {
+                std::error_code ec;
+                std::filesystem::create_directories(reelOutDir, ec);
+                PresetIO::KV kv;
+                PresetIO::PutI(kv, "seq.count", int(seqCues.size()));
+                for (int i = 0; i < int(seqCues.size()); ++i) {
+                    const std::string p = "seq." + std::to_string(i) + ".";
+                    PresetIO::PutF(kv, (p + "time").c_str(), seqCues[i].time);
+                    kv[p + "preset"] = seqCues[i].preset;
+                    PresetIO::PutF(kv, (p + "morph").c_str(), seqCues[i].morphSec);
+                    PresetIO::PutB(kv, (p + "cut").c_str(), seqCues[i].cut);
+                }
+                const std::string path = (std::filesystem::path(reelOutDir) / "sequence.txt").string();
+                seqStatus = PresetIO::SaveFile(path, kv) ? ("Saved " + path)
+                                                         : ("FAILED to save " + path);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load Seq")) {
+                const std::string path = (std::filesystem::path(reelOutDir) / "sequence.txt").string();
+                PresetIO::KV kv;
+                if (PresetIO::LoadFile(path, kv)) {
+                    seqCues.clear();
+                    const int n = std::min(64, PresetIO::GetI(kv, "seq.count", 0));
+                    for (int i = 0; i < n; ++i) {
+                        const std::string p = "seq." + std::to_string(i) + ".";
+                        SeqCue c;
+                        c.time = PresetIO::GetF(kv, (p + "time").c_str(), 0.0f);
+                        auto it = kv.find(p + "preset");
+                        if (it != kv.end()) c.preset = it->second;
+                        c.morphSec = PresetIO::GetF(kv, (p + "morph").c_str(), 1.0f);
+                        c.cut = PresetIO::GetB(kv, (p + "cut").c_str(), true);
+                        seqCues.push_back(c);
+                    }
+                    seqStatus = "Loaded " + std::to_string(int(seqCues.size())) + " cues";
+                } else {
+                    seqStatus = "FAILED to load " + path;
+                }
+            }
+            if (!seqStatus.empty()) ImGui::TextWrapped("%s", seqStatus.c_str());
+            ImGui::PopID();
+        }
         if (ImGui::CollapsingHeader("Performance")) {
             ImGui::PushID("Performance");
             // One-click modes: trade fluid-surface quality for capture framerate
@@ -2002,7 +2105,7 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "audio.zoomKick", camZoomKick);
 }
 
-void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
+void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     using namespace PresetIO;
     // sim / physics
     fluidGPU->param_h = GetF(kv, "sim.h", fluidGPU->param_h);
@@ -2013,15 +2116,19 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     fluidGPU->param_gravityY = GetF(kv, "sim.gravityY", fluidGPU->param_gravityY);
     fluidGPU->param_surfaceTension = GetF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
     fluidGPU->param_timeStep = GetF(kv, "sim.timeStep", fluidGPU->param_timeStep);
-    fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
-    fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    if (structural) {
+        fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+        fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    }
     fluidGPU->param_foamGen = GetF(kv, "sim.foamGen", fluidGPU->param_foamGen);
     fluidGPU->param_foamVelRef = GetF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
     fluidGPU->param_wallRestitution = GetF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
     fluidGPU->param_wallFriction = GetF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
-    const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
-    fluidGPU->numParticles = size_t(std::max(1000, pc));
-    uiParticleCount = int(fluidGPU->numParticles);
+    if (structural) {
+        const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+        fluidGPU->numParticles = size_t(std::max(1000, pc));
+        uiParticleCount = int(fluidGPU->numParticles);
+    }
     // container
     float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
     float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
@@ -2045,7 +2152,8 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     paletteId = GetI(kv, "look.paletteId", paletteId);
     twoColorEnabled = GetB(kv, "look.twoColor", twoColorEnabled);
     paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
-    fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    if (structural)
+        fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
     hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
     satMul = GetF(kv, "look.satMul", satMul);
     brightMul = GetF(kv, "look.brightMul", brightMul);
@@ -2106,9 +2214,11 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     stencilScale = GetF(kv, "motion.logoScale", stencilScale);
     stencilDamp = GetF(kv, "motion.logoDamp", stencilDamp);
     stencilBassRelease = GetB(kv, "motion.logoBassRelease", stencilBassRelease);
-    if (auto it = kv.find("motion.logoPath"); it != kv.end() && !it->second.empty()
-        && it->second != stencilPath) {
-        LoadStencilPNG(it->second.c_str());   // fails gracefully if the file moved
+    if (structural) {
+        if (auto it = kv.find("motion.logoPath"); it != kv.end() && !it->second.empty()
+            && it->second != stencilPath) {
+            LoadStencilPNG(it->second.c_str());   // fails gracefully if the file moved
+        }
     }
     silkStrength = GetF(kv, "motion.silkStrength", silkStrength);
     silkScale = GetF(kv, "motion.silkScale", silkScale);
@@ -2165,7 +2275,44 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
         audioReactive->releaseMs.store(GetF(kv, "audio.releaseMs", audioReactive->releaseMs.load()));
     }
 
-    pendingReset = true;   // respawn with the loaded shape/count/mix pattern
+    if (structural)
+        pendingReset = true;   // respawn with the loaded shape/count/mix pattern
+}
+
+// Drop Sequencer: fires cues due at tSec (cut = instant non-structural apply,
+// morph = smoothstep crossfade from a snapshot to the target preset). The
+// fluid never respawns mid-song -- shape/physics changes squeeze it live.
+void Scene0p::SequencerTick(float tSec) {
+    if (!seqEnabled || seqCues.empty()) return;
+
+    while (seqNextCue < int(seqCues.size()) && seqCues[seqNextCue].time <= tSec) {
+        const SeqCue& c = seqCues[seqNextCue];
+        PresetIO::KV target;
+        if (!c.preset.empty() &&
+            PresetIO::LoadFile("presets/" + c.preset + ".txt", target)) {
+            if (c.cut || c.morphSec <= 0.01f) {
+                ApplyPresetKV(target, false);
+                seqMorphActive = false;
+            } else {
+                seqStartKV.clear();
+                GatherPreset(seqStartKV);
+                seqTargetKV    = target;
+                seqMorphStart  = c.time;
+                seqMorphDur    = c.morphSec;
+                seqMorphActive = true;
+            }
+        }
+        ++seqNextCue;
+    }
+
+    if (seqMorphActive) {
+        float t = (tSec - seqMorphStart) / std::max(seqMorphDur, 1e-3f);
+        const bool done = t >= 1.0f;
+        t = std::min(t, 1.0f);
+        const float s = t * t * (3.0f - 2.0f * t);   // smoothstep ease
+        ApplyPresetKV(PresetIO::LerpKV(seqStartKV, seqTargetKV, s), false);
+        if (done) seqMorphActive = false;
+    }
 }
 
 // Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
@@ -3129,6 +3276,10 @@ void Scene0p::StartReelExport() {
     audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
     gravitySpinPhase = 0.0f;
     silkTime = 0.0f;
+    std::stable_sort(seqCues.begin(), seqCues.end(),
+                     [](const SeqCue& a, const SeqCue& b) { return a.time < b.time; });
+    seqNextCue = 0;
+    seqMorphActive = false;
     fluidGPU->ResetSimulation();
     fluidGPU->param_pause = false;
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
@@ -3237,6 +3388,7 @@ void Scene0p::ReelExportStep() {
     // and Cancel stays responsive (the render is the bottleneck, not the loop).
     const int batch = 1;
     for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
+        SequencerTick(float(reelFrame) / float(fps));
         DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
                            reelBands.treble[reelFrame], frameDt);
         // Deterministic auto-orbit: advance with frame time (never wall-clock),

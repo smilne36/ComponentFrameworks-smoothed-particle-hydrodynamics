@@ -92,12 +92,31 @@ private:
     void    SurpriseMe();   // randomize a whole look within curated ranges
 
     // --- My Presets: save/load the full current look to presets/<name>.txt ---
+    // structural=false (used by the Drop Sequencer) skips everything that
+    // needs a respawn (particle count, mix pattern, spawn jitter, logo file
+    // load) and does NOT set pendingReset -- the fluid morphs continuously.
     void    GatherPreset(PresetIO::KV& kv) const;
-    void    ApplyPresetKV(const PresetIO::KV& kv);
+    void    ApplyPresetKV(const PresetIO::KV& kv, bool structural = true);
     char    presetNameBuf[64] = "";
     std::vector<std::string> presetList;
     int     presetSelIdx = -1;
     std::string presetStatus;
+
+    // --- Drop Sequencer: choreograph preset cuts/morphs to the track (reels) ---
+    struct SeqCue {
+        float       time     = 0.0f;   // seconds into the track
+        std::string preset;            // My Presets name ("" = unassigned)
+        float       morphSec = 1.0f;   // crossfade length; ignored when cut
+        bool        cut      = true;   // true = instant slam, false = morph
+    };
+    bool    seqEnabled = false;
+    std::vector<SeqCue> seqCues;
+    int     seqNextCue = 0;
+    bool    seqMorphActive = false;
+    float   seqMorphStart = 0.0f, seqMorphDur = 1.0f;
+    PresetIO::KV seqStartKV, seqTargetKV;
+    std::string  seqStatus;
+    void    SequencerTick(float tSec);
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 

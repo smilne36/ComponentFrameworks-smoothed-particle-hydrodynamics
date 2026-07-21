@@ -68,6 +68,36 @@ bool DecodeToMono(const char* path, std::vector<float>& mono, unsigned& sampleRa
 
 } // namespace
 
+std::vector<float> DetectDrops(const std::vector<float>& bass, int fps, float minGapSec) {
+    std::vector<float> drops;
+    if (fps <= 0 || bass.size() < 2) return drops;
+
+    const int   win     = std::max(1, 4 * fps);       // rolling 4s window
+    const float minGap  = std::max(0.0f, minGapSec);
+    double      rollSum = 0.0;
+    int         rollN   = 0;
+    float       lastDrop = -1e9f;
+    bool        above    = false;
+
+    for (size_t i = 0; i < bass.size(); ++i) {
+        const float avg = (rollN > 0) ? float(rollSum / rollN) : 0.0f;
+        const float th  = std::max(0.25f, 1.6f * avg);
+        const bool  hot = bass[i] > th;
+        const float t   = float(i) / float(fps);
+        if (hot && !above && t - lastDrop >= minGap) {
+            drops.push_back(t);
+            lastDrop = t;
+            if (drops.size() >= 16) break;
+        }
+        above = hot;
+        // window trails BEHIND the current frame so the drop itself doesn't
+        // immediately raise its own threshold
+        rollSum += bass[i]; ++rollN;
+        if (rollN > win) { rollSum -= bass[i - win]; --rollN; }
+    }
+    return drops;
+}
+
 ReelAnalysis AnalyzeTrack(const char* path, int fps, float maxSeconds) {
     ReelAnalysis out;
     if (fps <= 0) fps = 30;
