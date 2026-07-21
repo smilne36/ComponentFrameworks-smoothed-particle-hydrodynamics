@@ -1,6 +1,7 @@
 ﻿#include <iostream>
 #include <limits>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -11,6 +12,7 @@
 #include <SDL.h>
 #include <MMath.h>
 #include "stb_image_write.h"
+#include "stb_image.h"
 
 #include "Scene0p.h"
 #include "Debug.h"
@@ -67,6 +69,8 @@ bool Scene0p::OnCreate() {
     uiParticleCount = int(fluidGPU->numParticles);   // keep the Performance slider in sync
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
 
+    presetList = PresetIO::ListPresets("presets");   // sequencer combos need this before the Look tab is opened
+
     lineShader = new Shader("shaders/lineVert.glsl", "shaders/lineFrag.glsl");
     if (!lineShader->OnCreate()) { std::cerr << "line shader failed\n"; return false; }
     glGenVertexArrays(1, &boxVAO);
@@ -106,6 +110,8 @@ bool Scene0p::OnCreate() {
     if (!postBlurShader->OnCreate()) { std::cerr << "postBlur shader failed\n"; return false; }
     postTrailShader = new Shader("shaders/screenQuad.vert", "shaders/postTrails.frag");
     if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
+    postLensShader = new Shader("shaders/screenQuad.vert", "shaders/postLens.frag");
+    if (!postLensShader->OnCreate()) { std::cerr << "postLens shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -159,6 +165,7 @@ void Scene0p::OnDestroy() {
     if (postTrailShader)  { postTrailShader->OnDestroy();  delete postTrailShader;  postTrailShader  = nullptr; }
     if (postBrightShader) { postBrightShader->OnDestroy(); delete postBrightShader; postBrightShader = nullptr; }
     if (postBlurShader)   { postBlurShader->OnDestroy();   delete postBlurShader;   postBlurShader   = nullptr; }
+    if (postLensShader)   { postLensShader->OnDestroy();   delete postLensShader;   postLensShader   = nullptr; }
     if (postFinalShader)  { postFinalShader->OnDestroy();  delete postFinalShader;  postFinalShader  = nullptr; }
     DestroySSFRBuffers();
     DestroyPostBuffers();
@@ -251,11 +258,18 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
         break;
 
     case SDL_DROPFILE:
-        // Drag an audio file onto the window to load it into Reels Export.
+        // Drag a file onto the window: audio goes to Reels Export, a PNG
+        // becomes the Liquid Logo stencil.
         if (e.drop.file) {
-            snprintf(reelAudioPath, sizeof(reelAudioPath), "%s", e.drop.file);
-            std::filesystem::path p(reelAudioPath);
-            reelStatus = "Loaded: " + p.filename().string();
+            std::filesystem::path p(e.drop.file);
+            std::string ext = p.extension().string();
+            for (char& ch : ext) ch = char(std::tolower((unsigned char)ch));
+            if (ext == ".png") {
+                LoadStencilPNG(e.drop.file);
+            } else {
+                snprintf(reelAudioPath, sizeof(reelAudioPath), "%s", e.drop.file);
+                reelStatus = "Loaded: " + p.filename().string();
+            }
             SDL_free(e.drop.file);
         }
         break;
@@ -419,6 +433,90 @@ void Scene0p::UpdateContainerWireframe() {
                        :               xform(0.0f, st * b, ct * a);    // ZY ellipse
                 if (s > 0) seg(prev, p);
                 prev = p;
+            }
+        }
+    } else if (shape == 7) {
+        // Star prism: star outlines at +-H plus verticals at peaks and valleys
+        const float R     = H.x, hh = H.y;
+        const float pts   = std::max(3.0f, fluidGPU->param_shapeAux.x);
+        const float depth = std::min(0.9f, std::max(0.0f, fluidGPU->param_shapeAux.y));
+        auto rMax = [&](float a) { return R * (1.0f - depth * (0.5f + 0.5f * std::cos(pts * a))); };
+        for (int cap = 0; cap < 2; ++cap) {
+            float y = cap ? hh : -hh;
+            Vec3 prev;
+            for (int s = 0; s <= 96; ++s) {
+                float a = (float(s) / 96.0f) * TWO_PI;
+                float r = rMax(a);
+                Vec3 p = xform(std::cos(a) * r, y, std::sin(a) * r);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+        const int nPts = int(pts + 0.5f);
+        for (int k = 0; k < 2 * nPts; ++k) {
+            float a = (float(k) / float(nPts)) * 3.14159265f;   // peaks + valleys
+            float r = rMax(a);
+            seg(xform(std::cos(a) * r, -hh, std::sin(a) * r),
+                xform(std::cos(a) * r,  hh, std::sin(a) * r));
+        }
+    } else if (shape == 8) {
+        // Superellipsoid: three parametric cross-sections
+        const float a = H.x, b = H.y;
+        const float n = std::min(8.0f, std::max(0.6f, fluidGPU->param_shapeAux.z));
+        auto se = [&](float c) {   // signed |c|^(2/n)
+            return (c >= 0.0f ? 1.0f : -1.0f) * std::pow(std::fabs(c), 2.0f / n);
+        };
+        for (int plane = 0; plane < 3; ++plane) {
+            Vec3 prev;
+            for (int s = 0; s <= SEGS; ++s) {
+                float t = (float(s) / SEGS) * TWO_PI;
+                float u = se(std::cos(t)), v = se(std::sin(t));
+                Vec3 p = (plane == 0) ? xform(a * u, 0.0f, a * v)
+                       : (plane == 1) ? xform(a * u, b * v, 0.0f)
+                       :                xform(0.0f, b * v, a * u);
+                if (s > 0) seg(prev, p);
+                prev = p;
+            }
+        }
+    } else if (shape == 9) {
+        // Trefoil knot: the curve polyline + a few tube rings
+        const float S = H.x, r = H.y;
+        auto knot = [&](float t) {
+            return Vec3(S * (std::sin(t) + 2.0f * std::sin(2.0f * t)),
+                        S * 0.35f * (-std::sin(3.0f * t)),
+                        S * (std::cos(t) - 2.0f * std::cos(2.0f * t)));
+        };
+        Vec3 prev;
+        for (int s = 0; s <= 96; ++s) {
+            float t = (float(s) / 96.0f) * TWO_PI;
+            Vec3 c = knot(t);
+            Vec3 p = xform(c.x, c.y, c.z);
+            if (s > 0) seg(prev, p);
+            prev = p;
+        }
+        for (int k = 0; k < 8; ++k) {
+            float t = (float(k) / 8.0f) * TWO_PI;
+            Vec3 c  = knot(t);
+            Vec3 cN = knot(t + 0.05f);
+            Vec3 tan(cN.x - c.x, cN.y - c.y, cN.z - c.z);
+            float tl = std::sqrt(tan.x * tan.x + tan.y * tan.y + tan.z * tan.z);
+            if (tl < 1e-6f) continue;
+            tan = Vec3(tan.x / tl, tan.y / tl, tan.z / tl);
+            // Any perpendicular basis (u, w) to the tangent
+            Vec3 up = (std::fabs(tan.y) < 0.9f) ? Vec3(0, 1, 0) : Vec3(1, 0, 0);
+            Vec3 u(tan.y * up.z - tan.z * up.y, tan.z * up.x - tan.x * up.z, tan.x * up.y - tan.y * up.x);
+            float ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+            u = Vec3(u.x / ul, u.y / ul, u.z / ul);
+            Vec3 w(tan.y * u.z - tan.z * u.y, tan.z * u.x - tan.x * u.z, tan.x * u.y - tan.y * u.x);
+            Vec3 rp;
+            for (int s = 0; s <= 16; ++s) {
+                float a = (float(s) / 16.0f) * TWO_PI;
+                float ca = std::cos(a) * r, sa = std::sin(a) * r;
+                Vec3 p = xform(c.x + u.x * ca + w.x * sa,
+                               c.y + u.y * ca + w.y * sa,
+                               c.z + u.z * ca + w.z * sa);
+                if (s > 0) seg(rp, p);
+                rp = p;
             }
         }
     } else {
@@ -710,6 +808,11 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Vignette",  &vignetteAmount,  0.0f, 1.0f);
             ImGui::SliderFloat("Grain",     &grainAmount,     0.0f, 0.2f);
             ImGui::SliderFloat("Chromatic", &chromaticAmount, 0.0f, 2.0f);
+            ImGui::Separator();
+            ImGui::SliderFloat("Aperture (DOF)", &lensAperture, 0.0f, 3.0f);
+            ImGui::SliderFloat("Focus Distance", &lensFocusDist, 1.0f, 60.0f);
+            ImGui::SliderFloat("Anamorphic Streaks", &streakStrength, 0.0f, 2.0f);
+            ImGui::TextDisabled("DOF works in Impostor/Mesh modes (water writes no depth).");
             ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
         }
@@ -758,7 +861,8 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::CollapsingHeader("Container")) {
             ImGui::PushID("ContainerBox");
             ImGui::Combo("Shape", &fluidGPU->param_shapeType,
-                "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0");
+                "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0"
+                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0");
             ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
             if (fluidGPU->param_shapeType == 1) {
                 ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
@@ -782,6 +886,22 @@ void Scene0p::Update(const float deltaTime) {
             } else if (fluidGPU->param_shapeType == 6) {
                 ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
                 ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+            } else if (fluidGPU->param_shapeType == 7) {
+                ImGui::DragFloat("Outer Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.10f, 100.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                int starPts = int(fluidGPU->param_shapeAux.x + 0.5f);
+                if (ImGui::SliderInt("Points", &starPts, 3, 12))
+                    fluidGPU->param_shapeAux.x = float(starPts);
+                ImGui::SliderFloat("Point Depth", &fluidGPU->param_shapeAux.y, 0.0f, 0.85f);
+            } else if (fluidGPU->param_shapeType == 8) {
+                ImGui::DragFloat("Width Radius (XZ)", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
+                ImGui::DragFloat("Height Radius (Y)", &fluidGPU->param_boxHalf.y, 0.05f, 0.05f, 100.0f);
+                ImGui::SliderFloat("Roundness", &fluidGPU->param_shapeAux.z, 0.6f, 8.0f);
+                ImGui::TextDisabled("~1 = diamond, 2 = sphere, 4+ = rounded cube.");
+            } else if (fluidGPU->param_shapeType == 9) {
+                ImGui::DragFloat("Knot Scale", &fluidGPU->param_boxHalf.x, 0.05f, 0.5f, 20.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.2f, 10.0f);
+                ImGui::TextDisabled("Fluid trapped in a knotted tube. Try Gravity Spin.");
             } else {
                 ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             }
@@ -828,6 +948,37 @@ void Scene0p::Update(const float deltaTime) {
                 Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
                 fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
             }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Liquid Logo")) {
+            ImGui::PushID("LiquidLogo");
+            ImGui::TextDisabled("Drag a PNG onto the window (white logo/text on black).");
+            if (fluidGPU->stencilCount > 0) {
+                ImGui::Text("Targets: %d", fluidGPU->stencilCount);
+                ImGui::SliderFloat("Form Strength", &stencilStrength, 0.0f, 20.0f);
+                if (ImGui::SliderFloat("Logo Size", &stencilScale, 3.0f, 30.0f))
+                    UploadStencilTargets();
+                ImGui::SliderFloat("Settle Damping", &stencilDamp, 0.0f, 6.0f);
+                ImGui::Checkbox("Bass Blows It Apart", &stencilBassRelease);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear Logo")) {
+                    fluidGPU->SetStencilTargets({});
+                    stencilUnitPts.clear();
+                    stencilPath.clear();
+                    stencilStatus = "Cleared";
+                }
+            }
+            if (!stencilStatus.empty()) ImGui::TextWrapped("%s", stencilStatus.c_str());
+            ImGui::TextDisabled("Fluid gets pulled into the shape, holds it shimmering,\nand re-forms after every bass hit. Low gravity helps.");
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Silk Flow")) {
+            ImGui::PushID("SilkFlow");
+            ImGui::SliderFloat("Strength", &silkStrength, 0.0f, 12.0f);
+            ImGui::SliderFloat("Flow Scale", &silkScale, 0.03f, 0.5f);
+            ImGui::SliderFloat("Evolve Speed", &silkDrift, 0.0f, 2.0f);
+            ImGui::SliderFloat("Audio Silk (mid)", &silkAudioKick, 0.0f, 12.0f);
+            ImGui::TextDisabled("Smoke/silk drift along a turbulent flow field.\nLower gravity + trails = flowing ink ribbons.");
             ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Vortex Swirl")) {
@@ -976,6 +1127,107 @@ void Scene0p::Update(const float deltaTime) {
             }
             ImGui::PopID();
         }
+        if (ImGui::CollapsingHeader("Drop Sequencer")) {
+            ImGui::PushID("DropSeq");
+            ImGui::Checkbox("Enable in exports", &seqEnabled);
+            ImGui::TextDisabled(
+                "Fires saved presets at set times while a reel renders:\n"
+                "Cut = instant slam on the beat, otherwise a smooth morph.\n"
+                "Particle count / spawn layout never change mid-song.");
+            if (ImGui::Button("Refresh Presets")) presetList = PresetIO::ListPresets("presets");
+
+            std::string comboItems("(none)");
+            comboItems += '\0';
+            for (const auto& n : presetList) { comboItems += n; comboItems += '\0'; }
+            comboItems += '\0';
+
+            int deleteIdx = -1;
+            for (int i = 0; i < int(seqCues.size()); ++i) {
+                SeqCue& c = seqCues[i];
+                ImGui::PushID(i);
+                ImGui::SetNextItemWidth(70.0f);
+                ImGui::InputFloat("s", &c.time, 0.0f, 0.0f, "%.2f");
+                ImGui::SameLine();
+                int sel = 0;
+                for (int k = 0; k < int(presetList.size()); ++k)
+                    if (presetList[k] == c.preset) { sel = k + 1; break; }
+                ImGui::SetNextItemWidth(150.0f);
+                if (ImGui::Combo("##preset", &sel, comboItems.c_str()))
+                    c.preset = (sel <= 0) ? std::string() : presetList[sel - 1];
+                ImGui::SameLine();
+                ImGui::Checkbox("Cut", &c.cut);
+                if (!c.cut) {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(60.0f);
+                    ImGui::InputFloat("morph s", &c.morphSec, 0.0f, 0.0f, "%.1f");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("X")) deleteIdx = i;
+                ImGui::PopID();
+            }
+            if (deleteIdx >= 0) seqCues.erase(seqCues.begin() + deleteIdx);
+
+            if (ImGui::Button("+ Add Cue")) {
+                SeqCue c;
+                c.time = seqCues.empty() ? 0.0f : seqCues.back().time + 10.0f;
+                seqCues.push_back(c);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Auto-Detect Drops (bass)")) {
+                const int fps = (reelFpsIdx == 1) ? 60 : 30;
+                ReelAnalysis a = AnalyzeTrack(reelAudioPath, fps, 0.0f);
+                if (!a.error.empty()) {
+                    seqStatus = "Detect FAILED: " + a.error;
+                } else {
+                    std::vector<float> drops = DetectDrops(a.bass, fps, 8.0f);
+                    seqCues.clear();
+                    for (float t : drops) { SeqCue c; c.time = t; seqCues.push_back(c); }
+                    seqStatus = "Found " + std::to_string(int(drops.size())) +
+                                " drops -- pick a preset for each cue.";
+                }
+            }
+
+            if (ImGui::Button("Save Seq")) {
+                std::error_code ec;
+                std::filesystem::create_directories(reelOutDir, ec);
+                PresetIO::KV kv;
+                PresetIO::PutI(kv, "seq.count", int(seqCues.size()));
+                for (int i = 0; i < int(seqCues.size()); ++i) {
+                    const std::string p = "seq." + std::to_string(i) + ".";
+                    PresetIO::PutF(kv, (p + "time").c_str(), seqCues[i].time);
+                    kv[p + "preset"] = seqCues[i].preset;
+                    PresetIO::PutF(kv, (p + "morph").c_str(), seqCues[i].morphSec);
+                    PresetIO::PutB(kv, (p + "cut").c_str(), seqCues[i].cut);
+                }
+                const std::string path = (std::filesystem::path(reelOutDir) / "sequence.txt").string();
+                seqStatus = PresetIO::SaveFile(path, kv) ? ("Saved " + path)
+                                                         : ("FAILED to save " + path);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load Seq")) {
+                const std::string path = (std::filesystem::path(reelOutDir) / "sequence.txt").string();
+                PresetIO::KV kv;
+                if (PresetIO::LoadFile(path, kv)) {
+                    seqCues.clear();
+                    const int n = std::min(64, PresetIO::GetI(kv, "seq.count", 0));
+                    for (int i = 0; i < n; ++i) {
+                        const std::string p = "seq." + std::to_string(i) + ".";
+                        SeqCue c;
+                        c.time = PresetIO::GetF(kv, (p + "time").c_str(), 0.0f);
+                        auto it = kv.find(p + "preset");
+                        if (it != kv.end()) c.preset = it->second;
+                        c.morphSec = PresetIO::GetF(kv, (p + "morph").c_str(), 1.0f);
+                        c.cut = PresetIO::GetB(kv, (p + "cut").c_str(), true);
+                        seqCues.push_back(c);
+                    }
+                    seqStatus = "Loaded " + std::to_string(int(seqCues.size())) + " cues";
+                } else {
+                    seqStatus = "FAILED to load " + path;
+                }
+            }
+            if (!seqStatus.empty()) ImGui::TextWrapped("%s", seqStatus.c_str());
+            ImGui::PopID();
+        }
         if (ImGui::CollapsingHeader("Performance")) {
             ImGui::PushID("Performance");
             // One-click modes: trade fluid-surface quality for capture framerate
@@ -1028,11 +1280,15 @@ void Scene0p::Update(const float deltaTime) {
         lastBoxEuler.x != fluidGPU->param_boxEulerDeg.x ||
         lastBoxEuler.y != fluidGPU->param_boxEulerDeg.y ||
         lastBoxEuler.z != fluidGPU->param_boxEulerDeg.z ||
+        lastShapeAux.x != fluidGPU->param_shapeAux.x ||
+        lastShapeAux.y != fluidGPU->param_shapeAux.y ||
+        lastShapeAux.z != fluidGPU->param_shapeAux.z ||
         lastShapeType != fluidGPU->param_shapeType) {
         UpdateContainerWireframe();
         lastBoxCenter = fluidGPU->param_boxCenter;
         lastBoxHalf = fluidGPU->param_boxHalf;
         lastBoxEuler = fluidGPU->param_boxEulerDeg;
+        lastShapeAux = fluidGPU->param_shapeAux;
         lastShapeType = fluidGPU->param_shapeType;
     }
 
@@ -1148,7 +1404,8 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
 
 bool Scene0p::PostChainActive() const {
     return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
-           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f;
+           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f ||
+           lensAperture > 0.0f || streakStrength > 0.0f;
 }
 
 // The raw scene render (whichever render path is active), no post effects.
@@ -1252,10 +1509,12 @@ void Scene0p::ApplyArtPreset(int which) {
     bloomStrength = 0.0f; bloomThreshold = 0.6f; trailHalfLife = 0.0f;
     kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
     vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
+    lensAperture = 0.0f; lensFocusDist = 22.0f; streakStrength = 0.0f;
     attractorEnabled = false;
     gravitySpinEnabled = false; camZoomKick = 0.0f;
     twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
     fluidGPU->fountainMode = false;
+    silkStrength = 0.0f; silkAudioKick = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1539,6 +1798,59 @@ void Scene0p::ApplyArtPreset(int which) {
     pendingReset = true;
 }
 
+// ---------------------------------------------------------------------------
+// Liquid Logo: turn a PNG's bright pixels into attractor targets so the fluid
+// forms the image (white-on-black logos/text work best).
+// ---------------------------------------------------------------------------
+bool Scene0p::LoadStencilPNG(const char* path) {
+    int w = 0, h = 0, comp = 0;
+    unsigned char* img = stbi_load(path, &w, &h, &comp, 1);   // force grayscale
+    if (!img || w <= 0 || h <= 0) {
+        stencilStatus = "FAILED to load PNG";
+        if (img) stbi_image_free(img);
+        return false;
+    }
+
+    // Count bright pixels, then pick a sampling stride that keeps <= ~30k targets
+    long bright = 0;
+    const long total = long(w) * long(h);
+    for (long i = 0; i < total; ++i) if (img[i] > 100) ++bright;
+    int stride = 1;
+    while (bright / (long(stride) * long(stride)) > 30000) ++stride;
+
+    stencilUnitPts.clear();
+    const float aspect = float(w) / float(h);
+    for (int y = 0; y < h; y += stride)
+        for (int x = 0; x < w; x += stride)
+            if (img[long(y) * w + x] > 100)
+                stencilUnitPts.push_back(Vec4((float(x) / float(w) - 0.5f) * aspect,
+                                              0.5f - float(y) / float(h), 0.0f, 0.0f));
+    stbi_image_free(img);
+
+    if (stencilUnitPts.empty()) {
+        stencilStatus = "No bright pixels found (use a white logo on black)";
+        fluidGPU->SetStencilTargets({});
+        return false;
+    }
+    stencilPath = path;
+    UploadStencilTargets();
+    stencilStatus = "Loaded " + std::to_string(w) + "x" + std::to_string(h) +
+                    " -> " + std::to_string(stencilUnitPts.size()) + " points";
+    return true;
+}
+
+// Re-maps the cached normalized points into world space at the current scale
+// (called on load and when the Scale slider changes).
+void Scene0p::UploadStencilTargets() {
+    if (!fluidGPU) return;
+    std::vector<Vec4> pts;
+    pts.reserve(stencilUnitPts.size());
+    const Vec3 c = fluidGPU->param_boxCenter;
+    for (const Vec4& u : stencilUnitPts)
+        pts.push_back(Vec4(c.x + u.x * stencilScale, c.y + u.y * stencilScale, c.z, 0.0f));
+    fluidGPU->SetStencilTargets(pts);
+}
+
 // One click, one new look: randomizes shape, physics, palettes, motion, and
 // FX within ranges curated to stay art-worthy. Builds on ApplyArtPreset(0)'s
 // common reset so leftovers from previous looks never leak through.
@@ -1553,13 +1865,21 @@ void Scene0p::SurpriseMe() {
     ApplyArtPreset(0);              // known-clean baseline (also resets new knobs)
     audioReactiveEnabled = prevAudio;   // ApplyArtPreset force-enables; keep user's choice
 
-    // Shape + size
-    fluidGPU->param_shapeType = Ui(0, 6);
+    // Shape + size (star/blob/knot carry extra family params in shapeAux)
+    fluidGPU->param_shapeType = Ui(0, 9);
     switch (fluidGPU->param_shapeType) {
         case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
         case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
         case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
         case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
+        case 7:  fluidGPU->param_boxHalf = Vec3(U(6, 9), U(3, 6), 0);                          // star prism
+                 fluidGPU->param_shapeAux.x = float(Ui(3, 9));
+                 fluidGPU->param_shapeAux.y = U(0.25f, 0.7f);
+                 break;
+        case 8:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(5, 9), 0);                          // blob
+                 fluidGPU->param_shapeAux.z = std::exp(U(std::log(0.8f), std::log(6.0f)));
+                 break;
+        case 9:  fluidGPU->param_boxHalf = Vec3(U(2.2f, 3.2f), U(0.8f, 1.6f), 0); break;       // trefoil knot
         default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
     }
     // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
@@ -1601,6 +1921,10 @@ void Scene0p::SurpriseMe() {
         fluidGPU->fountainMode = true;
         fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f);
     }
+    if (chance(0.35f)) {
+        silkStrength = U(2, 8); silkScale = U(0.08f, 0.3f); silkDrift = U(0.1f, 0.8f);
+        silkAudioKick = U(0, 6);
+    }
     // Audio kicks (moderate; they only fire when the reactor is on)
     audioSizeKick = U(0.2f, 0.6f);
     audioShimmerKick = U(0.3f, 1.0f);
@@ -1615,6 +1939,8 @@ void Scene0p::SurpriseMe() {
     vignetteAmount = U(0.0f, 0.35f);
     grainAmount = U(0.0f, 0.07f);
     chromaticAmount = U(0.0f, 0.5f);
+    if (!useWaterRendering && chance(0.4f)) { lensAperture = U(0.3f, 1.2f); lensFocusDist = U(14, 30); }
+    if (chance(0.4f)) streakStrength = U(0.3f, 1.0f);
 
     pendingReset = true;
 }
@@ -1651,6 +1977,8 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF3(kv, "box.half", bh);
     PutF3(kv, "box.euler", be);
     PutI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    const float bax[3] = { fluidGPU->param_shapeAux.x, fluidGPU->param_shapeAux.y, fluidGPU->param_shapeAux.z };
+    PutF3(kv, "box.aux", bax);
     PutB(kv, "box.outline", showContainerOutline);
     PutF3(kv, "box.outlineColor", containerOutlineColor);
     // look
@@ -1708,6 +2036,9 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "fx.vignette", vignetteAmount);
     PutF(kv, "fx.grain", grainAmount);
     PutF(kv, "fx.chromatic", chromaticAmount);
+    PutF(kv, "fx.aperture", lensAperture);
+    PutF(kv, "fx.focusDist", lensFocusDist);
+    PutF(kv, "fx.streak", streakStrength);
     // motion
     PutB(kv, "motion.orbitOn", autoOrbitEnabled);
     PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -1715,6 +2046,15 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "motion.vortexBase", vortexBaseSwirl);
     PutF(kv, "motion.vortexAudio", audioVortexForce);
     PutF(kv, "motion.vortexInward", vortexInwardPull);
+    kv["motion.logoPath"] = stencilPath;
+    PutF(kv, "motion.logoStrength", stencilStrength);
+    PutF(kv, "motion.logoScale", stencilScale);
+    PutF(kv, "motion.logoDamp", stencilDamp);
+    PutB(kv, "motion.logoBassRelease", stencilBassRelease);
+    PutF(kv, "motion.silkStrength", silkStrength);
+    PutF(kv, "motion.silkScale", silkScale);
+    PutF(kv, "motion.silkDrift", silkDrift);
+    PutF(kv, "motion.silkAudio", silkAudioKick);
     PutB(kv, "motion.spinOn", gravitySpinEnabled);
     PutF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
     PutF(kv, "motion.spinTilt", gravitySpinTiltDeg);
@@ -1765,7 +2105,7 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "audio.zoomKick", camZoomKick);
 }
 
-void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
+void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     using namespace PresetIO;
     // sim / physics
     fluidGPU->param_h = GetF(kv, "sim.h", fluidGPU->param_h);
@@ -1776,15 +2116,19 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     fluidGPU->param_gravityY = GetF(kv, "sim.gravityY", fluidGPU->param_gravityY);
     fluidGPU->param_surfaceTension = GetF(kv, "sim.surfaceTension", fluidGPU->param_surfaceTension);
     fluidGPU->param_timeStep = GetF(kv, "sim.timeStep", fluidGPU->param_timeStep);
-    fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
-    fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    if (structural) {
+        fluidGPU->param_useJitter = GetB(kv, "sim.useJitter", fluidGPU->param_useJitter);
+        fluidGPU->param_jitterAmp = GetF(kv, "sim.jitterAmp", fluidGPU->param_jitterAmp);
+    }
     fluidGPU->param_foamGen = GetF(kv, "sim.foamGen", fluidGPU->param_foamGen);
     fluidGPU->param_foamVelRef = GetF(kv, "sim.foamVelRef", fluidGPU->param_foamVelRef);
     fluidGPU->param_wallRestitution = GetF(kv, "sim.wallRestitution", fluidGPU->param_wallRestitution);
     fluidGPU->param_wallFriction = GetF(kv, "sim.wallFriction", fluidGPU->param_wallFriction);
-    const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
-    fluidGPU->numParticles = size_t(std::max(1000, pc));
-    uiParticleCount = int(fluidGPU->numParticles);
+    if (structural) {
+        const int pc = GetI(kv, "sim.particleCount", int(fluidGPU->numParticles));
+        fluidGPU->numParticles = size_t(std::max(1000, pc));
+        uiParticleCount = int(fluidGPU->numParticles);
+    }
     // container
     float bc[3] = { fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y, fluidGPU->param_boxCenter.z };
     float bh[3] = { fluidGPU->param_boxHalf.x,   fluidGPU->param_boxHalf.y,   fluidGPU->param_boxHalf.z };
@@ -1793,6 +2137,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     GetF3(kv, "box.half", bh);    fluidGPU->param_boxHalf    = Vec3(bh[0], bh[1], bh[2]);
     GetF3(kv, "box.euler", be);   fluidGPU->param_boxEulerDeg = Vec3(be[0], be[1], be[2]);
     fluidGPU->param_shapeType = GetI(kv, "box.shapeType", fluidGPU->param_shapeType);
+    float bax[3] = { fluidGPU->param_shapeAux.x, fluidGPU->param_shapeAux.y, fluidGPU->param_shapeAux.z };
+    GetF3(kv, "box.aux", bax);
+    fluidGPU->param_shapeAux = Vec3(bax[0], bax[1], bax[2]);
     showContainerOutline = GetB(kv, "box.outline", showContainerOutline);
     GetF3(kv, "box.outlineColor", containerOutlineColor);
     // look
@@ -1805,7 +2152,8 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     paletteId = GetI(kv, "look.paletteId", paletteId);
     twoColorEnabled = GetB(kv, "look.twoColor", twoColorEnabled);
     paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
-    fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    if (structural)
+        fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
     hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
     satMul = GetF(kv, "look.satMul", satMul);
     brightMul = GetF(kv, "look.brightMul", brightMul);
@@ -1852,6 +2200,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     vignetteAmount = GetF(kv, "fx.vignette", vignetteAmount);
     grainAmount = GetF(kv, "fx.grain", grainAmount);
     chromaticAmount = GetF(kv, "fx.chromatic", chromaticAmount);
+    lensAperture = GetF(kv, "fx.aperture", lensAperture);
+    lensFocusDist = GetF(kv, "fx.focusDist", lensFocusDist);
+    streakStrength = GetF(kv, "fx.streak", streakStrength);
     // motion
     autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
     autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -1859,6 +2210,20 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     vortexBaseSwirl = GetF(kv, "motion.vortexBase", vortexBaseSwirl);
     audioVortexForce = GetF(kv, "motion.vortexAudio", audioVortexForce);
     vortexInwardPull = GetF(kv, "motion.vortexInward", vortexInwardPull);
+    stencilStrength = GetF(kv, "motion.logoStrength", stencilStrength);
+    stencilScale = GetF(kv, "motion.logoScale", stencilScale);
+    stencilDamp = GetF(kv, "motion.logoDamp", stencilDamp);
+    stencilBassRelease = GetB(kv, "motion.logoBassRelease", stencilBassRelease);
+    if (structural) {
+        if (auto it = kv.find("motion.logoPath"); it != kv.end() && !it->second.empty()
+            && it->second != stencilPath) {
+            LoadStencilPNG(it->second.c_str());   // fails gracefully if the file moved
+        }
+    }
+    silkStrength = GetF(kv, "motion.silkStrength", silkStrength);
+    silkScale = GetF(kv, "motion.silkScale", silkScale);
+    silkDrift = GetF(kv, "motion.silkDrift", silkDrift);
+    silkAudioKick = GetF(kv, "motion.silkAudio", silkAudioKick);
     gravitySpinEnabled = GetB(kv, "motion.spinOn", gravitySpinEnabled);
     gravitySpinSpeedDeg = GetF(kv, "motion.spinSpeed", gravitySpinSpeedDeg);
     gravitySpinTiltDeg = GetF(kv, "motion.spinTilt", gravitySpinTiltDeg);
@@ -1910,7 +2275,44 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
         audioReactive->releaseMs.store(GetF(kv, "audio.releaseMs", audioReactive->releaseMs.load()));
     }
 
-    pendingReset = true;   // respawn with the loaded shape/count/mix pattern
+    if (structural)
+        pendingReset = true;   // respawn with the loaded shape/count/mix pattern
+}
+
+// Drop Sequencer: fires cues due at tSec (cut = instant non-structural apply,
+// morph = smoothstep crossfade from a snapshot to the target preset). The
+// fluid never respawns mid-song -- shape/physics changes squeeze it live.
+void Scene0p::SequencerTick(float tSec) {
+    if (!seqEnabled || seqCues.empty()) return;
+
+    while (seqNextCue < int(seqCues.size()) && seqCues[seqNextCue].time <= tSec) {
+        const SeqCue& c = seqCues[seqNextCue];
+        PresetIO::KV target;
+        if (!c.preset.empty() &&
+            PresetIO::LoadFile("presets/" + c.preset + ".txt", target)) {
+            if (c.cut || c.morphSec <= 0.01f) {
+                ApplyPresetKV(target, false);
+                seqMorphActive = false;
+            } else {
+                seqStartKV.clear();
+                GatherPreset(seqStartKV);
+                seqTargetKV    = target;
+                seqMorphStart  = c.time;
+                seqMorphDur    = c.morphSec;
+                seqMorphActive = true;
+            }
+        }
+        ++seqNextCue;
+    }
+
+    if (seqMorphActive) {
+        float t = (tSec - seqMorphStart) / std::max(seqMorphDur, 1e-3f);
+        const bool done = t >= 1.0f;
+        t = std::min(t, 1.0f);
+        const float s = t * t * (3.0f - 2.0f * t);   // smoothstep ease
+        ApplyPresetKV(PresetIO::LerpKV(seqStartKV, seqTargetKV, s), false);
+        if (done) seqMorphActive = false;
+    }
 }
 
 // Uploads the shared-palette-block uniforms (see particleImpostor.frag / defaultFrag.glsl)
@@ -2108,15 +2510,23 @@ void Scene0p::InitPostBuffers(int w, int h) {
     DestroyPostBuffers();
     postW = w; postH = h;
 
-    // Scene target: RGBA8 color + depth (the raw render needs a depth buffer)
+    // Scene target: RGBA8 color + a depth TEXTURE (the DOF pass samples it)
     postSceneFBO = MakeColorFBO(postSceneTex, w, h, GL_RGBA8);
-    glGenRenderbuffers(1, &postSceneRBO);
-    glBindRenderbuffer(GL_RENDERBUFFER, postSceneRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glGenTextures(1, &postSceneDepth);
+    glBindTexture(GL_TEXTURE_2D, postSceneDepth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_FRAMEBUFFER, postSceneFBO);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, postSceneRBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, postSceneDepth, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Depth-of-field output
+    dofFBO = MakeColorFBO(dofTex, w, h, GL_RGBA8);
 
     // Trail history: 16F so the multiplicative decay reaches true zero
     // (RGBA8 rounds small values back to themselves and streaks stick forever)
@@ -2132,9 +2542,11 @@ void Scene0p::InitPostBuffers(int w, int h) {
 }
 
 void Scene0p::DestroyPostBuffers() {
-    if (postSceneFBO) { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
-    if (postSceneTex) { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
-    if (postSceneRBO) { glDeleteRenderbuffers(1, &postSceneRBO); postSceneRBO = 0; }
+    if (postSceneFBO)   { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
+    if (postSceneTex)   { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
+    if (postSceneDepth) { glDeleteTextures(1, &postSceneDepth);   postSceneDepth = 0; }
+    if (dofFBO)         { glDeleteFramebuffers(1, &dofFBO);       dofFBO = 0; }
+    if (dofTex)         { glDeleteTextures(1, &dofTex);           dofTex = 0; }
     for (int i = 0; i < 2; ++i) {
         if (trailFBO[i]) { glDeleteFramebuffers(1, &trailFBO[i]); trailFBO[i] = 0; }
         if (trailTex[i]) { glDeleteTextures(1, &trailTex[i]);     trailTex[i] = 0; }
@@ -2164,6 +2576,29 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
 
     GLuint baseTex = postSceneTex;
 
+    // Depth of field: blur by distance from the focus plane. Needs real scene
+    // depth, which the impostor/mesh paths write; the water composite does
+    // not, so DOF is skipped in water mode.
+    if (lensAperture > 0.0f && !useWaterRendering && postLensShader && dofFBO) {
+        glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);
+        glViewport(0, 0, postW, postH);
+        glUseProgram(postLensShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, baseTex);
+        glUniform1i(postLensShader->GetUniformID("sceneTex"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, postSceneDepth);
+        glUniform1i(postLensShader->GetUniformID("depthTex"), 1);
+        glUniform2f(postLensShader->GetUniformID("uResolution"), float(postW), float(postH));
+        glUniform1f(postLensShader->GetUniformID("uNear"), 0.5f);
+        glUniform1f(postLensShader->GetUniformID("uFar"), viewFarPlane);
+        glUniform1f(postLensShader->GetUniformID("uFocusDist"), lensFocusDist);
+        glUniform1f(postLensShader->GetUniformID("uAperture"), lensAperture);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE0);
+        baseTex = dofTex;
+    }
+
     // Trails: fold this frame into the decaying history buffer; everything
     // downstream (bloom, kaleidoscope, grade) then reads the trailed image.
     if (trailHalfLife > 1e-3f && postTrailShader && trailFBO[0]) {
@@ -2172,7 +2607,7 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
         glViewport(0, 0, postW, postH);
         glUseProgram(postTrailShader->GetProgram());
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, postSceneTex);
+        glBindTexture(GL_TEXTURE_2D, baseTex);   // scene, or the DOF'd scene
         glUniform1i(postTrailShader->GetUniformID("sceneTex"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, trailTex[trailPing]);
@@ -2186,8 +2621,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
 
     // Bloom: bright-pass at half res, then two separable gaussian rounds.
     // The blur step scales with output height so the glow width matches at
-    // window, reel, and 2x supersampled sizes.
-    const bool bloomOn = bloomStrength > 0.0f && postBrightShader && postBlurShader;
+    // window, reel, and 2x supersampled sizes. Also runs when only the
+    // anamorphic streaks need it (they stretch the blurred brights).
+    const bool bloomOn = (bloomStrength > 0.0f || streakStrength > 0.0f)
+                         && postBrightShader && postBlurShader;
     if (bloomOn) {
         const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
         glViewport(0, 0, hw, hh);
@@ -2234,6 +2671,9 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glUniform1f(postFinalShader->GetUniformID("uVignette"), vignetteAmount);
     glUniform1f(postFinalShader->GetUniformID("uGrain"), grainAmount);
     glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), bloomOn ? bloomStrength : 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uStreak"), bloomOn ? streakStrength : 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uStreakLen"), 0.22f * float(outW));
+    glUniform3f(postFinalShader->GetUniformID("uStreakTint"), 0.45f, 0.65f, 1.0f);
     glUniform1f(postFinalShader->GetUniformID("uTime"), postTime);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -2735,6 +3175,22 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
     // Fountain: bass boosts the jet; DispatchCompute reads this per substep
     fluidGPU->fountainJetSpeedLive = fountainJetSpeed * (1.0f + fountainBassKick * bass);
 
+    // Liquid Logo: spring the fluid into the stencil; a bass hit releases it
+    // so the drop "blows the logo apart" (re-forms as the hit decays).
+    if (fluidGPU->stencilCount > 0 && stencilStrength > 0.0f) {
+        float s = stencilStrength;
+        if (stencilBassRelease && bass > audioBassThreshold) s = 0.0f;
+        if (s > 0.0f)
+            fluidGPU->ApplyStencilAttract(s * dt, std::min(0.5f, stencilDamp * dt));
+    }
+
+    // Silk Flow: curl-noise drift; the mid band tightens/strengthens the silk
+    if (silkStrength > 0.0f || silkAudioKick * mid > 0.0f) {
+        silkTime += silkDrift * dt;
+        const float silk = silkStrength + silkAudioKick * mid;
+        fluidGPU->ApplyCurlFlow(silk * dt, silkScale, silkTime);
+    }
+
     // Post-FX clock + trail decay: advanced here (not wall-clock) so film
     // grain and trail fade are framerate-independent and reel-deterministic.
     postTime += dt;
@@ -2819,6 +3275,11 @@ void Scene0p::StartReelExport() {
     // Deterministic start: fresh fluid + zeroed reaction phases.
     audioBassPhase = audioMidPhase = audioTreblePhase = 0.0f;
     gravitySpinPhase = 0.0f;
+    silkTime = 0.0f;
+    std::stable_sort(seqCues.begin(), seqCues.end(),
+                     [](const SeqCue& a, const SeqCue& b) { return a.time < b.time; });
+    seqNextCue = 0;
+    seqMorphActive = false;
     fluidGPU->ResetSimulation();
     fluidGPU->param_pause = false;
     mesh->BindInstanceBuffer(fluidGPU->GetFluidVBO(), static_cast<GLsizei>(sizeof(float) * 4));
@@ -2927,6 +3388,7 @@ void Scene0p::ReelExportStep() {
     // and Cancel stays responsive (the render is the bottleneck, not the loop).
     const int batch = 1;
     for (int b = 0; b < batch && reelFrame < reelBands.frameCount; ++b) {
+        SequencerTick(float(reelFrame) / float(fps));
         DriveAudioReaction(reelBands.bass[reelFrame], reelBands.mid[reelFrame],
                            reelBands.treble[reelFrame], frameDt);
         // Deterministic auto-orbit: advance with frame time (never wall-clock),

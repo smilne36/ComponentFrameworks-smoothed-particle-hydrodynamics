@@ -1,0 +1,44 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// Match CPU side SPHParticle layout (80 bytes)
+struct SPHParticle {
+    vec4  pos;
+    vec4  vel;
+    vec4  acc;
+    float density;
+    float pressure;
+    float padA;
+    float padB;
+    int   isGhost;
+    int   isActive;
+    int   padC;
+    int   pad0;
+};
+
+layout(std430, binding = 0) buffer ParticleBuf { SPHParticle particles[]; };
+layout(std430, binding = 5) buffer TargetBuf  { vec4 targets[]; };
+
+// Liquid Logo: each particle gets a stable target point sampled from the
+// bright pixels of a stencil image, and is spring-pulled toward it with
+// damping so the fluid settles INTO the shape instead of orbiting it.
+// Kicks arrive pre-multiplied by dt (velocity changes).
+uniform int   N;
+uniform int   uNumTargets;
+uniform float uPull;    // spring kick toward the target this call
+uniform float uDamp;    // velocity damping factor this call (0..1)
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(N)) return;
+    if (uNumTargets <= 0) return;
+
+    SPHParticle p = particles[i];
+    if (p.isGhost != 0) return;
+
+    vec3 target = targets[i % uint(uNumTargets)].xyz;
+    vec3 d = target - p.pos.xyz;
+    p.vel.xyz += d * uPull;
+    p.vel.xyz *= (1.0 - uDamp);
+    particles[i] = p;
+}

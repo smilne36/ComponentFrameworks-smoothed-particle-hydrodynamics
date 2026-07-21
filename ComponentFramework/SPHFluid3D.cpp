@@ -40,6 +40,8 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     vortexImpulseShader = LoadComputeShader("shaders/VortexImpulse.comp");
     attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
     fountainShader = LoadComputeShader("shaders/FountainRecycle.comp");
+    curlFlowShader = LoadComputeShader("shaders/CurlFlow.comp");
+    stencilShader = LoadComputeShader("shaders/StencilAttract.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -71,6 +73,9 @@ SPHFluidGPU::~SPHFluidGPU() {
     if (vortexImpulseShader)      glDeleteProgram(vortexImpulseShader);
     if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
     if (fountainShader)           glDeleteProgram(fountainShader);
+    if (curlFlowShader)           glDeleteProgram(curlFlowShader);
+    if (stencilShader)            glDeleteProgram(stencilShader);
+    if (stencilSSBO)              glDeleteBuffers(1, &stencilSSBO);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -191,6 +196,39 @@ void SPHFluidGPU::InitializeParticles() {
                 float b = std::max(param_boxHalf.y - margin, 1e-4f);
                 float u = lx / a, v = ly / b, w = lz / a;
                 return (u * u + v * v + w * w) <= 1.0f;
+            }
+            case 7: {   // star prism: wall radius oscillates with angle
+                float R     = param_boxHalf.x;
+                float H     = param_boxHalf.y;
+                float pts   = std::max(3.0f, param_shapeAux.x);
+                float depth = std::clamp(param_shapeAux.y, 0.0f, 0.9f);
+                if (std::fabs(ly) > H - margin) return false;
+                float ang  = std::atan2(lz, lx);
+                float rMax = R * (1.0f - depth * (0.5f + 0.5f * std::cos(pts * ang))) - margin;
+                return rMax > 0.0f && (lx * lx + lz * lz) <= rMax * rMax;
+            }
+            case 8: {   // superellipsoid |x/a|^n + |y/b|^n + |z/a|^n <= 1
+                float a = std::max(param_boxHalf.x - margin, 1e-4f);
+                float b = std::max(param_boxHalf.y - margin, 1e-4f);
+                float n = std::clamp(param_shapeAux.z, 0.6f, 8.0f);
+                float F = std::pow(std::fabs(lx) / a, n) + std::pow(std::fabs(ly) / b, n)
+                        + std::pow(std::fabs(lz) / a, n);
+                return F <= 1.0f;
+            }
+            case 9: {   // trefoil knot tube: within tube radius of the curve
+                float S = param_boxHalf.x;
+                float r = param_boxHalf.y - margin;
+                if (r <= 0.0f) return false;
+                float bestD2 = 1e30f;
+                for (int k = 0; k < 48; ++k) {
+                    float t  = 6.2831853f * float(k) / 48.0f;
+                    float cx = S * (std::sin(t) + 2.0f * std::sin(2.0f * t));
+                    float cy = S * 0.35f * (-std::sin(3.0f * t));
+                    float cz = S * (std::cos(t) - 2.0f * std::cos(2.0f * t));
+                    float dx = lx - cx, dy = ly - cy, dz = lz - cz;
+                    bestD2 = std::min(bestD2, dx * dx + dy * dy + dz * dz);
+                }
+                return bestD2 <= r * r;
             }
             default: return true;
             }
@@ -392,6 +430,8 @@ void SPHFluidGPU::DispatchCompute(float overrideDt) {
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uRestitution"), param_wallRestitution);
     glUniform1f(glGetUniformLocation(obbConstraintShader, "uFriction"), param_wallFriction);
     glUniform1i(glGetUniformLocation(obbConstraintShader, "uShapeType"), param_shapeType);
+    glUniform3f(glGetUniformLocation(obbConstraintShader, "uShapeAux"),
+        param_shapeAux.x, param_shapeAux.y, param_shapeAux.z);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -546,6 +586,52 @@ void SPHFluidGPU::ApplyAttractorImpulse(const Vec3& point, float pullKick, float
     glUniform1f(glGetUniformLocation(attractorImpulseShader, "uSoften"), std::max(0.15f * radius, 0.2f));
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Silk Flow: curl-noise drift (divergence-free, so it swirls instead of
+// clumping). kick is a velocity delta (callers pre-multiply by dt).
+void SPHFluidGPU::ApplyCurlFlow(float kick, float scale, float time) {
+    if (std::fabs(kick) < 1e-6f) return;
+
+    glUseProgram(curlFlowShader);
+    glUniform1i(glGetUniformLocation(curlFlowShader, "N"), int(particles.size()));
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uKick"), kick);
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uScale"), std::max(scale, 1e-3f));
+    glUniform1f(glGetUniformLocation(curlFlowShader, "uTime"), time);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Liquid Logo: upload the stencil's target points (world space, w unused)
+void SPHFluidGPU::SetStencilTargets(const std::vector<Vec4>& points) {
+    stencilCount = int(points.size());
+    if (stencilSSBO) { glDeleteBuffers(1, &stencilSSBO); stencilSSBO = 0; }
+    if (points.empty()) return;
+    glGenBuffers(1, &stencilSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stencilSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(Vec4) * points.size(),
+                 points.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void SPHFluidGPU::ApplyStencilAttract(float pullKick, float dampKick) {
+    if (stencilCount <= 0 || !stencilSSBO) return;
+    if (std::fabs(pullKick) < 1e-6f && dampKick < 1e-6f) return;
+
+    glUseProgram(stencilShader);
+    glUniform1i(glGetUniformLocation(stencilShader, "N"), int(particles.size()));
+    glUniform1i(glGetUniformLocation(stencilShader, "uNumTargets"), stencilCount);
+    glUniform1f(glGetUniformLocation(stencilShader, "uPull"), pullKick);
+    glUniform1f(glGetUniformLocation(stencilShader, "uDamp"), std::min(dampKick, 0.5f));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, stencilSSBO);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     glUseProgram(0);

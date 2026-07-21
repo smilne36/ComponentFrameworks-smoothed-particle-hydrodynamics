@@ -26,6 +26,12 @@ namespace PresetIO {
     // Keep [A-Za-z0-9 _-], trim; "preset" if nothing survives.
     std::string SanitizeName(const std::string& raw);
 
+    // Blend two presets for the Drop Sequencer: numeric keys lerp (floats and
+    // "x,y,z" triples), everything else switches from a to b at t >= 0.5.
+    // Keys missing from `a` appear only once t >= 0.5; keys missing from `b`
+    // are omitted (the applier leaves those values as they are).
+    KV LerpKV(const KV& a, const KV& b, float t);
+
     // Typed accessors. Floats use "%.9g" so every float round-trips exactly.
     void  PutF (KV& kv, const char* key, float v);
     void  PutI (KV& kv, const char* key, int v);

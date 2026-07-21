@@ -74,6 +74,48 @@ std::string SanitizeName(const std::string& raw) {
     return out.empty() ? "preset" : out;
 }
 
+namespace {
+    bool tryFloat(const std::string& s, float& out) {
+        char* end = nullptr;
+        out = std::strtof(s.c_str(), &end);
+        if (!end || end == s.c_str()) return false;
+        while (*end == ' ' || *end == '\t') ++end;
+        return *end == '\0';
+    }
+    bool tryF3(const std::string& s, float out[3]) {
+        return std::sscanf(s.c_str(), "%f,%f,%f", &out[0], &out[1], &out[2]) == 3;
+    }
+    std::string fmtF(float v) {
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.9g", double(v));
+        return buf;
+    }
+}
+
+KV LerpKV(const KV& a, const KV& b, float t) {
+    KV out;
+    for (const auto& [key, bv] : b) {
+        auto ia = a.find(key);
+        if (ia == a.end()) {
+            if (t >= 0.5f) out[key] = bv;
+            continue;
+        }
+        const std::string& av = ia->second;
+        float fa, fb;
+        float a3[3], b3[3];
+        if (tryFloat(av, fa) && tryFloat(bv, fb)) {
+            out[key] = fmtF(fa + (fb - fa) * t);
+        } else if (tryF3(av, a3) && tryF3(bv, b3)) {
+            out[key] = fmtF(a3[0] + (b3[0] - a3[0]) * t) + "," +
+                       fmtF(a3[1] + (b3[1] - a3[1]) * t) + "," +
+                       fmtF(a3[2] + (b3[2] - a3[2]) * t);
+        } else {
+            out[key] = (t < 0.5f) ? av : bv;
+        }
+    }
+    return out;
+}
+
 void PutF(KV& kv, const char* key, float v) {
     char buf[48];
     std::snprintf(buf, sizeof(buf), "%.9g", double(v));
