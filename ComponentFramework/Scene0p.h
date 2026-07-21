@@ -343,7 +343,7 @@ private:
     float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
     float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
 
-    void    InitPostBuffers(int w, int h);
+    void    InitPostBuffers(int w, int h, bool allocTrails = true);
     void    DestroyPostBuffers();
     void    ClearTrailHistory();
     bool    PostChainActive() const;

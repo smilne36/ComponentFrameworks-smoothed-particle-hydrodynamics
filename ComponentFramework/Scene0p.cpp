@@ -2500,11 +2500,21 @@ static GLuint MakeColorFBO(GLuint& texOut, int w, int h, GLenum internalFmt) {
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texOut, 0);
+    // At huge capture sizes (2x supersampled 4K / SoundCloud cover) the texture
+    // can fail to allocate (out of VRAM); an incomplete FBO would then render the
+    // whole post chain to garbage. Report failure so the caller falls back cleanly.
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!ok) {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &texOut);
+        texOut = 0;
+        return 0;
+    }
     return fbo;
 }
 
-void Scene0p::InitPostBuffers(int w, int h) {
+void Scene0p::InitPostBuffers(int w, int h, bool allocTrails) {
     if (w <= 0 || h <= 0) return;
     if (w == postW && h == postH && postSceneFBO) return;   // already sized
     DestroyPostBuffers();
@@ -2512,6 +2522,13 @@ void Scene0p::InitPostBuffers(int w, int h) {
 
     // Scene target: RGBA8 color + a depth TEXTURE (the DOF pass samples it)
     postSceneFBO = MakeColorFBO(postSceneTex, w, h, GL_RGBA8);
+    if (!postSceneFBO) {
+        // Out of VRAM at this size (typically a 2x-supersampled high-res still).
+        // Leave post disabled (postW/postH reset to 0) so RenderSceneTo falls
+        // back to a clean direct render instead of processing garbage.
+        DestroyPostBuffers();
+        return;
+    }
     glGenTextures(1, &postSceneDepth);
     glBindTexture(GL_TEXTURE_2D, postSceneDepth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
@@ -2529,9 +2546,13 @@ void Scene0p::InitPostBuffers(int w, int h) {
     dofFBO = MakeColorFBO(dofTex, w, h, GL_RGBA8);
 
     // Trail history: 16F so the multiplicative decay reaches true zero
-    // (RGBA8 rounds small values back to themselves and streaks stick forever)
-    for (int i = 0; i < 2; ++i)
-        trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
+    // (RGBA8 rounds small values back to themselves and streaks stick forever).
+    // These two full-res 16F buffers are the biggest VRAM users; a single still
+    // can't show motion trails anyway (they're a temporal effect), so captures
+    // skip them (allocTrails=false) to leave headroom for the 2x post buffers.
+    if (allocTrails)
+        for (int i = 0; i < 2; ++i)
+            trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
 
     // Bloom: half-res 16F ping-pong
     const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
@@ -2624,7 +2645,8 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     // window, reel, and 2x supersampled sizes. Also runs when only the
     // anamorphic streaks need it (they stretch the blurred brights).
     const bool bloomOn = (bloomStrength > 0.0f || streakStrength > 0.0f)
-                         && postBrightShader && postBlurShader;
+                         && postBrightShader && postBlurShader
+                         && bloomFBO[0] && bloomFBO[1];
     if (bloomOn) {
         const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
         glViewport(0, 0, hw, hh);
@@ -3583,7 +3605,15 @@ void Scene0p::DoCapture() {
     const bool prevHalfRes = ssfrHalfRes;
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
-    InitPostBuffers(renderW, renderH);
+    // Lean post buffers for the still: skip the two full-res 16F trail buffers
+    // (motion trails need multiple frames, so a single capture can't show them)
+    // to leave enough VRAM for the rest of the chain at the 2x supersampled size.
+    InitPostBuffers(renderW, renderH, /*allocTrails=*/false);
+    // If the post chain wanted to run but its buffers couldn't be allocated at
+    // this size, RenderSceneTo will render a clean (un-filtered) frame instead of
+    // garbage. Tell the user their effects were skipped so it isn't a mystery.
+    const bool fxWanted   = PostChainActive();
+    const bool fxDropped  = fxWanted && (postSceneFBO == 0 || postW != renderW);
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
     RenderSceneTo(capFBO, renderW, renderH, capProj);
@@ -3630,8 +3660,12 @@ void Scene0p::DoCapture() {
              local.tm_hour, local.tm_min, local.tm_sec, capW, capH);
 
     stbi_flip_vertically_on_write(1);   // GL reads rows bottom-up
-    if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3))
+    if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3)) {
         lastScreenshotPath = name;
-    else
+        if (fxDropped)
+            lastScreenshotPath += "  (effects skipped: not enough GPU memory at "
+                                  "this size -- try a smaller Resolution)";
+    } else {
         lastScreenshotPath = "FAILED: could not write PNG";
+    }
 }
