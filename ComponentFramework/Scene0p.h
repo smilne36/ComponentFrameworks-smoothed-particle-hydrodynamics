@@ -52,6 +52,7 @@ private:
     Vec3    lastBoxCenter{};
     Vec3    lastBoxHalf{};
     Vec3    lastBoxEuler{};
+    Vec3    lastShapeAux{};
     int     lastShapeType = -1;
 
     bool    useImpostors = false;
@@ -91,12 +92,31 @@ private:
     void    SurpriseMe();   // randomize a whole look within curated ranges
 
     // --- My Presets: save/load the full current look to presets/<name>.txt ---
+    // structural=false (used by the Drop Sequencer) skips everything that
+    // needs a respawn (particle count, mix pattern, spawn jitter, logo file
+    // load) and does NOT set pendingReset -- the fluid morphs continuously.
     void    GatherPreset(PresetIO::KV& kv) const;
-    void    ApplyPresetKV(const PresetIO::KV& kv);
+    void    ApplyPresetKV(const PresetIO::KV& kv, bool structural = true);
     char    presetNameBuf[64] = "";
     std::vector<std::string> presetList;
     int     presetSelIdx = -1;
     std::string presetStatus;
+
+    // --- Drop Sequencer: choreograph preset cuts/morphs to the track (reels) ---
+    struct SeqCue {
+        float       time     = 0.0f;   // seconds into the track
+        std::string preset;            // My Presets name ("" = unassigned)
+        float       morphSec = 1.0f;   // crossfade length; ignored when cut
+        bool        cut      = true;   // true = instant slam, false = morph
+    };
+    bool    seqEnabled = false;
+    std::vector<SeqCue> seqCues;
+    int     seqNextCue = 0;
+    bool    seqMorphActive = false;
+    float   seqMorphStart = 0.0f, seqMorphDur = 1.0f;
+    PresetIO::KV seqStartKV, seqTargetKV;
+    std::string  seqStatus;
+    void    SequencerTick(float tSec);
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
 
@@ -167,6 +187,24 @@ private:
     // --- Fountain (UI-side jet controls; mode lives on fluidGPU) ---
     float   fountainJetSpeed = 25.0f;
     float   fountainBassKick = 0.6f;   // bass -> jet speed boost
+
+    // --- Liquid Logo (fluid forms a PNG stencil; bass can blow it apart) ---
+    float   stencilStrength = 6.0f;    // spring pull; active once a PNG is loaded
+    float   stencilDamp     = 2.0f;    // settle damping (per second)
+    float   stencilScale    = 12.0f;   // world height of the stencil
+    bool    stencilBassRelease = true; // bass hits release the shape
+    std::string stencilPath;
+    std::string stencilStatus;
+    std::vector<Vec4> stencilUnitPts;  // normalized points cache (re-scaled on upload)
+    bool    LoadStencilPNG(const char* path);
+    void    UploadStencilTargets();
+
+    // --- Silk Flow (curl-noise drift; smoke/silk motion) ---
+    float   silkStrength  = 0.0f;   // 0 = off
+    float   silkScale     = 0.15f;  // spatial frequency
+    float   silkDrift     = 0.3f;   // field evolution speed
+    float   silkAudioKick = 0.0f;   // mid -> extra strength
+    float   silkTime      = 0.0f;   // advances by dt*drift (reel-deterministic)
 
     // "Live" values fed to the renderer each frame. The base members stay the
     // user's pure slider settings; these are recomputed fresh every Update()
@@ -283,8 +321,11 @@ private:
     Shader* postTrailShader  = nullptr;
     Shader* postBrightShader = nullptr;
     Shader* postBlurShader   = nullptr;
+    Shader* postLensShader   = nullptr;
     Shader* postFinalShader  = nullptr;
-    GLuint  postSceneFBO = 0, postSceneTex = 0, postSceneRBO = 0;   // RGBA8 + depth
+    GLuint  postSceneFBO = 0, postSceneTex = 0;
+    GLuint  postSceneDepth = 0;             // depth TEXTURE (sampled by the DOF pass)
+    GLuint  dofFBO = 0, dofTex = 0;         // depth-of-field output
     GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
     GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
     int     postW = 0, postH = 0;
@@ -298,6 +339,9 @@ private:
     int     kaleidoSegments = 0;    // < 2 = off
     float   kaleidoAngleDeg = 0.0f;
     float   vignetteAmount = 0.0f, grainAmount = 0.0f, chromaticAmount = 0.0f;
+    float   lensFocusDist = 22.0f;  // view-space distance in focus
+    float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
+    float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
 
     void    InitPostBuffers(int w, int h);
     void    DestroyPostBuffers();

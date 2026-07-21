@@ -1,0 +1,80 @@
+#version 450
+layout(local_size_x = 256) in;
+
+// Match CPU side SPHParticle layout (80 bytes)
+struct SPHParticle {
+    vec4  pos;
+    vec4  vel;
+    vec4  acc;
+    float density;
+    float pressure;
+    float padA;
+    float padB;
+    int   isGhost;
+    int   isActive;
+    int   padC;
+    int   pad0;
+};
+
+layout(std430, binding = 0) buffer ParticleBuf { SPHParticle particles[]; };
+
+// Silk Flow: curl of a noise potential field. The curl of any field is
+// divergence-free, so particles drift in smooth smoke/silk swirls instead of
+// piling up. uKick arrives pre-multiplied by dt (velocity change), and the
+// field evolves via uTime (advanced deterministically on the CPU).
+uniform int   N;
+uniform float uKick;    // velocity kick this call
+uniform float uScale;   // spatial frequency of the flow
+uniform float uTime;    // flow evolution
+
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float vnoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash13(i);
+    float n100 = hash13(i + vec3(1, 0, 0));
+    float n010 = hash13(i + vec3(0, 1, 0));
+    float n110 = hash13(i + vec3(1, 1, 0));
+    float n001 = hash13(i + vec3(0, 0, 1));
+    float n101 = hash13(i + vec3(1, 0, 1));
+    float n011 = hash13(i + vec3(0, 1, 1));
+    float n111 = hash13(i + vec3(1, 1, 1));
+    return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+               mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+// Three decorrelated potential components (offset copies of the same noise)
+float p1(vec3 q) { return vnoise(q); }
+float p2(vec3 q) { return vnoise(q + vec3(31.416, 47.853, 12.793)); }
+float p3(vec3 q) { return vnoise(q + vec3(-233.145, 93.912, 55.121)); }
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(N)) return;
+
+    SPHParticle p = particles[i];
+    if (p.isGhost != 0) return;
+
+    vec3 q = p.pos.xyz * uScale + vec3(0.0, 0.0, uTime);
+    const float h = 0.35;
+    // curl(psi) via central differences of the three potential fields
+    float dP3dy = p3(q + vec3(0, h, 0)) - p3(q - vec3(0, h, 0));
+    float dP2dz = p2(q + vec3(0, 0, h)) - p2(q - vec3(0, 0, h));
+    float dP1dz = p1(q + vec3(0, 0, h)) - p1(q - vec3(0, 0, h));
+    float dP3dx = p3(q + vec3(h, 0, 0)) - p3(q - vec3(h, 0, 0));
+    float dP2dx = p2(q + vec3(h, 0, 0)) - p2(q - vec3(h, 0, 0));
+    float dP1dy = p1(q + vec3(0, h, 0)) - p1(q - vec3(0, h, 0));
+    vec3 curl = vec3(dP3dy - dP2dz, dP1dz - dP3dx, dP2dx - dP1dy) / (2.0 * h);
+
+    // Normalize magnitude softly so the strength slider behaves predictably
+    float m = length(curl);
+    vec3 dir = (m > 1e-5) ? curl / m : vec3(0.0);
+    p.vel.xyz += dir * min(m, 1.0) * uKick;
+    particles[i] = p;
+}

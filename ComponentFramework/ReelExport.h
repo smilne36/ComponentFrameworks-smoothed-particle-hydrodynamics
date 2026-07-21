@@ -16,3 +16,8 @@ struct ReelAnalysis {
 // per video frame (every sampleRate/fps input samples). frameCount is
 // ceil(seconds * fps), optionally capped by maxSeconds (0 = whole track).
 ReelAnalysis AnalyzeTrack(const char* path, int fps, float maxSeconds);
+
+// Finds bass drops in a per-frame envelope: rising crossings of an adaptive
+// threshold (1.6x the rolling 4s average, floored at 0.25), at least
+// minGapSec apart, capped at 16. Returns drop times in seconds.
+std::vector<float> DetectDrops(const std::vector<float>& bass, int fps, float minGapSec);

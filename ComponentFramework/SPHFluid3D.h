@@ -46,6 +46,14 @@ public:
     // Movable gravity well: softened inverse-distance pull toward a point,
     // fading out by radius. Pass the kick pre-multiplied by dt.
     void   ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius);
+    // Silk Flow: divergence-free curl-noise drift. Kick pre-multiplied by dt.
+    void   ApplyCurlFlow(float kick, float scale, float time);
+    // Liquid Logo: upload stencil target points / spring particles onto them.
+    // Kicks pre-multiplied by dt; damp is a per-call 0..1 velocity factor.
+    void   SetStencilTargets(const std::vector<Vec4>& points);
+    void   ApplyStencilAttract(float pullKick, float dampKick);
+    int    stencilCount = 0;
+    GLuint stencilSSBO = 0;
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -74,6 +82,8 @@ public:
     GLuint vortexImpulseShader = 0;
     GLuint attractorImpulseShader = 0;
     GLuint fountainShader = 0;
+    GLuint curlFlowShader = 0;
+    GLuint stencilShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;
@@ -105,6 +115,8 @@ public:
                                            // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
     int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
+                                           // 7=Star Prism, 8=Superellipsoid, 9=Trefoil Knot
+    Vec3  param_shapeAux = Vec3(5.0f, 0.35f, 2.5f);   // star: x=points, y=depth | superellipsoid: z=exponent
     int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
@@ -118,6 +130,12 @@ public:
         case 4:  return Vec3(param_boxHalf.x, param_boxHalf.y + param_boxHalf.x, param_boxHalf.x);
         case 5:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
         case 6:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 7:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 8:  return Vec3(param_boxHalf.x, param_boxHalf.y, param_boxHalf.x);
+        case 9:  // trefoil curve spans ~3x scale in XZ, ~0.35x in Y, plus the tube
+            return Vec3(3.0f * param_boxHalf.x + param_boxHalf.y,
+                        0.35f * param_boxHalf.x + param_boxHalf.y,
+                        3.0f * param_boxHalf.x + param_boxHalf.y);
         default: return param_boxHalf;
         }
     }
