@@ -48,6 +48,12 @@ public:
     void   ApplyAttractorImpulse(const Vec3& point, float pullKick, float radius);
     // Silk Flow: divergence-free curl-noise drift. Kick pre-multiplied by dt.
     void   ApplyCurlFlow(float kick, float scale, float time);
+    // Liquid Logo: upload stencil target points / spring particles onto them.
+    // Kicks pre-multiplied by dt; damp is a per-call 0..1 velocity factor.
+    void   SetStencilTargets(const std::vector<Vec4>& points);
+    void   ApplyStencilAttract(float pullKick, float dampKick);
+    int    stencilCount = 0;
+    GLuint stencilSSBO = 0;
     void   ResetSimulation();
     void   ComputeGridExtents();
 
@@ -77,6 +83,7 @@ public:
     GLuint attractorImpulseShader = 0;
     GLuint fountainShader = 0;
     GLuint curlFlowShader = 0;
+    GLuint stencilShader = 0;
 
     GLuint fluidVBO = 0;
     float* vboPtr = nullptr;

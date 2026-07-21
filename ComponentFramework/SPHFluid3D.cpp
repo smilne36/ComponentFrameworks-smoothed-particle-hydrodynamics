@@ -41,6 +41,7 @@ SPHFluidGPU::SPHFluidGPU(size_t numParticles_)
     attractorImpulseShader = LoadComputeShader("shaders/AttractorImpulse.comp");
     fountainShader = LoadComputeShader("shaders/FountainRecycle.comp");
     curlFlowShader = LoadComputeShader("shaders/CurlFlow.comp");
+    stencilShader = LoadComputeShader("shaders/StencilAttract.comp");
     terrainConstraintShader  = LoadComputeShader("shaders/TerrainConstraints.comp");
     streamEmitShader         = LoadComputeShader("shaders/StreamEmit.comp");
     channelConstraintShader  = LoadComputeShader("shaders/ChannelConstraint.comp");
@@ -73,6 +74,8 @@ SPHFluidGPU::~SPHFluidGPU() {
     if (attractorImpulseShader)   glDeleteProgram(attractorImpulseShader);
     if (fountainShader)           glDeleteProgram(fountainShader);
     if (curlFlowShader)           glDeleteProgram(curlFlowShader);
+    if (stencilShader)            glDeleteProgram(stencilShader);
+    if (stencilSSBO)              glDeleteBuffers(1, &stencilSSBO);
     if (terrainConstraintShader)  glDeleteProgram(terrainConstraintShader);
     if (streamEmitShader)         glDeleteProgram(streamEmitShader);
     if (channelConstraintShader)  glDeleteProgram(channelConstraintShader);
@@ -600,6 +603,35 @@ void SPHFluidGPU::ApplyCurlFlow(float kick, float scale, float time) {
     glUniform1f(glGetUniformLocation(curlFlowShader, "uTime"), time);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glDispatchCompute((particles.size() + 255) / 256, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+// Liquid Logo: upload the stencil's target points (world space, w unused)
+void SPHFluidGPU::SetStencilTargets(const std::vector<Vec4>& points) {
+    stencilCount = int(points.size());
+    if (stencilSSBO) { glDeleteBuffers(1, &stencilSSBO); stencilSSBO = 0; }
+    if (points.empty()) return;
+    glGenBuffers(1, &stencilSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, stencilSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(Vec4) * points.size(),
+                 points.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void SPHFluidGPU::ApplyStencilAttract(float pullKick, float dampKick) {
+    if (stencilCount <= 0 || !stencilSSBO) return;
+    if (std::fabs(pullKick) < 1e-6f && dampKick < 1e-6f) return;
+
+    glUseProgram(stencilShader);
+    glUniform1i(glGetUniformLocation(stencilShader, "N"), int(particles.size()));
+    glUniform1i(glGetUniformLocation(stencilShader, "uNumTargets"), stencilCount);
+    glUniform1f(glGetUniformLocation(stencilShader, "uPull"), pullKick);
+    glUniform1f(glGetUniformLocation(stencilShader, "uDamp"), std::min(dampKick, 0.5f));
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, stencilSSBO);
     glDispatchCompute((particles.size() + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     glUseProgram(0);

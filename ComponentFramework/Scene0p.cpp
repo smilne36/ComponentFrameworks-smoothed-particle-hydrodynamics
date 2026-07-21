@@ -1,6 +1,7 @@
 ﻿#include <iostream>
 #include <limits>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -11,6 +12,7 @@
 #include <SDL.h>
 #include <MMath.h>
 #include "stb_image_write.h"
+#include "stb_image.h"
 
 #include "Scene0p.h"
 #include "Debug.h"
@@ -254,11 +256,18 @@ void Scene0p::HandleEvents(const SDL_Event& e) {
         break;
 
     case SDL_DROPFILE:
-        // Drag an audio file onto the window to load it into Reels Export.
+        // Drag a file onto the window: audio goes to Reels Export, a PNG
+        // becomes the Liquid Logo stencil.
         if (e.drop.file) {
-            snprintf(reelAudioPath, sizeof(reelAudioPath), "%s", e.drop.file);
-            std::filesystem::path p(reelAudioPath);
-            reelStatus = "Loaded: " + p.filename().string();
+            std::filesystem::path p(e.drop.file);
+            std::string ext = p.extension().string();
+            for (char& ch : ext) ch = char(std::tolower((unsigned char)ch));
+            if (ext == ".png") {
+                LoadStencilPNG(e.drop.file);
+            } else {
+                snprintf(reelAudioPath, sizeof(reelAudioPath), "%s", e.drop.file);
+                reelStatus = "Loaded: " + p.filename().string();
+            }
             SDL_free(e.drop.file);
         }
         break;
@@ -937,6 +946,28 @@ void Scene0p::Update(const float deltaTime) {
                 Vec3 dir = (waveDirIdx == 0) ? Vec3(1, 0, 0) : (waveDirIdx == 1) ? Vec3(0, 1, 0) : Vec3(0, 0, 1);
                 fluidGPU->ApplyWaveImpulse(waveAmplitude, waveWavelength, wavePhase, dir, yBandMin, yBandMax);
             }
+            ImGui::PopID();
+        }
+        if (ImGui::CollapsingHeader("Liquid Logo")) {
+            ImGui::PushID("LiquidLogo");
+            ImGui::TextDisabled("Drag a PNG onto the window (white logo/text on black).");
+            if (fluidGPU->stencilCount > 0) {
+                ImGui::Text("Targets: %d", fluidGPU->stencilCount);
+                ImGui::SliderFloat("Form Strength", &stencilStrength, 0.0f, 20.0f);
+                if (ImGui::SliderFloat("Logo Size", &stencilScale, 3.0f, 30.0f))
+                    UploadStencilTargets();
+                ImGui::SliderFloat("Settle Damping", &stencilDamp, 0.0f, 6.0f);
+                ImGui::Checkbox("Bass Blows It Apart", &stencilBassRelease);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear Logo")) {
+                    fluidGPU->SetStencilTargets({});
+                    stencilUnitPts.clear();
+                    stencilPath.clear();
+                    stencilStatus = "Cleared";
+                }
+            }
+            if (!stencilStatus.empty()) ImGui::TextWrapped("%s", stencilStatus.c_str());
+            ImGui::TextDisabled("Fluid gets pulled into the shape, holds it shimmering,\nand re-forms after every bass hit. Low gravity helps.");
             ImGui::PopID();
         }
         if (ImGui::CollapsingHeader("Silk Flow")) {
@@ -1664,6 +1695,59 @@ void Scene0p::ApplyArtPreset(int which) {
     pendingReset = true;
 }
 
+// ---------------------------------------------------------------------------
+// Liquid Logo: turn a PNG's bright pixels into attractor targets so the fluid
+// forms the image (white-on-black logos/text work best).
+// ---------------------------------------------------------------------------
+bool Scene0p::LoadStencilPNG(const char* path) {
+    int w = 0, h = 0, comp = 0;
+    unsigned char* img = stbi_load(path, &w, &h, &comp, 1);   // force grayscale
+    if (!img || w <= 0 || h <= 0) {
+        stencilStatus = "FAILED to load PNG";
+        if (img) stbi_image_free(img);
+        return false;
+    }
+
+    // Count bright pixels, then pick a sampling stride that keeps <= ~30k targets
+    long bright = 0;
+    const long total = long(w) * long(h);
+    for (long i = 0; i < total; ++i) if (img[i] > 100) ++bright;
+    int stride = 1;
+    while (bright / (long(stride) * long(stride)) > 30000) ++stride;
+
+    stencilUnitPts.clear();
+    const float aspect = float(w) / float(h);
+    for (int y = 0; y < h; y += stride)
+        for (int x = 0; x < w; x += stride)
+            if (img[long(y) * w + x] > 100)
+                stencilUnitPts.push_back(Vec4((float(x) / float(w) - 0.5f) * aspect,
+                                              0.5f - float(y) / float(h), 0.0f, 0.0f));
+    stbi_image_free(img);
+
+    if (stencilUnitPts.empty()) {
+        stencilStatus = "No bright pixels found (use a white logo on black)";
+        fluidGPU->SetStencilTargets({});
+        return false;
+    }
+    stencilPath = path;
+    UploadStencilTargets();
+    stencilStatus = "Loaded " + std::to_string(w) + "x" + std::to_string(h) +
+                    " -> " + std::to_string(stencilUnitPts.size()) + " points";
+    return true;
+}
+
+// Re-maps the cached normalized points into world space at the current scale
+// (called on load and when the Scale slider changes).
+void Scene0p::UploadStencilTargets() {
+    if (!fluidGPU) return;
+    std::vector<Vec4> pts;
+    pts.reserve(stencilUnitPts.size());
+    const Vec3 c = fluidGPU->param_boxCenter;
+    for (const Vec4& u : stencilUnitPts)
+        pts.push_back(Vec4(c.x + u.x * stencilScale, c.y + u.y * stencilScale, c.z, 0.0f));
+    fluidGPU->SetStencilTargets(pts);
+}
+
 // One click, one new look: randomizes shape, physics, palettes, motion, and
 // FX within ranges curated to stay art-worthy. Builds on ApplyArtPreset(0)'s
 // common reset so leftovers from previous looks never leak through.
@@ -1859,6 +1943,11 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "motion.vortexBase", vortexBaseSwirl);
     PutF(kv, "motion.vortexAudio", audioVortexForce);
     PutF(kv, "motion.vortexInward", vortexInwardPull);
+    kv["motion.logoPath"] = stencilPath;
+    PutF(kv, "motion.logoStrength", stencilStrength);
+    PutF(kv, "motion.logoScale", stencilScale);
+    PutF(kv, "motion.logoDamp", stencilDamp);
+    PutB(kv, "motion.logoBassRelease", stencilBassRelease);
     PutF(kv, "motion.silkStrength", silkStrength);
     PutF(kv, "motion.silkScale", silkScale);
     PutF(kv, "motion.silkDrift", silkDrift);
@@ -2013,6 +2102,14 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     vortexBaseSwirl = GetF(kv, "motion.vortexBase", vortexBaseSwirl);
     audioVortexForce = GetF(kv, "motion.vortexAudio", audioVortexForce);
     vortexInwardPull = GetF(kv, "motion.vortexInward", vortexInwardPull);
+    stencilStrength = GetF(kv, "motion.logoStrength", stencilStrength);
+    stencilScale = GetF(kv, "motion.logoScale", stencilScale);
+    stencilDamp = GetF(kv, "motion.logoDamp", stencilDamp);
+    stencilBassRelease = GetB(kv, "motion.logoBassRelease", stencilBassRelease);
+    if (auto it = kv.find("motion.logoPath"); it != kv.end() && !it->second.empty()
+        && it->second != stencilPath) {
+        LoadStencilPNG(it->second.c_str());   // fails gracefully if the file moved
+    }
     silkStrength = GetF(kv, "motion.silkStrength", silkStrength);
     silkScale = GetF(kv, "motion.silkScale", silkScale);
     silkDrift = GetF(kv, "motion.silkDrift", silkDrift);
@@ -2930,6 +3027,15 @@ void Scene0p::DriveAudioReaction(float bass, float mid, float treble, float dt) 
 
     // Fountain: bass boosts the jet; DispatchCompute reads this per substep
     fluidGPU->fountainJetSpeedLive = fountainJetSpeed * (1.0f + fountainBassKick * bass);
+
+    // Liquid Logo: spring the fluid into the stencil; a bass hit releases it
+    // so the drop "blows the logo apart" (re-forms as the hit decays).
+    if (fluidGPU->stencilCount > 0 && stencilStrength > 0.0f) {
+        float s = stencilStrength;
+        if (stencilBassRelease && bass > audioBassThreshold) s = 0.0f;
+        if (s > 0.0f)
+            fluidGPU->ApplyStencilAttract(s * dt, std::min(0.5f, stencilDamp * dt));
+    }
 
     // Silk Flow: curl-noise drift; the mid band tightens/strengthens the silk
     if (silkStrength > 0.0f || silkAudioKick * mid > 0.0f) {

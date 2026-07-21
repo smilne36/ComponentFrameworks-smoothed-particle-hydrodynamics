@@ -149,6 +149,7 @@
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="Shader.cpp" />
     <ClCompile Include="SPHFluid3D.cpp" />
+    <ClCompile Include="stb_image_impl.cpp" />
     <ClCompile Include="stb_image_write_impl.cpp" />
     <ClCompile Include="Timer.cpp" />
     <ClCompile Include="Window.cpp" />
@@ -174,6 +175,7 @@
     <ClInclude Include="Scene.h" />
     <ClInclude Include="Shader.h" />
     <ClInclude Include="SPHFluid3D.h" />
+    <ClInclude Include="stb_image.h" />
     <ClInclude Include="stb_image_write.h" />
     <ClInclude Include="Timer.h" />
     <ClInclude Include="tiny_obj_loader.h" />
@@ -201,6 +203,7 @@
     <None Include="shaders\skyGradient.frag" />
     <None Include="shaders\particleImpostor.vert" />
     <None Include="shaders\SPHFluid.comp" />
+    <None Include="shaders\StencilAttract.comp" />
     <None Include="shaders\VortexImpulse.comp" />
     <None Include="shaders\WaveImpulse.comp" />
   </ItemGroup>

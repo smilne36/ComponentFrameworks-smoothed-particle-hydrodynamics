@@ -169,6 +169,17 @@ private:
     float   fountainJetSpeed = 25.0f;
     float   fountainBassKick = 0.6f;   // bass -> jet speed boost
 
+    // --- Liquid Logo (fluid forms a PNG stencil; bass can blow it apart) ---
+    float   stencilStrength = 6.0f;    // spring pull; active once a PNG is loaded
+    float   stencilDamp     = 2.0f;    // settle damping (per second)
+    float   stencilScale    = 12.0f;   // world height of the stencil
+    bool    stencilBassRelease = true; // bass hits release the shape
+    std::string stencilPath;
+    std::string stencilStatus;
+    std::vector<Vec4> stencilUnitPts;  // normalized points cache (re-scaled on upload)
+    bool    LoadStencilPNG(const char* path);
+    void    UploadStencilTargets();
+
     // --- Silk Flow (curl-noise drift; smoke/silk motion) ---
     float   silkStrength  = 0.0f;   // 0 = off
     float   silkScale     = 0.15f;  // spatial frequency
