@@ -107,8 +107,11 @@ bool GetB(const KV& kv, const char* key, bool def) {
 void GetF3(const KV& kv, const char* key, float out[3]) {
     auto it = kv.find(key);
     if (it == kv.end()) return;
+    std::string s = it->second;
+    for (char& c : s) if (c == ',') c = ' ';
+    std::istringstream iss(s);
     float r, g, b;
-    if (std::sscanf(it->second.c_str(), "%f,%f,%f", &r, &g, &b) == 3) {
+    if (iss >> r >> g >> b) {
         out[0] = r; out[1] = g; out[2] = b;
     }
 }

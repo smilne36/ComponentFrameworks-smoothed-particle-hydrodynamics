@@ -1,4 +1,4 @@
-Mon Jul 13 18:05:55 2026
+Mon Jul 20 18:39:34 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -22,14 +22,15 @@ Mon Jul 13 18:05:55 2026
 "modelMatrix" loc:13
 "paletteFlow" loc:14
 "paletteId" loc:15
-"patternScale" loc:16
-"projectionMatrix" loc:17
-"satMul" loc:18
-"sunColor" loc:19
-"sunDirWorld" loc:20
-"useSSBO" loc:21
-"viewMatrix" loc:22
-"vizRange" loc:23
+"paletteId2" loc:16
+"patternScale" loc:17
+"projectionMatrix" loc:18
+"satMul" loc:19
+"sunColor" loc:20
+"sunDirWorld" loc:21
+"useSSBO" loc:22
+"viewMatrix" loc:23
+"vizRange" loc:24
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
@@ -52,15 +53,16 @@ Mon Jul 13 18:05:55 2026
 "litSphere" loc:12
 "paletteFlow" loc:13
 "paletteId" loc:14
-"particleRadius" loc:15
-"patternScale" loc:16
-"projectionMatrix" loc:17
-"satMul" loc:18
-"sunColor" loc:19
-"sunDirWorld" loc:20
-"viewMatrix" loc:21
-"viewportH" loc:22
-"vizRange" loc:23
+"paletteId2" loc:15
+"particleRadius" loc:16
+"patternScale" loc:17
+"projectionMatrix" loc:18
+"satMul" loc:19
+"sunColor" loc:20
+"sunDirWorld" loc:21
+"viewMatrix" loc:22
+"viewportH" loc:23
+"vizRange" loc:24
 
 [INFO]: Uniforms:
 "particleRadius" loc:0
@@ -120,6 +122,32 @@ Mon Jul 13 18:05:55 2026
 "sunColor" loc:3
 "sunDirWorld" loc:4
 "viewMatrix" loc:5
+
+[INFO]: Uniforms:
+"baseTex" loc:0
+"bloomTex" loc:1
+"uBloomStrength" loc:2
+"uChromatic" loc:3
+"uGrain" loc:4
+"uKaleidoAngle" loc:5
+"uKaleidoSegments" loc:6
+"uResolution" loc:7
+"uTime" loc:8
+"uVignette" loc:9
+
+[INFO]: Uniforms:
+"knee" loc:0
+"srcTex" loc:1
+"threshold" loc:2
+
+[INFO]: Uniforms:
+"srcTex" loc:0
+"uDir" loc:1
+
+[INFO]: Uniforms:
+"decay" loc:0
+"historyTex" loc:1
+"sceneTex" loc:2
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
