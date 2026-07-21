@@ -3546,7 +3546,14 @@ void Scene0p::DoCapture() {
     // Supersample 2x and downsample with a linear blit (4 samples averaged per
     // output pixel): anti-aliases every render path without shader changes.
     // Falls back to 1x if the doubled size exceeds GPU limits.
-    int ss = 2;
+    //
+    // When the post-processing chain is active we render at 1x instead: the
+    // effects need full-size color/HDR buffers, and at 2x (up to 6000x6000)
+    // those are ~1 GB and blow past VRAM on many GPUs -- which silently drops
+    // the whole effect chain from the still. 3000px native is already sharp,
+    // and bloom/grade soften edges anyway, so 1x + effects beats 2x + none.
+    const bool doPost = PostChainActive();
+    int ss = doPost ? 1 : 2;
     if (capW * ss > maxSide || capH * ss > maxSide) ss = 1;
     const int renderW = capW * ss, renderH = capH * ss;
 
@@ -3605,17 +3612,34 @@ void Scene0p::DoCapture() {
     const bool prevHalfRes = ssfrHalfRes;
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
-    // Lean post buffers for the still: skip the two full-res 16F trail buffers
-    // (motion trails need multiple frames, so a single capture can't show them)
-    // to leave enough VRAM for the rest of the chain at the 2x supersampled size.
-    InitPostBuffers(renderW, renderH, /*allocTrails=*/false);
+    // Post buffers at the render size (only needed when effects are on). At 1x
+    // the full chain -- trails included -- fits comfortably.
+    if (doPost) InitPostBuffers(renderW, renderH, /*allocTrails=*/true);
     // If the post chain wanted to run but its buffers couldn't be allocated at
-    // this size, RenderSceneTo will render a clean (un-filtered) frame instead of
+    // this size, RenderSceneTo renders a clean (un-filtered) frame instead of
     // garbage. Tell the user their effects were skipped so it isn't a mystery.
-    const bool fxWanted   = PostChainActive();
-    const bool fxDropped  = fxWanted && (postSceneFBO == 0 || postW != renderW);
+    const bool fxDropped = doPost && (postSceneFBO == 0 || postW != renderW);
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
+
+    // Trails/flow are a temporal effect -- they build up over frames -- so a
+    // single frozen render can't show the silky ribbon look from the live view.
+    // Warm the post history up by advancing the sim a fraction of a second at
+    // the capture size (matches how the live view accumulates), then read the
+    // final frame. Skipped when trails are off (nothing to build up).
+    if (doPost && !fxDropped && trailHalfLife > 1e-3f) {
+        const float warmDt = 1.0f / 60.0f;
+        const float ts     = std::max(1e-6f, fluidGPU->param_timeStep);
+        int nSub = std::max(1, int(std::ceil(warmDt / ts)));
+        nSub = std::min(nSub, 8);
+        const float subDt = warmDt / float(nSub);
+        for (int f = 0; f < 40; ++f) {
+            DriveAudioReaction(0.0f, 0.0f, 0.0f, warmDt);
+            for (int s = 0; s < nSub; ++s) fluidGPU->DispatchCompute(subDt);
+            RenderSceneTo(capFBO, renderW, renderH, capProj);
+        }
+    }
+
     RenderSceneTo(capFBO, renderW, renderH, capProj);
 
     GLuint readFBO = capFBO;
