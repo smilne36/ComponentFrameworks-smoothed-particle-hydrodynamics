@@ -189,6 +189,7 @@
     <None Include="shaders\BuildGrid.comp" />
     <None Include="shaders\ClearGrid.comp" />
     <None Include="shaders\CurlFlow.comp" />
+    <None Include="shaders\OBBConstraints.comp" />
     <None Include="shaders\defaultFrag.glsl" />
     <None Include="shaders\FountainRecycle.comp" />
     <None Include="shaders\defaultVert.glsl" />
