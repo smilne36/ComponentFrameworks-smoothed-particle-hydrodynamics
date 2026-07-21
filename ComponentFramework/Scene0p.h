@@ -291,8 +291,11 @@ private:
     Shader* postTrailShader  = nullptr;
     Shader* postBrightShader = nullptr;
     Shader* postBlurShader   = nullptr;
+    Shader* postLensShader   = nullptr;
     Shader* postFinalShader  = nullptr;
-    GLuint  postSceneFBO = 0, postSceneTex = 0, postSceneRBO = 0;   // RGBA8 + depth
+    GLuint  postSceneFBO = 0, postSceneTex = 0;
+    GLuint  postSceneDepth = 0;             // depth TEXTURE (sampled by the DOF pass)
+    GLuint  dofFBO = 0, dofTex = 0;         // depth-of-field output
     GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
     GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
     int     postW = 0, postH = 0;
@@ -306,6 +309,9 @@ private:
     int     kaleidoSegments = 0;    // < 2 = off
     float   kaleidoAngleDeg = 0.0f;
     float   vignetteAmount = 0.0f, grainAmount = 0.0f, chromaticAmount = 0.0f;
+    float   lensFocusDist = 22.0f;  // view-space distance in focus
+    float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
+    float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
 
     void    InitPostBuffers(int w, int h);
     void    DestroyPostBuffers();

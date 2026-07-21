@@ -11,6 +11,9 @@ uniform float uChromatic;       // radial RGB split strength
 uniform float uVignette;        // 0..1 edge darkening
 uniform float uGrain;           // 0..0.2 film grain
 uniform float uBloomStrength;   // 0 = bloom off
+uniform float uStreak;          // anamorphic streak strength; 0 = off
+uniform float uStreakLen;       // streak half-length in pixels
+uniform vec3  uStreakTint;      // classic anamorphic blue by default
 uniform float uTime;            // deterministic post clock (grain seed)
 
 float hash12(vec2 p) {
@@ -47,6 +50,19 @@ void main() {
     vec2 uv  = clamp(kaleido(vTexCoord), vec2(0.0), vec2(1.0));
     vec3 col = sampleChromatic(uv);
     col += texture(bloomTex, uv).rgb * uBloomStrength;   // bloom folds with the kaleidoscope
+
+    // Anamorphic streaks: stretch the (already blurred) brights horizontally
+    if (uStreak > 0.0) {
+        vec3 streak = vec3(0.0);
+        float stepX = uStreakLen / (8.0 * uResolution.x);
+        for (int i = 1; i <= 8; ++i) {
+            float w = 1.0 - float(i) / 9.0;
+            w *= w;
+            streak += (texture(bloomTex, uv + vec2(stepX * float(i), 0.0)).rgb +
+                       texture(bloomTex, uv - vec2(stepX * float(i), 0.0)).rgb) * w;
+        }
+        col += streak * uStreak * 0.12 * uStreakTint;
+    }
 
     if (uVignette > 0.0) {
         vec2 v = vTexCoord - 0.5;

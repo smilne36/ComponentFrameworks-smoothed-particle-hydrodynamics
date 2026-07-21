@@ -106,6 +106,8 @@ bool Scene0p::OnCreate() {
     if (!postBlurShader->OnCreate()) { std::cerr << "postBlur shader failed\n"; return false; }
     postTrailShader = new Shader("shaders/screenQuad.vert", "shaders/postTrails.frag");
     if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
+    postLensShader = new Shader("shaders/screenQuad.vert", "shaders/postLens.frag");
+    if (!postLensShader->OnCreate()) { std::cerr << "postLens shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -159,6 +161,7 @@ void Scene0p::OnDestroy() {
     if (postTrailShader)  { postTrailShader->OnDestroy();  delete postTrailShader;  postTrailShader  = nullptr; }
     if (postBrightShader) { postBrightShader->OnDestroy(); delete postBrightShader; postBrightShader = nullptr; }
     if (postBlurShader)   { postBlurShader->OnDestroy();   delete postBlurShader;   postBlurShader   = nullptr; }
+    if (postLensShader)   { postLensShader->OnDestroy();   delete postLensShader;   postLensShader   = nullptr; }
     if (postFinalShader)  { postFinalShader->OnDestroy();  delete postFinalShader;  postFinalShader  = nullptr; }
     DestroySSFRBuffers();
     DestroyPostBuffers();
@@ -794,6 +797,11 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Vignette",  &vignetteAmount,  0.0f, 1.0f);
             ImGui::SliderFloat("Grain",     &grainAmount,     0.0f, 0.2f);
             ImGui::SliderFloat("Chromatic", &chromaticAmount, 0.0f, 2.0f);
+            ImGui::Separator();
+            ImGui::SliderFloat("Aperture (DOF)", &lensAperture, 0.0f, 3.0f);
+            ImGui::SliderFloat("Focus Distance", &lensFocusDist, 1.0f, 60.0f);
+            ImGui::SliderFloat("Anamorphic Streaks", &streakStrength, 0.0f, 2.0f);
+            ImGui::TextDisabled("DOF works in Impostor/Mesh modes (water writes no depth).");
             ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
         }
@@ -1262,7 +1270,8 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
 
 bool Scene0p::PostChainActive() const {
     return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
-           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f;
+           vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f ||
+           lensAperture > 0.0f || streakStrength > 0.0f;
 }
 
 // The raw scene render (whichever render path is active), no post effects.
@@ -1366,6 +1375,7 @@ void Scene0p::ApplyArtPreset(int which) {
     bloomStrength = 0.0f; bloomThreshold = 0.6f; trailHalfLife = 0.0f;
     kaleidoSegments = 0;  kaleidoAngleDeg = 0.0f;
     vignetteAmount = 0.0f; grainAmount = 0.0f; chromaticAmount = 0.0f;
+    lensAperture = 0.0f; lensFocusDist = 22.0f; streakStrength = 0.0f;
     attractorEnabled = false;
     gravitySpinEnabled = false; camZoomKick = 0.0f;
     twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
@@ -1742,6 +1752,8 @@ void Scene0p::SurpriseMe() {
     vignetteAmount = U(0.0f, 0.35f);
     grainAmount = U(0.0f, 0.07f);
     chromaticAmount = U(0.0f, 0.5f);
+    if (!useWaterRendering && chance(0.4f)) { lensAperture = U(0.3f, 1.2f); lensFocusDist = U(14, 30); }
+    if (chance(0.4f)) streakStrength = U(0.3f, 1.0f);
 
     pendingReset = true;
 }
@@ -1837,6 +1849,9 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "fx.vignette", vignetteAmount);
     PutF(kv, "fx.grain", grainAmount);
     PutF(kv, "fx.chromatic", chromaticAmount);
+    PutF(kv, "fx.aperture", lensAperture);
+    PutF(kv, "fx.focusDist", lensFocusDist);
+    PutF(kv, "fx.streak", streakStrength);
     // motion
     PutB(kv, "motion.orbitOn", autoOrbitEnabled);
     PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -1988,6 +2003,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv) {
     vignetteAmount = GetF(kv, "fx.vignette", vignetteAmount);
     grainAmount = GetF(kv, "fx.grain", grainAmount);
     chromaticAmount = GetF(kv, "fx.chromatic", chromaticAmount);
+    lensAperture = GetF(kv, "fx.aperture", lensAperture);
+    lensFocusDist = GetF(kv, "fx.focusDist", lensFocusDist);
+    streakStrength = GetF(kv, "fx.streak", streakStrength);
     // motion
     autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
     autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -2248,15 +2266,23 @@ void Scene0p::InitPostBuffers(int w, int h) {
     DestroyPostBuffers();
     postW = w; postH = h;
 
-    // Scene target: RGBA8 color + depth (the raw render needs a depth buffer)
+    // Scene target: RGBA8 color + a depth TEXTURE (the DOF pass samples it)
     postSceneFBO = MakeColorFBO(postSceneTex, w, h, GL_RGBA8);
-    glGenRenderbuffers(1, &postSceneRBO);
-    glBindRenderbuffer(GL_RENDERBUFFER, postSceneRBO);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glGenTextures(1, &postSceneDepth);
+    glBindTexture(GL_TEXTURE_2D, postSceneDepth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindFramebuffer(GL_FRAMEBUFFER, postSceneFBO);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, postSceneRBO);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, postSceneDepth, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Depth-of-field output
+    dofFBO = MakeColorFBO(dofTex, w, h, GL_RGBA8);
 
     // Trail history: 16F so the multiplicative decay reaches true zero
     // (RGBA8 rounds small values back to themselves and streaks stick forever)
@@ -2272,9 +2298,11 @@ void Scene0p::InitPostBuffers(int w, int h) {
 }
 
 void Scene0p::DestroyPostBuffers() {
-    if (postSceneFBO) { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
-    if (postSceneTex) { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
-    if (postSceneRBO) { glDeleteRenderbuffers(1, &postSceneRBO); postSceneRBO = 0; }
+    if (postSceneFBO)   { glDeleteFramebuffers(1, &postSceneFBO); postSceneFBO = 0; }
+    if (postSceneTex)   { glDeleteTextures(1, &postSceneTex);     postSceneTex = 0; }
+    if (postSceneDepth) { glDeleteTextures(1, &postSceneDepth);   postSceneDepth = 0; }
+    if (dofFBO)         { glDeleteFramebuffers(1, &dofFBO);       dofFBO = 0; }
+    if (dofTex)         { glDeleteTextures(1, &dofTex);           dofTex = 0; }
     for (int i = 0; i < 2; ++i) {
         if (trailFBO[i]) { glDeleteFramebuffers(1, &trailFBO[i]); trailFBO[i] = 0; }
         if (trailTex[i]) { glDeleteTextures(1, &trailTex[i]);     trailTex[i] = 0; }
@@ -2304,6 +2332,29 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
 
     GLuint baseTex = postSceneTex;
 
+    // Depth of field: blur by distance from the focus plane. Needs real scene
+    // depth, which the impostor/mesh paths write; the water composite does
+    // not, so DOF is skipped in water mode.
+    if (lensAperture > 0.0f && !useWaterRendering && postLensShader && dofFBO) {
+        glBindFramebuffer(GL_FRAMEBUFFER, dofFBO);
+        glViewport(0, 0, postW, postH);
+        glUseProgram(postLensShader->GetProgram());
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, baseTex);
+        glUniform1i(postLensShader->GetUniformID("sceneTex"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, postSceneDepth);
+        glUniform1i(postLensShader->GetUniformID("depthTex"), 1);
+        glUniform2f(postLensShader->GetUniformID("uResolution"), float(postW), float(postH));
+        glUniform1f(postLensShader->GetUniformID("uNear"), 0.5f);
+        glUniform1f(postLensShader->GetUniformID("uFar"), viewFarPlane);
+        glUniform1f(postLensShader->GetUniformID("uFocusDist"), lensFocusDist);
+        glUniform1f(postLensShader->GetUniformID("uAperture"), lensAperture);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE0);
+        baseTex = dofTex;
+    }
+
     // Trails: fold this frame into the decaying history buffer; everything
     // downstream (bloom, kaleidoscope, grade) then reads the trailed image.
     if (trailHalfLife > 1e-3f && postTrailShader && trailFBO[0]) {
@@ -2312,7 +2363,7 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
         glViewport(0, 0, postW, postH);
         glUseProgram(postTrailShader->GetProgram());
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, postSceneTex);
+        glBindTexture(GL_TEXTURE_2D, baseTex);   // scene, or the DOF'd scene
         glUniform1i(postTrailShader->GetUniformID("sceneTex"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, trailTex[trailPing]);
@@ -2326,8 +2377,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
 
     // Bloom: bright-pass at half res, then two separable gaussian rounds.
     // The blur step scales with output height so the glow width matches at
-    // window, reel, and 2x supersampled sizes.
-    const bool bloomOn = bloomStrength > 0.0f && postBrightShader && postBlurShader;
+    // window, reel, and 2x supersampled sizes. Also runs when only the
+    // anamorphic streaks need it (they stretch the blurred brights).
+    const bool bloomOn = (bloomStrength > 0.0f || streakStrength > 0.0f)
+                         && postBrightShader && postBlurShader;
     if (bloomOn) {
         const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
         glViewport(0, 0, hw, hh);
@@ -2374,6 +2427,9 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glUniform1f(postFinalShader->GetUniformID("uVignette"), vignetteAmount);
     glUniform1f(postFinalShader->GetUniformID("uGrain"), grainAmount);
     glUniform1f(postFinalShader->GetUniformID("uBloomStrength"), bloomOn ? bloomStrength : 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uStreak"), bloomOn ? streakStrength : 0.0f);
+    glUniform1f(postFinalShader->GetUniformID("uStreakLen"), 0.22f * float(outW));
+    glUniform3f(postFinalShader->GetUniformID("uStreakTint"), 0.45f, 0.65f, 1.0f);
     glUniform1f(postFinalShader->GetUniformID("uTime"), postTime);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
