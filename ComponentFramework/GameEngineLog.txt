@@ -1,4 +1,4 @@
-Mon Jul 20 18:39:34 2026
+Sun Jul 26 17:55:56 2026
 [INFO]: Starting the SceneManager
 [INFO]: OpenGL version: 4.5.0 NVIDIA 595.97
 [INFO]: Graphics card vendor: NVIDIA Corporation
@@ -132,8 +132,11 @@ Mon Jul 20 18:39:34 2026
 "uKaleidoAngle" loc:5
 "uKaleidoSegments" loc:6
 "uResolution" loc:7
-"uTime" loc:8
-"uVignette" loc:9
+"uStreak" loc:8
+"uStreakLen" loc:9
+"uStreakTint" loc:10
+"uTime" loc:11
+"uVignette" loc:12
 
 [INFO]: Uniforms:
 "knee" loc:0
@@ -148,6 +151,15 @@ Mon Jul 20 18:39:34 2026
 "decay" loc:0
 "historyTex" loc:1
 "sceneTex" loc:2
+
+[INFO]: Uniforms:
+"depthTex" loc:0
+"sceneTex" loc:1
+"uAperture" loc:2
+"uFar" loc:3
+"uFocusDist" loc:4
+"uNear" loc:5
+"uResolution" loc:6
 
 [INFO]: Uniforms:
 "projectionMatrix" loc:0
