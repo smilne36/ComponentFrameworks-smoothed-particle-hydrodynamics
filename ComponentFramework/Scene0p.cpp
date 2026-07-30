@@ -1097,6 +1097,7 @@ void Scene0p::Update(const float deltaTime) {
                         case 2:  reelW = 1920; reelH = 1080; break;
                         default: reelW = 1080; reelH = 1920; break;
                     }
+                    spotifyCanvasMode = false;   // manual aspect change leaves canvas mode
                 }
 
                 // Live "record-safe" framing for OBS: shows the scene at the exact
@@ -1112,7 +1113,21 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::Checkbox("Crisp 2x Supersample (slower)", &reelSupersample);
                 if (reelSupersample)
                     ImGui::TextDisabled("Renders each frame at double size + full-res fluid,\nthen downsamples. Sharpest result, ~4x render time.");
-                if (ImGui::Button("Export Reel")) StartReelExport();
+                if (ImGui::Button("Export Reel")) { spotifyCanvasMode = false; StartReelExport(); }
+                ImGui::SameLine();
+                if (ImGui::Button("Spotify Canvas")) {
+                    // Spotify Canvas: silent, vertical 1080x1920, 3-8s seamless
+                    // loop. Render ~4s forward -> boomerang ~8s. Reacts to the
+                    // loaded track like any reel (so it's not dull).
+                    reelResIdx = 0; reelW = 1080; reelH = 1920;
+                    reelFpsIdx = 0;                 // 30 fps
+                    reelMaxSeconds = 4.0f;          // boomerang doubles it to ~8s
+                    spotifyCanvasMode = true;
+                    StartReelExport();
+                }
+                if (spotifyCanvasMode)
+                    ImGui::TextDisabled("Canvas mode: silent, seamless boomerang loop.\n"
+                        "Builds canvas.mp4 (1080x1920). Upload in Spotify for Artists.");
                 if (!reelStatus.empty()) ImGui::TextWrapped("%s", reelStatus.c_str());
                 ImGui::TextDisabled(
                     "Reel Preview = quick OBS captures (live, audio-reactive).\n"
@@ -1252,9 +1267,10 @@ void Scene0p::Update(const float deltaTime) {
         if (ImGui::CollapsingHeader("Screenshot", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("Screenshot");
             ImGui::Combo("Resolution", &captureResIdx,
-                "3000 x 3000 (SoundCloud)\0" "3840 x 2160 (4K)\0" "Window size\0");
+                "4096 x 4096 (Square 4K)\0" "3840 x 2160 (16:9 4K)\0"
+                "3000 x 3000 (SoundCloud)\0" "Window size\0");
             if (ImGui::Button("Capture Screenshot (P)")) captureRequested = true;
-            ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.\nRendered 2x supersampled + full-res fluid for crisp edges.");
+            ImGui::TextDisabled("Saves a PNG to screenshots/ in the working directory.\nThe UI is never included in the capture.\nWith effects on, rendered 1:1 at 4K + full-res fluid;\nwith effects off, 2x supersampled for the crispest edges.");
             if (!lastScreenshotPath.empty()) ImGui::TextWrapped("Last: %s", lastScreenshotPath.c_str());
             ImGui::PopID();
         }
@@ -2514,7 +2530,7 @@ static GLuint MakeColorFBO(GLuint& texOut, int w, int h, GLenum internalFmt) {
     return fbo;
 }
 
-void Scene0p::InitPostBuffers(int w, int h, bool allocTrails) {
+void Scene0p::InitPostBuffers(int w, int h, bool allocTrails, bool allocDof) {
     if (w <= 0 || h <= 0) return;
     if (w == postW && h == postH && postSceneFBO) return;   // already sized
     DestroyPostBuffers();
@@ -2542,8 +2558,10 @@ void Scene0p::InitPostBuffers(int w, int h, bool allocTrails) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Depth-of-field output
-    dofFBO = MakeColorFBO(dofTex, w, h, GL_RGBA8);
+    // Depth-of-field output (another full-res RGBA8; skip it when DOF is off to
+    // save VRAM at 4K -- RunPostChain's DOF stage is guarded on dofFBO).
+    if (allocDof)
+        dofFBO = MakeColorFBO(dofTex, w, h, GL_RGBA8);
 
     // Trail history: 16F so the multiplicative decay reaches true zero
     // (RGBA8 rounds small values back to themselves and streaks stick forever).
@@ -3497,8 +3515,46 @@ void Scene0p::FinishReelExport(bool wroteBat) {
                 << "echo   Done - created reel.mp4 in this folder.\r\n"
                 << "pause\r\n";
         }
+
+        // Spotify Canvas: also emit a silent, seamless-boomerang mux. It plays
+        // the frames forward then reversed (ffmpeg reverse+concat) so the short
+        // loop never jumps at the wrap, and drops the audio track (Canvas is
+        // silent -- it plays under the actual song in Spotify).
+        std::string canvasNote;
+        if (spotifyCanvasMode) {
+            std::filesystem::path canvasBat = std::filesystem::path(reelOutDir) / "mux_canvas.bat";
+            std::ofstream cb(canvasBat, std::ios::binary);
+            if (cb) {
+                cb << "@echo off\r\n"
+                   << "setlocal\r\n"
+                   << "cd /d \"%~dp0\"\r\n"
+                   << "\r\n"
+                   << "REM Spotify Canvas: silent, seamless boomerang loop from the PNG frames.\r\n"
+                   << "REM Needs ffmpeg on PATH (https://ffmpeg.org/download.html) or ffmpeg.exe here.\r\n"
+                   << "\r\n"
+                   << "set \"FFMPEG=ffmpeg\"\r\n"
+                   << "where ffmpeg >nul 2>nul\r\n"
+                   << "if errorlevel 1 (\r\n"
+                   << "  if exist \"%~dp0ffmpeg.exe\" (\r\n"
+                   << "    set \"FFMPEG=%~dp0ffmpeg.exe\"\r\n"
+                   << "  ) else (\r\n"
+                   << "    echo   ffmpeg not found. Install it + add to PATH, or put ffmpeg.exe here.\r\n"
+                   << "    pause & exit /b 1\r\n"
+                   << "  )\r\n"
+                   << ")\r\n"
+                   << "\r\n"
+                   << "\"%FFMPEG%\" -y -framerate " << fps << " -i \"frames\\f_%%05d.png\" "
+                   << "-filter_complex \"[0]split[a][b];[b]reverse[r];[a][r]concat=n=2:v=1,format=yuv420p\" "
+                   << "-c:v libx264 -crf 18 \"canvas.mp4\"\r\n"
+                   << "if errorlevel 1 ( echo. & echo   ffmpeg reported an error above. & pause & exit /b 1 )\r\n"
+                   << "echo   Done - created canvas.mp4 (silent, seamless loop).\r\n"
+                   << "pause\r\n";
+            }
+            canvasNote = "  |  Canvas: run " + canvasBat.string()
+                       + " for canvas.mp4 (silent, seamless loop).";
+        }
         reelStatus = "Done: " + std::to_string(reelFrame) + " frames. Run "
-            + batPath.string() + " to make reel.mp4";
+            + batPath.string() + " to make reel.mp4" + canvasNote;
     }
 
     if (reelFBO) glDeleteFramebuffers(1, &reelFBO);
@@ -3523,10 +3579,11 @@ void Scene0p::FinishReelExport(bool wroteBat) {
 }
 
 void Scene0p::DoCapture() {
-    int capW = 3000, capH = 3000;
+    int capW = 4096, capH = 4096;
     switch (captureResIdx) {
-        case 0:  capW = 3000; capH = 3000; break;   // SoundCloud cover art
-        case 1:  capW = 3840; capH = 2160; break;   // 4K UHD
+        case 0:  capW = 4096; capH = 4096; break;   // Square 4K (SoundCloud cover)
+        case 1:  capW = 3840; capH = 2160; break;   // 16:9 4K UHD
+        case 2:  capW = 3000; capH = 3000; break;   // SoundCloud (smaller square)
         default: capW = windowW; capH = windowH; break;
     }
     if (capW <= 0 || capH <= 0) {
@@ -3613,8 +3670,10 @@ void Scene0p::DoCapture() {
     ssfrHalfRes = false;
     if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
     // Post buffers at the render size (only needed when effects are on). At 1x
-    // the full chain -- trails included -- fits comfortably.
-    if (doPost) InitPostBuffers(renderW, renderH, /*allocTrails=*/true);
+    // the full chain -- trails included -- fits comfortably; skip the DOF buffer
+    // unless depth-of-field is actually on, to keep 4K captures within VRAM.
+    if (doPost) InitPostBuffers(renderW, renderH, /*allocTrails=*/true,
+                                /*allocDof=*/lensAperture > 0.0f);
     // If the post chain wanted to run but its buffers couldn't be allocated at
     // this size, RenderSceneTo renders a clean (un-filtered) frame instead of
     // garbage. Tell the user their effects were skipped so it isn't a mystery.
@@ -3622,10 +3681,23 @@ void Scene0p::DoCapture() {
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
 
+    // Match the live view's brightness/energy: the audio reaction pumps
+    // brightness (brightMulLive), particle size and hue UP on every beat, so a
+    // still driven with silent bands comes out flat and dull. Snapshot the
+    // current live band levels and drive the capture with those, exactly like
+    // the live path (Update: audioReactiveEnabled && audioReactive).
+    float capBass = 0.0f, capMid = 0.0f, capTreble = 0.0f;
+    if (audioReactiveEnabled && audioReactive) {
+        capBass   = audioReactive->GetBass();
+        capMid    = audioReactive->GetMid();
+        capTreble = audioReactive->GetTreble();
+    }
+
     // Trails/flow are a temporal effect -- they build up over frames -- so a
     // single frozen render can't show the silky ribbon look from the live view.
     // Warm the post history up by advancing the sim a fraction of a second at
-    // the capture size (matches how the live view accumulates), then read the
+    // the capture size (matches how the live view accumulates), driven by the
+    // snapshotted bands so brightness/flow match what's on screen, then read the
     // final frame. Skipped when trails are off (nothing to build up).
     if (doPost && !fxDropped && trailHalfLife > 1e-3f) {
         const float warmDt = 1.0f / 60.0f;
@@ -3634,7 +3706,7 @@ void Scene0p::DoCapture() {
         nSub = std::min(nSub, 8);
         const float subDt = warmDt / float(nSub);
         for (int f = 0; f < 40; ++f) {
-            DriveAudioReaction(0.0f, 0.0f, 0.0f, warmDt);
+            DriveAudioReaction(capBass, capMid, capTreble, warmDt);
             for (int s = 0; s < nSub; ++s) fluidGPU->DispatchCompute(subDt);
             RenderSceneTo(capFBO, renderW, renderH, capProj);
         }

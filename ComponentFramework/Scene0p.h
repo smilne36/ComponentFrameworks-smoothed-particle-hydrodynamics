@@ -123,7 +123,7 @@ private:
     // Screenshot capture state
     int     windowW = 0, windowH = 0;   // last known on-screen viewport size
     bool    captureRequested = false;
-    int     captureResIdx = 0;          // 0=3000x3000, 1=3840x2160, 2=window size
+    int     captureResIdx = 0;          // 0=4096sq 1=3840x2160 2=3000sq 3=window
     std::string lastScreenshotPath;
 
     void    RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4& proj) const;
@@ -235,6 +235,7 @@ private:
     float   reelMaxSeconds = 0.0f;      // 0 = whole track
     int     reelSubstepCap = 0;         // 0 = accurate (full substeps); >0 caps for speed
     bool    reelSupersample = false;    // render frames at 2x + downsample (crisp, ~4x cost)
+    bool    spotifyCanvasMode = false;  // emit a silent, seamless-boomerang canvas.mp4 bat
     char    reelAudioPath[512] = {0};
     char    reelOutDir[512]    = "reels";
     std::string  reelStatus;
@@ -343,7 +344,7 @@ private:
     float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
     float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
 
-    void    InitPostBuffers(int w, int h, bool allocTrails = true);
+    void    InitPostBuffers(int w, int h, bool allocTrails = true, bool allocDof = true);
     void    DestroyPostBuffers();
     void    ClearTrailHistory();
     bool    PostChainActive() const;
