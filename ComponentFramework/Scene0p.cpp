@@ -3600,19 +3600,55 @@ void Scene0p::DoCapture() {
         return;
     }
 
-    // Supersample 2x and downsample with a linear blit (4 samples averaged per
-    // output pixel): anti-aliases every render path without shader changes.
-    // Falls back to 1x if the doubled size exceeds GPU limits.
+    // Decide the render size.
     //
-    // When the post-processing chain is active we render at 1x instead: the
-    // effects need full-size color/HDR buffers, and at 2x (up to 6000x6000)
-    // those are ~1 GB and blow past VRAM on many GPUs -- which silently drops
-    // the whole effect chain from the still. 3000px native is already sharp,
-    // and bloom/grade soften edges anyway, so 1x + effects beats 2x + none.
+    // No effects: supersample 2x then downsample for the crispest edges. No post
+    // buffers are needed, so this path can't run out of memory.
+    //
+    // Effects on: the whole post chain -- especially the HDR (16F) trail and
+    // bloom buffers -- has to allocate, and on some GPUs those FAIL at 4K even
+    // though they work fine at the live window size (which is why effects show
+    // live but vanish from big stills). So try native size first and, if any
+    // buffer the active effects need didn't allocate, halve the render size and
+    // retry until the whole chain fits, then upscale the result to the chosen
+    // output. This guarantees the effects actually appear (a little softer at 4K
+    // when we had to shrink) instead of silently dropping.
     const bool doPost = PostChainActive();
-    int ss = doPost ? 1 : 2;
-    if (capW * ss > maxSide || capH * ss > maxSide) ss = 1;
-    const int renderW = capW * ss, renderH = capH * ss;
+
+    auto postReady = [&](int pw, int ph) {
+        if (!postSceneFBO || postW != pw || postH != ph)            return false;
+        if (trailHalfLife > 1e-3f && !trailFBO[0])                  return false;
+        if ((bloomStrength > 0.0f || streakStrength > 0.0f) &&
+            (!bloomFBO[0] || !bloomFBO[1]))                         return false;
+        if (lensAperture > 0.0f && !dofFBO)                        return false;
+        return true;
+    };
+
+    const bool prevHalfRes = ssfrHalfRes;
+    ssfrHalfRes = false;   // full-res fluid for the still
+
+    int  renderW = capW, renderH = capH;
+    bool fxReady = false;
+    if (doPost) {
+        int pw = capW, ph = capH;
+        while (true) {
+            if (useWaterRendering) InitSSFRBuffers(pw, ph);
+            InitPostBuffers(pw, ph, /*allocTrails=*/true, /*allocDof=*/lensAperture > 0.0f);
+            if (postReady(pw, ph)) { fxReady = true; renderW = pw; renderH = ph; break; }
+            if (pw <= 1080 || ph <= 1080) break;           // floor: keep it sharp enough
+            pw = std::max(1, pw / 2); ph = std::max(1, ph / 2);
+        }
+        if (!fxReady) {                                    // couldn't fit: raw at native
+            renderW = capW; renderH = capH;
+            if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+        }
+    } else {
+        int ss = 2;
+        if (capW * ss > maxSide || capH * ss > maxSide) ss = 1;
+        renderW = capW * ss; renderH = capH * ss;
+        if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+    }
+    const bool fxDropped = doPost && !fxReady;
 
     // Render target: RGBA8 color texture + 24-bit depth renderbuffer, at the
     // supersampled size.
@@ -3636,10 +3672,11 @@ void Scene0p::DoCapture() {
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-    // Downsample destination (only needed when supersampling): color-only FBO
-    // at the output size that the blit resolves into before readback.
+    // Resolve target at the output size, used whenever we rendered at a
+    // different size than the output: 2x supersample (downscale) or a shrunk
+    // effects render (upscale).
     GLuint outTex = 0, outFBO = 0;
-    if (fboOK && ss > 1) {
+    if (fboOK && (renderW != capW || renderH != capH)) {
         glGenTextures(1, &outTex);
         glBindTexture(GL_TEXTURE_2D, outTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -3659,25 +3696,11 @@ void Scene0p::DoCapture() {
         if (capRBO) glDeleteRenderbuffers(1, &capRBO);
         if (outFBO) glDeleteFramebuffers(1, &outFBO);
         if (outTex) glDeleteTextures(1, &outTex);
+        ssfrHalfRes = prevHalfRes;
         lastScreenshotPath = "FAILED: could not create capture framebuffer";
         return;
     }
 
-    // Render one frame at the supersampled size with a matching aspect ratio.
-    // Force full-res fluid passes for the still: the half-res speed toggle is a
-    // live-view optimization and is the main source of soft water in captures.
-    const bool prevHalfRes = ssfrHalfRes;
-    ssfrHalfRes = false;
-    if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
-    // Post buffers at the render size (only needed when effects are on). At 1x
-    // the full chain -- trails included -- fits comfortably; skip the DOF buffer
-    // unless depth-of-field is actually on, to keep 4K captures within VRAM.
-    if (doPost) InitPostBuffers(renderW, renderH, /*allocTrails=*/true,
-                                /*allocDof=*/lensAperture > 0.0f);
-    // If the post chain wanted to run but its buffers couldn't be allocated at
-    // this size, RenderSceneTo renders a clean (un-filtered) frame instead of
-    // garbage. Tell the user their effects were skipped so it isn't a mystery.
-    const bool fxDropped = doPost && (postSceneFBO == 0 || postW != renderW);
     const Matrix4 capProj = MMath::perspective(
         45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
 
@@ -3699,7 +3722,7 @@ void Scene0p::DoCapture() {
     // the capture size (matches how the live view accumulates), driven by the
     // snapshotted bands so brightness/flow match what's on screen, then read the
     // final frame. Skipped when trails are off (nothing to build up).
-    if (doPost && !fxDropped && trailHalfLife > 1e-3f) {
+    if (fxReady && trailHalfLife > 1e-3f) {
         const float warmDt = 1.0f / 60.0f;
         const float ts     = std::max(1e-6f, fluidGPU->param_timeStep);
         int nSub = std::max(1, int(std::ceil(warmDt / ts)));
@@ -3715,7 +3738,7 @@ void Scene0p::DoCapture() {
     RenderSceneTo(capFBO, renderW, renderH, capProj);
 
     GLuint readFBO = capFBO;
-    if (ss > 1) {
+    if (renderW != capW || renderH != capH) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, capFBO);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, outFBO);
         glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, capW, capH,
@@ -3759,8 +3782,12 @@ void Scene0p::DoCapture() {
     if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3)) {
         lastScreenshotPath = name;
         if (fxDropped)
-            lastScreenshotPath += "  (effects skipped: not enough GPU memory at "
-                                  "this size -- try a smaller Resolution)";
+            lastScreenshotPath += "  (effects couldn't fit in GPU memory even shrunk "
+                                  "-- try a smaller Resolution)";
+        else if (doPost && renderW < capW)
+            lastScreenshotPath += "  (effects rendered at " + std::to_string(renderW) +
+                                  "px then upscaled -- your GPU can't do the HDR effect "
+                                  "buffers at full " + std::to_string(capW) + "px)";
     } else {
         lastScreenshotPath = "FAILED: could not write PNG";
     }
