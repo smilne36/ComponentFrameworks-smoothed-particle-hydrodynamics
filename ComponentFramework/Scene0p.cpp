@@ -3600,58 +3600,42 @@ void Scene0p::DoCapture() {
         return;
     }
 
-    // Decide the render size.
+    // Decide how to render the still.
     //
-    // No effects: supersample 2x then downsample for the crispest edges. No post
-    // buffers are needed, so this path can't run out of memory.
+    // Effects ON: reproduce EXACTLY what's on screen. Re-render the current
+    // frame at the live window size and aspect, reusing the live post buffers
+    // (which already hold the on-screen accumulated trails). This makes the
+    // kaleidoscope framing and the trails match the screen, and -- because we
+    // don't advance the sim -- the fluid doesn't drift from the moment you hit
+    // capture. Then center-crop to the chosen output aspect (keeps the centered
+    // mandala) and scale up. Detail is window-resolution upscaled, so a bigger
+    // window = a sharper still.
     //
-    // Effects on: the whole post chain -- especially the HDR (16F) trail and
-    // bloom buffers -- has to allocate, and on some GPUs those FAIL at 4K even
-    // though they work fine at the live window size (which is why effects show
-    // live but vanish from big stills). So try native size first and, if any
-    // buffer the active effects need didn't allocate, halve the render size and
-    // retry until the whole chain fits, then upscale the result to the chosen
-    // output. This guarantees the effects actually appear (a little softer at 4K
-    // when we had to shrink) instead of silently dropping.
+    // Effects OFF: nothing temporal or screen-space to preserve, so supersample
+    // 2x and downsample at the chosen resolution for the crispest edges.
     const bool doPost = PostChainActive();
-
-    auto postReady = [&](int pw, int ph) {
-        if (!postSceneFBO || postW != pw || postH != ph)            return false;
-        if (trailHalfLife > 1e-3f && !trailFBO[0])                  return false;
-        if ((bloomStrength > 0.0f || streakStrength > 0.0f) &&
-            (!bloomFBO[0] || !bloomFBO[1]))                         return false;
-        if (lensAperture > 0.0f && !dofFBO)                        return false;
-        return true;
-    };
 
     const bool prevHalfRes = ssfrHalfRes;
     ssfrHalfRes = false;   // full-res fluid for the still
 
-    int  renderW = capW, renderH = capH;
-    bool fxReady = false;
-    if (doPost) {
-        int pw = capW, ph = capH;
-        while (true) {
-            if (useWaterRendering) InitSSFRBuffers(pw, ph);
-            InitPostBuffers(pw, ph, /*allocTrails=*/true, /*allocDof=*/lensAperture > 0.0f);
-            if (postReady(pw, ph)) { fxReady = true; renderW = pw; renderH = ph; break; }
-            if (pw <= 1080 || ph <= 1080) break;           // floor: keep it sharp enough
-            pw = std::max(1, pw / 2); ph = std::max(1, ph / 2);
-        }
-        if (!fxReady) {                                    // couldn't fit: raw at native
-            renderW = capW; renderH = capH;
-            if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
-        }
+    int     renderW, renderH;
+    Matrix4 capProj;
+    if (doPost && windowW > 0 && windowH > 0) {
+        renderW = windowW; renderH = windowH;
+        if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+        // Reuse the live post buffers as-is (trails intact) -- do NOT realloc.
+        capProj = MMath::perspective(
+            45.0f, static_cast<float>(windowW) / static_cast<float>(windowH), 0.5f, viewFarPlane);
     } else {
         int ss = 2;
         if (capW * ss > maxSide || capH * ss > maxSide) ss = 1;
         renderW = capW * ss; renderH = capH * ss;
         if (useWaterRendering) InitSSFRBuffers(renderW, renderH);
+        capProj = MMath::perspective(
+            45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
     }
-    const bool fxDropped = doPost && !fxReady;
 
-    // Render target: RGBA8 color texture + 24-bit depth renderbuffer, at the
-    // supersampled size.
+    // Capture render target: RGBA8 color + 24-bit depth, at the render size.
     GLuint capTex = 0, capRBO = 0, capFBO = 0;
     glGenTextures(1, &capTex);
     glBindTexture(GL_TEXTURE_2D, capTex);
@@ -3672,11 +3656,9 @@ void Scene0p::DoCapture() {
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
-    // Resolve target at the output size, used whenever we rendered at a
-    // different size than the output: 2x supersample (downscale) or a shrunk
-    // effects render (upscale).
+    // Output target at the chosen resolution (the render is cropped+scaled into it).
     GLuint outTex = 0, outFBO = 0;
-    if (fboOK && (renderW != capW || renderH != capH)) {
+    if (fboOK) {
         glGenTextures(1, &outTex);
         glBindTexture(GL_TEXTURE_2D, outTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, capW, capH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -3701,51 +3683,23 @@ void Scene0p::DoCapture() {
         return;
     }
 
-    const Matrix4 capProj = MMath::perspective(
-        45.0f, static_cast<float>(capW) / static_cast<float>(capH), 0.5f, viewFarPlane);
-
-    // Match the live view's brightness/energy: the audio reaction pumps
-    // brightness (brightMulLive), particle size and hue UP on every beat, so a
-    // still driven with silent bands comes out flat and dull. Snapshot the
-    // current live band levels and drive the capture with those, exactly like
-    // the live path (Update: audioReactiveEnabled && audioReactive).
-    float capBass = 0.0f, capMid = 0.0f, capTreble = 0.0f;
-    if (audioReactiveEnabled && audioReactive) {
-        capBass   = audioReactive->GetBass();
-        capMid    = audioReactive->GetMid();
-        capTreble = audioReactive->GetTreble();
-    }
-
-    // Trails/flow are a temporal effect -- they build up over frames -- so a
-    // single frozen render can't show the silky ribbon look from the live view.
-    // Warm the post history up by advancing the sim a fraction of a second at
-    // the capture size (matches how the live view accumulates), driven by the
-    // snapshotted bands so brightness/flow match what's on screen, then read the
-    // final frame. Skipped when trails are off (nothing to build up).
-    if (fxReady && trailHalfLife > 1e-3f) {
-        const float warmDt = 1.0f / 60.0f;
-        const float ts     = std::max(1e-6f, fluidGPU->param_timeStep);
-        int nSub = std::max(1, int(std::ceil(warmDt / ts)));
-        nSub = std::min(nSub, 8);
-        const float subDt = warmDt / float(nSub);
-        for (int f = 0; f < 40; ++f) {
-            DriveAudioReaction(capBass, capMid, capTreble, warmDt);
-            for (int s = 0; s < nSub; ++s) fluidGPU->DispatchCompute(subDt);
-            RenderSceneTo(capFBO, renderW, renderH, capProj);
-        }
-    }
-
+    // Single render pass -- no sim advance, so the fluid stays exactly where it
+    // was when you hit capture. Effects-on reuses the live trails via the live
+    // post buffers; effects-off just renders the scene.
     RenderSceneTo(capFBO, renderW, renderH, capProj);
 
-    GLuint readFBO = capFBO;
-    if (renderW != capW || renderH != capH) {
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, capFBO);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, outFBO);
-        glBlitFramebuffer(0, 0, renderW, renderH, 0, 0, capW, capH,
-                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        readFBO = outFBO;
-    }
+    // Center-crop the render to the output aspect (keeps the centered mandala),
+    // then scale to the chosen output resolution.
+    int sx = 0, sy = 0, sw = renderW, sh = renderH;
+    const double outAsp = double(capW) / double(capH);
+    const double rndAsp = double(renderW) / double(renderH);
+    if (rndAsp > outAsp)      { sw = int(renderH * outAsp + 0.5); sx = (renderW - sw) / 2; }
+    else if (rndAsp < outAsp) { sh = int(renderW / outAsp + 0.5); sy = (renderH - sh) / 2; }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, capFBO);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, outFBO);
+    glBlitFramebuffer(sx, sy, sx + sw, sy + sh, 0, 0, capW, capH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    GLuint readFBO = outFBO;
 
     std::vector<unsigned char> pixels(static_cast<size_t>(capW) * static_cast<size_t>(capH) * 3);
     glBindFramebuffer(GL_FRAMEBUFFER, readFBO);
@@ -3781,13 +3735,9 @@ void Scene0p::DoCapture() {
     stbi_flip_vertically_on_write(1);   // GL reads rows bottom-up
     if (stbi_write_png(name, capW, capH, 3, pixels.data(), capW * 3)) {
         lastScreenshotPath = name;
-        if (fxDropped)
-            lastScreenshotPath += "  (effects couldn't fit in GPU memory even shrunk "
-                                  "-- try a smaller Resolution)";
-        else if (doPost && renderW < capW)
-            lastScreenshotPath += "  (effects rendered at " + std::to_string(renderW) +
-                                  "px then upscaled -- your GPU can't do the HDR effect "
-                                  "buffers at full " + std::to_string(capW) + "px)";
+        if (doPost && (windowW < capW || windowH < capH))
+            lastScreenshotPath += "  (matched to your screen, upscaled from the "
+                                  "window -- maximize the window for a sharper still)";
     } else {
         lastScreenshotPath = "FAILED: could not write PNG";
     }
