@@ -112,6 +112,8 @@ bool Scene0p::OnCreate() {
     if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
     postLensShader = new Shader("shaders/screenQuad.vert", "shaders/postLens.frag");
     if (!postLensShader->OnCreate()) { std::cerr << "postLens shader failed\n"; return false; }
+    postGodrayShader = new Shader("shaders/screenQuad.vert", "shaders/postGodrays.frag");
+    if (!postGodrayShader->OnCreate()) { std::cerr << "postGodrays shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -715,6 +717,11 @@ void Scene0p::Update(const float deltaTime) {
                 useWaterRendering = (renderMode == 0);
                 useImpostors      = (renderMode == 1);
             }
+            if (useWaterRendering) {
+                ImGui::Combo("Material", &fluidMaterial,
+                    "Water\0Liquid Chrome\0Glass\0Mercury\0Iridescent\0");
+                ImGui::TextDisabled("Chrome/Mercury = mirror metal, Glass = clear,\nIridescent = oil-slick rainbow. Uses the Water surface.");
+            }
             ImGui::Separator(); ImGui::Text("Color");
             ImGui::Combo("Palette", &paletteId,
                 "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
@@ -747,6 +754,13 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
             }
             ImGui::Checkbox("Lit particles", &litParticles);
+            if (useImpostors) {
+                ImGui::Combo("Particle Shape", &spriteStyle,
+                    "Sphere\0Glow Orb\0Star\0Bokeh Ring\0Petal\0");
+                ImGui::Checkbox("Additive Glow", &additiveParticles);
+                if (spriteStyle != 0 && !additiveParticles)
+                    ImGui::TextDisabled("Tip: turn on Additive Glow for glowing sprites.");
+            }
 
             ImGui::Separator(); ImGui::Text("Adjustments");
             ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
@@ -759,12 +773,22 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::ColorEdit3("Background", bgColor);
             ImGui::SliderFloat("View Depth", &viewFarPlane, 50.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
             ImGui::TextDisabled("Raise if a huge container gets cut off far away.");
-            if (useWaterRendering) {
-                ImGui::Checkbox("Sky Background", &showSkyBackground);
+            // Backdrop works in every render mode. (Flat = the Background color
+            // above; the rest are procedural, animated, and Surprise-Me aware.)
+            int backdrop = (!showSkyBackground && skyMode == 0) ? 0
+                         : (skyMode == 0 ? 1 : skyMode + 1);
+            if (ImGui::Combo("Backdrop", &backdrop,
+                    "Flat Color\0Gradient\0Nebula\0Starfield\0Aurora\0Sunset\0")) {
+                if (backdrop <= 1) { showSkyBackground = (backdrop == 1); skyMode = 0; }
+                else { showSkyBackground = true; skyMode = backdrop - 1; }
+            }
+            if (backdrop != 0) {
                 ImGui::ColorEdit3("Sky Horizon", skyColor);
                 ImGui::ColorEdit3("Sky Zenith", skyZenith);
+            }
+            if (useWaterRendering) {
                 ImGui::ColorEdit3("Reflect Tint", envReflectColor);
-                ImGui::TextDisabled("Sky colors always drive the water's reflections;\nthe checkbox only draws them as the backdrop.");
+                ImGui::TextDisabled("Sky colors also drive the water's reflections.");
             }
             if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
                 if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
@@ -812,6 +836,13 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Aperture (DOF)", &lensAperture, 0.0f, 3.0f);
             ImGui::SliderFloat("Focus Distance", &lensFocusDist, 1.0f, 60.0f);
             ImGui::SliderFloat("Anamorphic Streaks", &streakStrength, 0.0f, 2.0f);
+            ImGui::Separator();
+            ImGui::SliderFloat("God Rays", &godrayStrength, 0.0f, 2.0f);
+            if (godrayStrength > 0.0f) {
+                ImGui::SliderFloat2("Ray Light Pos", godrayPos, 0.0f, 1.0f);
+                ImGui::SliderFloat("Ray Reach", &godrayDensity, 0.2f, 1.5f);
+                ImGui::SliderFloat("Ray Decay", &godrayDecay, 0.85f, 0.99f);
+            }
             ImGui::TextDisabled("DOF works in Impostor/Mesh modes (water writes no depth).");
             ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
@@ -1421,7 +1452,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
 bool Scene0p::PostChainActive() const {
     return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
            vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f ||
-           lensAperture > 0.0f || streakStrength > 0.0f;
+           lensAperture > 0.0f || streakStrength > 0.0f || godrayStrength > 0.0f;
 }
 
 // The raw scene render (whichever render path is active), no post effects.
@@ -1439,6 +1470,9 @@ void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4
     glViewport(0, 0, outW, outH);
     glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Procedural backdrop behind the particles (impostor/mesh modes).
+    if (skyMode > 0 || showSkyBackground) DrawSkyBackdrop(proj);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
@@ -2012,6 +2046,9 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "look.contrastMul", contrastMul);
     PutB(kv, "look.invert", invertColor);
     PutB(kv, "look.lit", litParticles);
+    PutI(kv, "look.material", fluidMaterial);
+    PutI(kv, "look.sprite", spriteStyle);
+    PutB(kv, "look.additive", additiveParticles);
     PutF(kv, "look.iridFreq", iridFreq);
     PutF(kv, "look.iridShift", iridShift);
     PutF(kv, "look.paletteFlow", paletteFlow);
@@ -2019,6 +2056,7 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF3(kv, "look.duoA", duoColorA);
     PutF3(kv, "look.duoB", duoColorB);
     PutB(kv, "look.skyOn", showSkyBackground);
+    PutI(kv, "look.skyMode", skyMode);
     PutF3(kv, "look.bg", bgColor);
     PutF3(kv, "look.skyHorizon", skyColor);
     PutF3(kv, "look.skyZenith", skyZenith);
@@ -2055,6 +2093,11 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "fx.aperture", lensAperture);
     PutF(kv, "fx.focusDist", lensFocusDist);
     PutF(kv, "fx.streak", streakStrength);
+    PutF(kv, "fx.godray", godrayStrength);
+    PutF(kv, "fx.godrayDecay", godrayDecay);
+    PutF(kv, "fx.godrayDensity", godrayDensity);
+    PutF(kv, "fx.godrayX", godrayPos[0]);
+    PutF(kv, "fx.godrayY", godrayPos[1]);
     // motion
     PutB(kv, "motion.orbitOn", autoOrbitEnabled);
     PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -2176,6 +2219,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     contrastMul = GetF(kv, "look.contrastMul", contrastMul);
     invertColor = GetB(kv, "look.invert", invertColor);
     litParticles = GetB(kv, "look.lit", litParticles);
+    fluidMaterial = GetI(kv, "look.material", fluidMaterial);
+    spriteStyle = GetI(kv, "look.sprite", spriteStyle);
+    additiveParticles = GetB(kv, "look.additive", additiveParticles);
     iridFreq = GetF(kv, "look.iridFreq", iridFreq);
     iridShift = GetF(kv, "look.iridShift", iridShift);
     paletteFlow = GetF(kv, "look.paletteFlow", paletteFlow);
@@ -2183,6 +2229,7 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     GetF3(kv, "look.duoA", duoColorA);
     GetF3(kv, "look.duoB", duoColorB);
     showSkyBackground = GetB(kv, "look.skyOn", showSkyBackground);
+    skyMode = GetI(kv, "look.skyMode", skyMode);
     GetF3(kv, "look.bg", bgColor);
     GetF3(kv, "look.skyHorizon", skyColor);
     GetF3(kv, "look.skyZenith", skyZenith);
@@ -2219,6 +2266,11 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     lensAperture = GetF(kv, "fx.aperture", lensAperture);
     lensFocusDist = GetF(kv, "fx.focusDist", lensFocusDist);
     streakStrength = GetF(kv, "fx.streak", streakStrength);
+    godrayStrength = GetF(kv, "fx.godray", godrayStrength);
+    godrayDecay = GetF(kv, "fx.godrayDecay", godrayDecay);
+    godrayDensity = GetF(kv, "fx.godrayDensity", godrayDensity);
+    godrayPos[0] = GetF(kv, "fx.godrayX", godrayPos[0]);
+    godrayPos[1] = GetF(kv, "fx.godrayY", godrayPos[1]);
     // motion
     autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
     autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -2381,11 +2433,26 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive);
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(outH));
+    if (GLint r = impostorShader->GetUniformID("uSprite"); r != -1)
+        glUniform1i(r, spriteStyle);
+
+    // Additive blending makes the glow/star/petal sprites bloom into each other
+    // (depth writes off so they layer). Restored after the draw.
+    if (additiveParticles) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+    }
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
     glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
     glBindVertexArray(0);
+
+    if (additiveParticles) {
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
     glUseProgram(0);
 }
 
@@ -2572,10 +2639,11 @@ void Scene0p::InitPostBuffers(int w, int h, bool allocTrails, bool allocDof) {
         for (int i = 0; i < 2; ++i)
             trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
 
-    // Bloom: half-res 16F ping-pong
+    // Bloom + god rays: half-res 16F
     const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
     for (int i = 0; i < 2; ++i)
         bloomFBO[i] = MakeColorFBO(bloomTex[i], hw, hh, GL_RGBA16F);
+    godrayFBO = MakeColorFBO(godrayTex, hw, hh, GL_RGBA16F);
 
     ClearTrailHistory();
 }
@@ -2592,6 +2660,8 @@ void Scene0p::DestroyPostBuffers() {
         if (bloomFBO[i]) { glDeleteFramebuffers(1, &bloomFBO[i]); bloomFBO[i] = 0; }
         if (bloomTex[i]) { glDeleteTextures(1, &bloomTex[i]);     bloomTex[i] = 0; }
     }
+    if (godrayFBO) { glDeleteFramebuffers(1, &godrayFBO); godrayFBO = 0; }
+    if (godrayTex) { glDeleteTextures(1, &godrayTex);     godrayTex = 0; }
     postW = postH = 0;
 }
 
@@ -2665,7 +2735,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     const bool bloomOn = (bloomStrength > 0.0f || streakStrength > 0.0f)
                          && postBrightShader && postBlurShader
                          && bloomFBO[0] && bloomFBO[1];
-    if (bloomOn) {
+    const bool godraysOn = godrayStrength > 0.0f && postGodrayShader && postBrightShader
+                           && godrayFBO && bloomFBO[0];
+    // Both bloom and god rays start from the half-res bright pass; run it once.
+    if (bloomOn || godraysOn) {
         const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
         glViewport(0, 0, hw, hh);
 
@@ -2678,19 +2751,36 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
         glUniform1f(postBrightShader->GetUniformID("knee"), 0.5f * bloomThreshold);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
-        glUseProgram(postBlurShader->GetProgram());
-        glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
-        const float radiusScale = float(outH) / 1080.0f;
-        for (int iter = 0; iter < 2; ++iter) {
-            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+        // God rays: radial blur of the sharp brights toward the light, BEFORE
+        // the bloom blur smears bloomTex[0].
+        if (godraysOn) {
+            glBindFramebuffer(GL_FRAMEBUFFER, godrayFBO);
+            glViewport(0, 0, hw, hh);
+            glUseProgram(postGodrayShader->GetProgram());
             glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
-            glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+            glUniform1i(postGodrayShader->GetUniformID("srcTex"), 0);
+            glUniform2f(postGodrayShader->GetUniformID("uLightPos"), godrayPos[0], godrayPos[1]);
+            glUniform1f(postGodrayShader->GetUniformID("uDecay"), godrayDecay);
+            glUniform1f(postGodrayShader->GetUniformID("uDensity"), godrayDensity);
             glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
 
-            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
-            glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
-            glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (bloomOn) {
+            glViewport(0, 0, hw, hh);
+            glUseProgram(postBlurShader->GetProgram());
+            glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
+            const float radiusScale = float(outH) / 1080.0f;
+            for (int iter = 0; iter < 2; ++iter) {
+                glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+                glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+                glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+                glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
+                glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
         }
     }
 
@@ -2704,6 +2794,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
     glUniform1i(postFinalShader->GetUniformID("bloomTex"), 1);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, godrayTex);
+    glUniform1i(postFinalShader->GetUniformID("godrayTex"), 2);
+    glUniform1f(postFinalShader->GetUniformID("uGodray"), godraysOn ? godrayStrength : 0.0f);
     glUniform2f(postFinalShader->GetUniformID("uResolution"), float(outW), float(outH));
     glUniform1f(postFinalShader->GetUniformID("uKaleidoSegments"), float(kaleidoSegments));
     glUniform1f(postFinalShader->GetUniformID("uKaleidoAngle"), kaleidoAngleDeg * (3.14159265f / 180.0f));
@@ -2720,6 +2814,29 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glBindVertexArray(0);
     glUseProgram(0);
     glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// Fullscreen procedural sky/backdrop into the currently-bound FBO (depth off).
+// Shared by the water background pass and the impostor/mesh backdrop.
+void Scene0p::DrawSkyBackdrop(const Matrix4& proj) const {
+    if (!skyShader) return;
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glUseProgram(skyShader->GetProgram());
+    glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
+    glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+    glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+    glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
+    glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
+    glUniform1i(skyShader->GetUniformID("uSkyMode"), skyMode);
+    glUniform1f(skyShader->GetUniformID("uTime"),    postTime);
+    glBindVertexArray(ssfrQuadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 }
 
@@ -2845,22 +2962,9 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDisable(GL_BLEND);
 
-    // Procedural sky gradient behind everything (no depth writes)
-    if (showSkyBackground && skyShader) {
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glUseProgram(skyShader->GetProgram());
-        glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
-        glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
-        glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
-        glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
-        glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
-        glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
-        glBindVertexArray(ssfrQuadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
-        glDepthMask(GL_TRUE);
-    }
+    // Procedural sky/backdrop behind everything (no depth writes)
+    if ((showSkyBackground || skyMode > 0) && skyShader)
+        DrawSkyBackdrop(proj);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -2944,6 +3048,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glUniform3fv(ssfrCompositeShader->GetUniformID("skyZenithColor"),  1, skyZenith);
     glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmountLive);
     glUniform1f(ssfrCompositeShader->GetUniformID("exposure"),   exposure);
+    glUniform1i(ssfrCompositeShader->GetUniformID("uMaterial"),  fluidMaterial);
     SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);

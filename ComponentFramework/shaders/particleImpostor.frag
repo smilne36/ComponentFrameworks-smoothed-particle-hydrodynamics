@@ -258,22 +258,51 @@ vec3 shadeLit(vec3 col, vec3 N, vec3 V, float facing) {
 }
 // ==== END SHARED PALETTE BLOCK ====
 
+uniform int uSprite;   // particle shape: 0 sphere 1 glow orb 2 star 3 bokeh ring 4 petal
+
 void main() {
     if (vIsGhost == 1) discard;
 
     // gl_PointCoord Y increases downward; flip to get view-space Y (up = positive)
     vec2 disc = vec2(gl_PointCoord.x, 1.0 - gl_PointCoord.y) * 2.0 - 1.0;
     float r2 = dot(disc, disc);
-    if (r2 > 1.0) discard;
+    float r  = sqrt(r2);
+    float th = atan(disc.y, disc.x);
 
-    vec3 N = vec3(disc, sqrt(1.0 - r2));   // view-space fake sphere normal (billboard faces camera)
+    // Sprite shape: a per-particle mask (alpha) + optional discard. The solid
+    // sphere keeps the hard impostor edge; the rest are soft/patterned sprites
+    // best used with Additive blending for a glow.
+    float alpha = 1.0;
+    if (uSprite == 0) {                       // solid sphere impostor
+        if (r2 > 1.0) discard;
+    } else if (uSprite == 1) {                // soft glow orb (gaussian)
+        alpha = exp(-r2 * 3.0);
+        if (alpha < 0.03) discard;
+    } else if (uSprite == 2) {                // star: 5 spikes
+        float star = 0.42 + 0.58 * pow(max(0.0, cos(5.0 * th)) , 0.6);
+        if (r > star) discard;
+        alpha = 1.0 - smoothstep(star * 0.55, star, r);
+    } else if (uSprite == 3) {                // bokeh ring (bright hollow disc)
+        if (r2 > 1.0) discard;
+        alpha = smoothstep(0.55, 0.85, r) * (1.0 - smoothstep(0.94, 1.0, r)) + 0.10;
+        alpha = clamp(alpha, 0.0, 1.0);
+    } else {                                  // 4 soft petal / flower
+        float petal = 0.50 + 0.42 * cos(6.0 * th);
+        if (r > petal) discard;
+        alpha = 1.0 - smoothstep(petal * 0.5, petal, r);
+    }
+
+    // Normal: true sphere for the solid impostor; a gentle dome otherwise so
+    // lighting still reads without a hard silhouette.
+    vec3 N = vec3(disc, sqrt(max(0.0, 1.0 - min(r2, 1.0))));
     vec3 V = normalize(-vViewPos);
     float facing = clamp(dot(N, V), 0.0, 1.0);
 
     // Two-color mode: particles tagged group 1 use Palette B (paletteId2 >= 0)
     int pid = (vGroup == 1 && paletteId2 >= 0) ? paletteId2 : paletteId;
     vec3 col = applyPalette(pid, computeDrive(vWorldPos, vViewPos, vVel, vPressure, vDensity), facing, vWorldPos);
-    if (litSphere == 1) col = shadeLit(col, N, V, facing);
+    if (litSphere == 1 && uSprite == 0) col = shadeLit(col, N, V, facing);
 
-    outColor = vec4(applyColorAdjust(col), 1.0);
+    // Premultiply by the sprite mask so it fades correctly when blended.
+    outColor = vec4(applyColorAdjust(col) * alpha, alpha);
 }

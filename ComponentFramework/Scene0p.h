@@ -74,6 +74,9 @@ private:
     float   contrastMul  = 1.0f;
     bool    invertColor  = false;
     bool    litParticles = true;
+    int     fluidMaterial = 0;   // water surface material: 0 Water 1 Chrome 2 Glass 3 Mercury 4 Iridescent
+    int     spriteStyle   = 0;   // impostor sprite: 0 sphere 1 glow 2 star 3 bokeh 4 petal
+    bool    additiveParticles = false;  // additive blend for glowy sprites
     float   iridFreq     = 3.0f;
     float   iridShift    = 0.0f;
     float   paletteFlow  = 0.0f;   // scrolls any palette over time (0 = static)
@@ -81,6 +84,7 @@ private:
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
     bool    showSkyBackground = false;                      // false = flat bgColor backdrop (water pops on black)
+    int     skyMode = 0;                                     // backdrop: 0 gradient 1 nebula 2 starfield 3 aurora 4 sunset
     float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // backdrop clear color (all render paths)
     float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color (reflections + optional backdrop)
     float   skyZenith[3] = {0.15f, 0.28f, 0.50f};           // sky zenith color
@@ -119,6 +123,7 @@ private:
     void    SequencerTick(float tSec);
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
+    void    DrawSkyBackdrop(const Matrix4& proj) const;   // fullscreen procedural sky (depth off)
 
     // Screenshot capture state
     int     windowW = 0, windowH = 0;   // last known on-screen viewport size
@@ -323,12 +328,14 @@ private:
     Shader* postBrightShader = nullptr;
     Shader* postBlurShader   = nullptr;
     Shader* postLensShader   = nullptr;
+    Shader* postGodrayShader = nullptr;
     Shader* postFinalShader  = nullptr;
     GLuint  postSceneFBO = 0, postSceneTex = 0;
     GLuint  postSceneDepth = 0;             // depth TEXTURE (sampled by the DOF pass)
     GLuint  dofFBO = 0, dofTex = 0;         // depth-of-field output
     GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
     GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
+    GLuint  godrayFBO = 0, godrayTex = 0;                           // RGBA16F half-res light shafts
     int     postW = 0, postH = 0;
     mutable int trailPing = 0;      // ping-pong index; flipped during (const) render
     float   postTime = 0.0f;        // advances in DriveAudioReaction (reel-deterministic)
@@ -343,6 +350,9 @@ private:
     float   lensFocusDist = 22.0f;  // view-space distance in focus
     float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
     float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
+    float   godrayStrength = 0.0f;  // volumetric light shafts; 0 = off
+    float   godrayDecay = 0.96f, godrayDensity = 0.9f;
+    float   godrayPos[2] = { 0.5f, 0.78f };   // light position in screen UV
 
     void    InitPostBuffers(int w, int h, bool allocTrails = true, bool allocDof = true);
     void    DestroyPostBuffers();
