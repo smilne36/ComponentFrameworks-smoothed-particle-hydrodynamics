@@ -309,6 +309,24 @@ void SPHFluidGPU::InitializeParticles() {
                         case 2:  p.padC = int(rng() & 1u); break;         // random
                         default: p.padC = (lx < 0.0f) ? 0 : 1; break;     // split halves along X
                     }
+                    // Ink/marble dye in padB (0..1): a passive per-particle hue
+                    // seed that advects with the fluid, so the pattern swirls
+                    // into marbling as it flows. Always assigned; used only when
+                    // Ink/Marble is on.
+                    {
+                        float d;
+                        switch (param_dyePattern) {
+                            case 1:  d = (ly + hf.y) / std::max(2.0f * hf.y, 1e-3f); break;   // vertical layers
+                            case 2: {                                                         // organic blobs
+                                float n = std::sin(lx * 1.3f) * std::cos(lz * 1.7f)
+                                        + std::sin(ly * 1.1f + lx * 0.7f);
+                                d = 0.5f + 0.5f * std::sin(n * 2.3f);
+                                break;
+                            }
+                            default: d = 0.5f + 0.5f * std::sin(lx * 1.5f); break;            // color bands
+                        }
+                        p.padB = std::clamp(d, 0.0f, 1.0f);
+                    }
                     particles.push_back(p); ++count;
                 }
     }

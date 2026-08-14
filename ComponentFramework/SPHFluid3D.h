@@ -119,6 +119,7 @@ public:
     Vec3  param_shapeAux = Vec3(5.0f, 0.35f, 2.5f);   // star: x=pts,y=depth | blob: z=exp | Mobius: x=thick
                                                       // DNA/coil: x=turns,y=height | gyroid: x=freq,y=channel
     int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
+    int   param_dyePattern = 0;            // ink/marble dye seeded at spawn (padB): 0=bands, 1=layers, 2=blobs
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
 

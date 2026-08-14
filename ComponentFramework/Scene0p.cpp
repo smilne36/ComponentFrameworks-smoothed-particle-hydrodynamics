@@ -777,6 +777,13 @@ void Scene0p::Update(const float deltaTime) {
                     "Electric\0Smoke\0RGB Pop\0");
                 ImGui::TextDisabled("Two fluids, two palettes (Impostor/Mesh modes).\nPattern under Motion > Spawn Layout.");
             }
+            ImGui::Checkbox("Ink / Marble", &inkDye);
+            if (inkDye) {
+                if (ImGui::Combo("Dye Pattern", &fluidGPU->param_dyePattern,
+                        "Bands\0Layers\0Blobs\0"))
+                    pendingReset = true;   // re-seed the dye at spawn
+                ImGui::TextDisabled("Colors a per-particle dye that swirls into marbling\nas the fluid flows (Impostor/Mesh modes). Reseeds on respawn.");
+            }
             ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
             if (paletteId >= 15)
                 ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
@@ -2114,6 +2121,8 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutB(kv, "look.twoColor", twoColorEnabled);
     PutI(kv, "look.paletteId2", paletteId2);
     PutI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    PutB(kv, "look.dye", inkDye);
+    PutI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
     PutF(kv, "look.hueShift", hueShiftDeg);
     PutF(kv, "look.satMul", satMul);
     PutF(kv, "look.brightMul", brightMul);
@@ -2287,6 +2296,9 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
     if (structural)
         fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    inkDye = GetB(kv, "look.dye", inkDye);
+    if (structural)
+        fluidGPU->param_dyePattern = GetI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
     hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
     satMul = GetF(kv, "look.satMul", satMul);
     brightMul = GetF(kv, "look.brightMul", brightMul);
@@ -2482,6 +2494,7 @@ void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("paletteFlow");  loc != -1) glUniform1f(loc, paletteFlow);
     if (GLint loc = s->GetUniformID("patternScale"); loc != -1) glUniform1f(loc, patternScale);
     if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
+    if (GLint loc = s->GetUniformID("useDye");      loc != -1) glUniform1i(loc, inkDye ? 1 : 0);
     if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
     if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
     SetGradeUniforms(s);

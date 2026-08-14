@@ -25,12 +25,14 @@ out vec3 vVel;
 out float vPressure;
 out float vDensity;
 out vec3 vInstanceColor;
+out float vDye;
 
 void main() {
     int idx = gl_InstanceID;
     Particle p = particles[idx];
     fragGhost = p.flags.x;
     vGroup    = p.flags.z;
+    vDye      = p.padB;
 
     vec3 basePos = (useSSBO == 1) ? p.pos.xyz : instancePos.xyz;
 

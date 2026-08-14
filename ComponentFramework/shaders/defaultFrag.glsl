@@ -260,6 +260,9 @@ vec3 shadeLit(vec3 col, vec3 N, vec3 V, float facing) {
 }
 // ==== END SHARED PALETTE BLOCK ====
 
+uniform int useDye;    // 1 = drive the palette from the per-particle marble dye
+in float vDye;         // per-particle dye seed (padB), 0..1
+
 void main() {
     if (fragGhost == 1) discard;   // hide ghost particles
 
@@ -270,7 +273,10 @@ void main() {
 
     // Two-color mode: particles tagged group 1 use Palette B (paletteId2 >= 0)
     int pid = (vGroup == 1 && paletteId2 >= 0) ? paletteId2 : paletteId;
-    vec3 col = applyPalette(pid, computeDrive(vWorldPos, vViewPos, vVel, vPressure, vDensity), facing, vWorldPos);
+    // Ink/Marble: drive the palette from the carried dye seed instead of motion.
+    float drive = (useDye == 1) ? vDye
+                : computeDrive(vWorldPos, vViewPos, vVel, vPressure, vDensity);
+    vec3 col = applyPalette(pid, drive, facing, vWorldPos);
     if (litSphere == 1) col = shadeLit(col, N, V, facing);
 
     outColor = vec4(applyColorAdjust(col), 1.0);

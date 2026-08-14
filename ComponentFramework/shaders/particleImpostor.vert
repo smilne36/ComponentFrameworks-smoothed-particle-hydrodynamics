@@ -19,12 +19,14 @@ out vec3 vViewPos;
 out vec3 vVel;
 out float vPressure;
 out float vDensity;
+out float vDye;
 
 void main() {
     int idx = gl_VertexID;
     Particle p = particles[idx];
     vIsGhost  = p.flags.x;
     vGroup    = p.flags.z;
+    vDye      = p.padB;
     vWorldPos = p.pos.xyz;
     vVel      = p.vel.xyz;
     vPressure = p.pressure;
