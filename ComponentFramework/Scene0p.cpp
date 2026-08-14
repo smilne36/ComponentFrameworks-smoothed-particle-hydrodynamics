@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <random>
 #include <filesystem>
@@ -41,6 +42,20 @@ static void MakeRotationMat3XYZ(float rxDeg, float ryDeg, float rzDeg, float out
         };
     float Rzy[9]; mul3(Rz, Ry, Rzy);
     mul3(Rzy, Rx, outM);
+}
+
+// Column-major mat4: rotate by `ang` about the Y axis through center C, with an
+// optional X mirror (mir = -1). Used to instance the particle set into a 3D
+// rotational/dihedral symmetry sculpture.
+static void MakeSymMatrix(float M[16], float cx, float cy, float cz, float ang, float mir) {
+    const float c = cosf(ang), s = sinf(ang);
+    const float R00 = c * mir, R02 = s, R20 = -s * mir, R22 = c;
+    const float tx = cx - (R00 * cx + R02 * cz);
+    const float tz = cz - (R20 * cx + R22 * cz);
+    M[0]  = R00; M[1]  = 0.0f; M[2]  = R20; M[3]  = 0.0f;
+    M[4]  = 0.0f; M[5] = 1.0f; M[6]  = 0.0f; M[7]  = 0.0f;
+    M[8]  = R02; M[9]  = 0.0f; M[10] = R22; M[11] = 0.0f;
+    M[12] = tx;  M[13] = 0.0f; M[14] = tz;  M[15] = 1.0f;
 }
 
 Scene0p::Scene0p() {}
@@ -521,6 +536,46 @@ void Scene0p::UpdateContainerWireframe() {
                 rp = p;
             }
         }
+    } else if (shape == 10) {
+        // Mobius: centerline circle + the single twisting boundary edge
+        const float R = H.x, wHalf = H.y;
+        { Vec3 prev; for (int s = 0; s <= SEGS; ++s) { float phi = (float(s) / SEGS) * TWO_PI;
+            Vec3 p = xform(R * std::cos(phi), 0.0f, R * std::sin(phi)); if (s > 0) seg(prev, p); prev = p; } }
+        { Vec3 prev; int N = SEGS * 2; for (int s = 0; s <= N; ++s) { float phi = (float(s) / SEGS) * TWO_PI;
+            float erx = std::cos(phi), erz = std::sin(phi), psi = 0.5f * phi;
+            float wx = std::cos(psi) * erx, wy = std::sin(psi), wz = std::cos(psi) * erz;
+            Vec3 p = xform(R * erx + wHalf * wx, wHalf * wy, R * erz + wHalf * wz);
+            if (s > 0) seg(prev, p); prev = p; } }
+    } else if (shape == 11 || shape == 14) {
+        // DNA (two strands + rungs) / coil (one strand)
+        const float R = H.x;
+        const float turns = std::max(1.0f, fluidGPU->param_shapeAux.x);
+        const float Hh = std::max(fluidGPU->param_shapeAux.y, H.y);
+        const int strands = (shape == 11) ? 2 : 1;
+        for (int strand = 0; strand < strands; ++strand) {
+            float ph = strand ? 3.14159265f : 0.0f; Vec3 prev; int N = int(turns * 32) + 1;
+            for (int s = 0; s <= N; ++s) { float f = float(s) / N, t = f * turns * TWO_PI, y = (f - 0.5f) * 2.0f * Hh;
+                Vec3 p = xform(R * std::cos(t + ph), y, R * std::sin(t + ph)); if (s > 0) seg(prev, p); prev = p; }
+        }
+        if (shape == 11) {
+            int RUNGS = std::max(2, int(turns * 4));
+            for (int k = 0; k < RUNGS; ++k) { float f = float(k) / (RUNGS - 1), t = f * turns * TWO_PI, y = (f - 0.5f) * 2.0f * Hh;
+                seg(xform(R * std::cos(t), y, R * std::sin(t)), xform(R * std::cos(t + 3.14159265f), y, R * std::sin(t + 3.14159265f))); }
+        }
+    } else if (shape == 12) {
+        // Heart outline
+        const float S = H.x * 0.0625f; Vec3 prev; int N = 128;
+        for (int s = 0; s <= N; ++s) { float t = (float(s) / N) * TWO_PI, st = std::sin(t);
+            float hx = 16.0f * st * st * st;
+            float hy = 13.0f * std::cos(t) - 5.0f * std::cos(2 * t) - 2.0f * std::cos(3 * t) - std::cos(4 * t);
+            Vec3 p = xform(S * hx, S * hy, 0.0f); if (s > 0) seg(prev, p); prev = p; }
+    } else if (shape == 13) {
+        // Gyroid: draw the bounding sphere
+        const float r = H.x;
+        for (int axis = 0; axis < 3; ++axis) { Vec3 prev; for (int s = 0; s <= SEGS; ++s) { float a = (float(s) / SEGS) * TWO_PI;
+            float ca = std::cos(a) * r, sa = std::sin(a) * r;
+            Vec3 p = (axis == 0) ? xform(0.0f, ca, sa) : (axis == 1) ? xform(ca, 0.0f, sa) : xform(ca, sa, 0.0f);
+            if (s > 0) seg(prev, p); prev = p; } }
     } else {
         // Box: 12 edges
         Vec3 c[8]; int i = 0;
@@ -684,6 +739,15 @@ void Scene0p::Update(const float deltaTime) {
             if (ImGui::Button("Surprise Me!")) SurpriseMe();
             ImGui::SameLine();
             ImGui::TextDisabled("random look you'd never dial in by hand");
+            // Locks: a checked category keeps its current values on reroll, so
+            // you can nail one part (a shape, a palette...) and reroll the rest.
+            ImGui::TextDisabled("Lock (keep on reroll):");
+            ImGui::Checkbox("Shape",  &lockShape);   ImGui::SameLine();
+            ImGui::Checkbox("Color",  &lockPalette); ImGui::SameLine();
+            ImGui::Checkbox("Material", &lockMaterial);
+            ImGui::Checkbox("Motion", &lockMotion);  ImGui::SameLine();
+            ImGui::Checkbox("FX",     &lockFX);      ImGui::SameLine();
+            ImGui::Checkbox("Backdrop", &lockBackdrop);
             ImGui::Separator();
             ImGui::TextDisabled("Art presets: physics + colors + audio, tuned for videos");
             if (ImGui::Button("Zero-G Nebula")) ApplyArtPreset(0);
@@ -737,6 +801,13 @@ void Scene0p::Update(const float deltaTime) {
                     "Electric\0Smoke\0RGB Pop\0");
                 ImGui::TextDisabled("Two fluids, two palettes (Impostor/Mesh modes).\nPattern under Motion > Spawn Layout.");
             }
+            ImGui::Checkbox("Ink / Marble", &inkDye);
+            if (inkDye) {
+                if (ImGui::Combo("Dye Pattern", &fluidGPU->param_dyePattern,
+                        "Bands\0Layers\0Blobs\0"))
+                    pendingReset = true;   // re-seed the dye at spawn
+                ImGui::TextDisabled("Colors a per-particle dye that swirls into marbling\nas the fluid flows (Impostor/Mesh modes). Reseeds on respawn.");
+            }
             ImGui::SliderFloat("Palette Flow", &paletteFlow, -2.0f, 2.0f);
             if (paletteId >= 15)
                 ImGui::SliderFloat("Pattern Scale", &patternScale, 0.1f, 5.0f);
@@ -760,6 +831,15 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::Checkbox("Additive Glow", &additiveParticles);
                 if (spriteStyle != 0 && !additiveParticles)
                     ImGui::TextDisabled("Tip: turn on Additive Glow for glowing sprites.");
+            }
+            if (!useWaterRendering) {
+                ImGui::SliderInt("3D Symmetry", &sym3DFold, 1, 8);
+                if (sym3DFold > 1) {
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Mirror", &symMirror);
+                }
+                if (sym3DFold > 1)
+                    ImGui::TextDisabled("Mirrors the fluid into a symmetric 3D sculpture you can orbit.");
             }
 
             ImGui::Separator(); ImGui::Text("Adjustments");
@@ -891,9 +971,21 @@ void Scene0p::Update(const float deltaTime) {
         }
         if (ImGui::CollapsingHeader("Container")) {
             ImGui::PushID("ContainerBox");
-            ImGui::Combo("Shape", &fluidGPU->param_shapeType,
+            if (ImGui::Combo("Shape", &fluidGPU->param_shapeType,
                 "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0"
-                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0");
+                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0"
+                "Mobius Band\0DNA Double Helix\0Heart\0Gyroid\0Coil / Spring\0")) {
+                // First-look defaults for the exotic shapes (the shared shapeAux
+                // default doesn't suit them); shapes 0-9 keep the current dims.
+                switch (fluidGPU->param_shapeType) {
+                    case 10: fluidGPU->param_boxHalf = Vec3(6, 2.0f, 0); fluidGPU->param_shapeAux = Vec3(0.6f, 0, 0); break;
+                    case 11: fluidGPU->param_boxHalf = Vec3(5, 1.0f, 0); fluidGPU->param_shapeAux = Vec3(4, 6, 0);   break;
+                    case 12: fluidGPU->param_boxHalf = Vec3(7, 1.2f, 0); break;
+                    case 13: fluidGPU->param_boxHalf = Vec3(8, 0, 0);    fluidGPU->param_shapeAux = Vec3(0.6f, 1.0f, 0); break;
+                    case 14: fluidGPU->param_boxHalf = Vec3(5, 1.0f, 0); fluidGPU->param_shapeAux = Vec3(5, 7, 0);   break;
+                    default: break;
+                }
+            }
             ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
             if (fluidGPU->param_shapeType == 1) {
                 ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
@@ -933,6 +1025,28 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::DragFloat("Knot Scale", &fluidGPU->param_boxHalf.x, 0.05f, 0.5f, 20.0f);
                 ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.2f, 10.0f);
                 ImGui::TextDisabled("Fluid trapped in a knotted tube. Try Gravity Spin.");
+            } else if (fluidGPU->param_shapeType == 10) {
+                ImGui::DragFloat("Ring Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Band Width", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::DragFloat("Band Thickness", &fluidGPU->param_shapeAux.x, 0.02f, 0.1f, 5.0f);
+                ImGui::TextDisabled("A flat band that twists a half-turn around the loop.");
+            } else if (fluidGPU->param_shapeType == 11 || fluidGPU->param_shapeType == 14) {
+                ImGui::DragFloat("Coil Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::DragFloat("Turns", &fluidGPU->param_shapeAux.x, 0.1f, 1.0f, 12.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_shapeAux.y, 0.1f, 1.0f, 30.0f);
+                ImGui::TextDisabled(fluidGPU->param_shapeType == 11
+                    ? "Two intertwined helices. Try Gravity Spin + trails."
+                    : "A vertical spring. Great with fountain / gravity spin.");
+            } else if (fluidGPU->param_shapeType == 12) {
+                ImGui::DragFloat("Heart Size", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::TextDisabled("A glowing heart outline of fluid (XY plane).");
+            } else if (fluidGPU->param_shapeType == 13) {
+                ImGui::DragFloat("Sphere Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 40.0f);
+                ImGui::DragFloat("Cell Frequency", &fluidGPU->param_shapeAux.x, 0.01f, 0.15f, 2.0f);
+                ImGui::DragFloat("Channel Width", &fluidGPU->param_shapeAux.y, 0.02f, 0.2f, 2.5f);
+                ImGui::TextDisabled("Fluid fills a gyroid channel network. Endless randomness.");
             } else {
                 ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             }
@@ -1509,7 +1623,20 @@ void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4
     glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
-    mesh->RenderInstanced(GL_TRIANGLES, fluidGPU->GetNumFluids());
+    // 3D symmetry: instance the sphere set per rotational/mirrored copy.
+    const int   mFolds  = std::max(1, sym3DFold);
+    const int   mPasses = symMirror ? 2 : 1;
+    const GLint mSymLoc = shader->GetUniformID("uSym");
+    for (int pass = 0; pass < mPasses; ++pass) {
+        float mir = (pass == 1) ? -1.0f : 1.0f;
+        for (int k = 0; k < mFolds; ++k) {
+            float M[16];
+            MakeSymMatrix(M, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y,
+                          fluidGPU->param_boxCenter.z, float(k) * 6.2831853f / float(mFolds), mir);
+            if (mSymLoc != -1) glUniformMatrix4fv(mSymLoc, 1, GL_FALSE, M);
+            mesh->RenderInstanced(GL_TRIANGLES, fluidGPU->GetNumFluids());
+        }
+    }
     glUseProgram(0);
 }
 
@@ -1565,6 +1692,10 @@ void Scene0p::ApplyArtPreset(int which) {
     twoColorEnabled = false; fluidGPU->param_mixPattern = 0;
     fluidGPU->fountainMode = false;
     silkStrength = 0.0f; silkAudioKick = 0.0f;
+    // Wave A/B additions reset to their off state for a clean baseline
+    fluidMaterial = 0; spriteStyle = 0; additiveParticles = false;
+    inkDye = false; fluidGPU->param_dyePattern = 0;
+    skyMode = 0; sym3DFold = 1; symMirror = false; godrayStrength = 0.0f;
 
     // Envelope timing is applied to the live reactor at the end; cases may set it.
     float presetAttackMs = 15.0f, presetReleaseMs = 250.0f;
@@ -1911,86 +2042,125 @@ void Scene0p::SurpriseMe() {
     auto Ui = [&](int a, int b) { return a + int(rng() % unsigned(b - a + 1)); };
     auto chance = [&](float p) { return U(0.0f, 1.0f) < p; };
 
+    // Snapshot the full look up front so locked categories can be restored after
+    // the baseline reset + reroll (a locked category keeps its current values).
+    PresetIO::KV snap; GatherPreset(snap);
+
     const bool prevAudio = audioReactiveEnabled;
     ApplyArtPreset(0);              // known-clean baseline (also resets new knobs)
     audioReactiveEnabled = prevAudio;   // ApplyArtPreset force-enables; keep user's choice
 
-    // Shape + size (star/blob/knot carry extra family params in shapeAux)
-    fluidGPU->param_shapeType = Ui(0, 9);
-    switch (fluidGPU->param_shapeType) {
-        case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
-        case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
-        case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
-        case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
-        case 7:  fluidGPU->param_boxHalf = Vec3(U(6, 9), U(3, 6), 0);                          // star prism
-                 fluidGPU->param_shapeAux.x = float(Ui(3, 9));
-                 fluidGPU->param_shapeAux.y = U(0.25f, 0.7f);
-                 break;
-        case 8:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(5, 9), 0);                          // blob
-                 fluidGPU->param_shapeAux.z = std::exp(U(std::log(0.8f), std::log(6.0f)));
-                 break;
-        case 9:  fluidGPU->param_boxHalf = Vec3(U(2.2f, 3.2f), U(0.8f, 1.6f), 0); break;       // trefoil knot
-        default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
+    if (!lockShape) {
+        // Shape + size (families 7-14 carry extra params in shapeAux)
+        fluidGPU->param_shapeType = Ui(0, 14);
+        switch (fluidGPU->param_shapeType) {
+            case 3:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0); break;             // torus
+            case 4:  fluidGPU->param_boxHalf = Vec3(U(3, 5), U(4, 7), 0); break;                   // capsule
+            case 5:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(6, 9), U(1.0f, 2.0f)); break;       // hourglass
+            case 6:  fluidGPU->param_boxHalf = Vec3(U(4.5f, 6.5f), U(6, 9), 0); break;             // egg
+            case 7:  fluidGPU->param_boxHalf = Vec3(U(6, 9), U(3, 6), 0);                          // star prism
+                     fluidGPU->param_shapeAux.x = float(Ui(3, 9)); fluidGPU->param_shapeAux.y = U(0.25f, 0.7f); break;
+            case 8:  fluidGPU->param_boxHalf = Vec3(U(5, 8), U(5, 9), 0);                          // blob
+                     fluidGPU->param_shapeAux.z = std::exp(U(std::log(0.8f), std::log(6.0f))); break;
+            case 9:  fluidGPU->param_boxHalf = Vec3(U(2.2f, 3.2f), U(0.8f, 1.6f), 0); break;       // trefoil knot
+            case 10: fluidGPU->param_boxHalf = Vec3(U(5, 8), U(1.5f, 3.0f), 0);                    // mobius
+                     fluidGPU->param_shapeAux.x = U(0.4f, 1.0f); break;
+            case 11: fluidGPU->param_boxHalf = Vec3(U(4, 6), U(0.8f, 1.4f), 0);                    // DNA helix
+                     fluidGPU->param_shapeAux.x = U(3, 6); fluidGPU->param_shapeAux.y = U(5, 9); break;
+            case 12: fluidGPU->param_boxHalf = Vec3(U(6, 9), U(1.0f, 1.8f), 0); break;             // heart
+            case 13: fluidGPU->param_boxHalf = Vec3(U(7, 11), 0, 0);                               // gyroid
+                     fluidGPU->param_shapeAux.x = U(0.4f, 0.9f); fluidGPU->param_shapeAux.y = U(0.7f, 1.4f); break;
+            case 14: fluidGPU->param_boxHalf = Vec3(U(4, 6), U(0.8f, 1.4f), 0);                    // coil
+                     fluidGPU->param_shapeAux.x = U(3, 7); fluidGPU->param_shapeAux.y = U(5, 9); break;
+            default: { float s = U(5, 9); fluidGPU->param_boxHalf = Vec3(s, s, s); } break;
+        }
     }
-    // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
-    fluidGPU->param_gravityY = -std::exp(U(std::log(30.0f), std::log(900.0f)));
-    fluidGPU->param_viscosity = U(1, 8);
-    fluidGPU->param_gasConstant = U(1200, 9000);
-    fluidGPU->param_surfaceTension = U(0.0f, 0.12f);
-    // Render mode + palettes
-    const float rmRoll = U(0, 1);
-    useWaterRendering = rmRoll < 0.25f;
-    useImpostors = !useWaterRendering && rmRoll < 0.85f;
-    litParticles = true;
-    paletteId = Ui(0, 23);
-    twoColorEnabled = chance(0.30f);
-    if (twoColorEnabled) {
-        do { paletteId2 = Ui(0, 23); } while (paletteId2 == paletteId);
-        fluidGPU->param_mixPattern = Ui(0, 2);
+    if (!lockMotion) {
+        // Physics (log-uniform gravity keeps floaty and heavy looks equally likely)
+        fluidGPU->param_gravityY = -std::exp(U(std::log(30.0f), std::log(900.0f)));
+        fluidGPU->param_viscosity = U(1, 8);
+        fluidGPU->param_gasConstant = U(1200, 9000);
+        fluidGPU->param_surfaceTension = U(0.0f, 0.12f);
     }
-    const int vizChoices[5] = {0, 1, 4, 5, 6};
-    vizMode = vizChoices[Ui(0, 4)];
-    vizRangeMin = 0.0f; vizRangeMax = U(6, 14);
-    paletteFlow = chance(0.5f) ? U(0.05f, 0.25f) : 0.0f;
-    if (paletteId >= 15) patternScale = U(0.6f, 2.0f);
-    // Motion
-    autoOrbitEnabled = chance(0.5f);
-    autoOrbitSpeedDeg = (chance(0.5f) ? 1.0f : -1.0f) * U(4, 20);
-    audioOrbitKick = U(0.0f, 1.0f);
-    if (chance(0.5f)) { vortexBaseSwirl = U(2, 10); vortexInwardPull = U(0, 2); }
-    if (chance(0.25f)) {
-        attractorEnabled = true;
-        attractorStrength = U(4, 15); attractorRadius = U(4, 8); attractorBassKick = U(10, 40);
-        attractorPos[0] = U(-3, 3); attractorPos[1] = U(-2, 4); attractorPos[2] = U(-3, 3);
+    if (!lockMaterial) {
+        const float rmRoll = U(0, 1);
+        useWaterRendering = rmRoll < 0.25f;
+        useImpostors = !useWaterRendering && rmRoll < 0.85f;
+        litParticles = true;
+        if (useWaterRendering) fluidMaterial = Ui(0, 4);            // water / chrome / glass / mercury / iridescent
+        else if (useImpostors && chance(0.4f)) {                    // sprite styles + glow
+            spriteStyle = Ui(1, 4); additiveParticles = chance(0.7f);
+        }
     }
-    if (chance(0.20f)) {
-        gravitySpinEnabled = true;
-        gravitySpinSpeedDeg = U(20, 90); gravitySpinTiltDeg = U(15, 40);
+    if (!lockPalette) {
+        paletteId = Ui(0, 23);
+        twoColorEnabled = chance(0.30f);
+        if (twoColorEnabled) {
+            do { paletteId2 = Ui(0, 23); } while (paletteId2 == paletteId);
+            fluidGPU->param_mixPattern = Ui(0, 2);
+        }
+        const int vizChoices[5] = {0, 1, 4, 5, 6};
+        vizMode = vizChoices[Ui(0, 4)];
+        vizRangeMin = 0.0f; vizRangeMax = U(6, 14);
+        paletteFlow = chance(0.5f) ? U(0.05f, 0.25f) : 0.0f;
+        if (paletteId >= 15) patternScale = U(0.6f, 2.0f);
+        if (chance(0.25f)) { inkDye = true; fluidGPU->param_dyePattern = Ui(0, 2); }   // ink / marble
     }
-    if (!attractorEnabled && chance(0.15f)) {
-        fluidGPU->fountainMode = true;
-        fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f);
+    if (!lockMotion) {
+        autoOrbitEnabled = chance(0.5f);
+        autoOrbitSpeedDeg = (chance(0.5f) ? 1.0f : -1.0f) * U(4, 20);
+        audioOrbitKick = U(0.0f, 1.0f);
+        if (chance(0.5f)) { vortexBaseSwirl = U(2, 10); vortexInwardPull = U(0, 2); }
+        if (chance(0.25f)) {
+            attractorEnabled = true;
+            attractorStrength = U(4, 15); attractorRadius = U(4, 8); attractorBassKick = U(10, 40);
+            attractorPos[0] = U(-3, 3); attractorPos[1] = U(-2, 4); attractorPos[2] = U(-3, 3);
+        }
+        if (chance(0.20f)) { gravitySpinEnabled = true; gravitySpinSpeedDeg = U(20, 90); gravitySpinTiltDeg = U(15, 40); }
+        if (!attractorEnabled && chance(0.15f)) { fluidGPU->fountainMode = true; fountainJetSpeed = U(18, 35); fluidGPU->fountainRadius = U(0.6f, 1.6f); }
+        if (chance(0.35f)) { silkStrength = U(2, 8); silkScale = U(0.08f, 0.3f); silkDrift = U(0.1f, 0.8f); silkAudioKick = U(0, 6); }
+        audioSizeKick = U(0.2f, 0.6f); audioShimmerKick = U(0.3f, 1.0f); audioFoamKick = U(0.2f, 0.8f);
+        audioHueKickDeg = chance(0.4f) ? U(30, 90) : 0.0f; audioFlashKick = U(0.0f, 0.8f); camZoomKick = U(0.0f, 0.25f);
+        // 3D symmetry sculpture (impostor/mesh) -- occasional, tasteful folds
+        if (!useWaterRendering && chance(0.15f)) { const int f[4] = {2, 3, 4, 6}; sym3DFold = f[Ui(0, 3)]; symMirror = chance(0.5f); }
     }
-    if (chance(0.35f)) {
-        silkStrength = U(2, 8); silkScale = U(0.08f, 0.3f); silkDrift = U(0.1f, 0.8f);
-        silkAudioKick = U(0, 6);
+    if (!lockFX) {
+        if (chance(0.5f)) { bloomStrength = U(0.2f, 0.7f); bloomThreshold = U(0.45f, 0.75f); }
+        if (chance(0.4f)) trailHalfLife = U(0.15f, 0.7f);
+        if (chance(0.25f)) { const int segs[3] = {4, 6, 8}; kaleidoSegments = segs[Ui(0, 2)]; kaleidoAngleDeg = U(0, 360); }
+        vignetteAmount = U(0.0f, 0.35f);
+        grainAmount = U(0.0f, 0.07f);
+        chromaticAmount = U(0.0f, 0.5f);
+        if (!useWaterRendering && chance(0.4f)) { lensAperture = U(0.3f, 1.2f); lensFocusDist = U(14, 30); }
+        if (chance(0.4f)) streakStrength = U(0.3f, 1.0f);
+        if (chance(0.3f)) { godrayStrength = U(0.3f, 1.0f); godrayPos[0] = U(0.3f, 0.7f); godrayPos[1] = U(0.55f, 0.9f); }
     }
-    // Audio kicks (moderate; they only fire when the reactor is on)
-    audioSizeKick = U(0.2f, 0.6f);
-    audioShimmerKick = U(0.3f, 1.0f);
-    audioFoamKick = U(0.2f, 0.8f);
-    audioHueKickDeg = chance(0.4f) ? U(30, 90) : 0.0f;
-    audioFlashKick = U(0.0f, 0.8f);
-    camZoomKick = U(0.0f, 0.25f);
-    // FX (always tasteful, never all maxed)
-    if (chance(0.5f)) { bloomStrength = U(0.2f, 0.7f); bloomThreshold = U(0.45f, 0.75f); }
-    if (chance(0.4f)) trailHalfLife = U(0.15f, 0.7f);
-    if (chance(0.25f)) { const int segs[3] = {4, 6, 8}; kaleidoSegments = segs[Ui(0, 2)]; kaleidoAngleDeg = U(0, 360); }
-    vignetteAmount = U(0.0f, 0.35f);
-    grainAmount = U(0.0f, 0.07f);
-    chromaticAmount = U(0.0f, 0.5f);
-    if (!useWaterRendering && chance(0.4f)) { lensAperture = U(0.3f, 1.2f); lensFocusDist = U(14, 30); }
-    if (chance(0.4f)) streakStrength = U(0.3f, 1.0f);
+    if (!lockBackdrop) {
+        // Weighted toward a clean backdrop; sometimes a procedural sky.
+        const float b = U(0, 1);
+        skyMode = (b < 0.55f) ? 0 : (b < 0.72f) ? 1 : (b < 0.84f) ? 2 : (b < 0.93f) ? 3 : 4;
+        showSkyBackground = (skyMode > 0);
+    }
+
+    // Restore any locked categories from the pre-reroll snapshot.
+    if (lockShape || lockPalette || lockMaterial || lockMotion || lockFX || lockBackdrop) {
+        PresetIO::KV keep;
+        auto keepKey = [&](const char* k) { auto it = snap.find(k); if (it != snap.end()) keep[k] = it->second; };
+        auto keepPrefix = [&](const char* pre) { size_t n = std::strlen(pre);
+            for (auto& kvp : snap) if (kvp.first.compare(0, n, pre) == 0) keep[kvp.first] = kvp.second; };
+        if (lockShape)    { keepPrefix("box."); }
+        if (lockPalette)  { keepPrefix("look.palette");   // paletteId / paletteId2 / paletteFlow
+                            keepKey("look.vizMode"); keepKey("look.vizRangeMin"); keepKey("look.vizRangeMax");
+                            keepKey("look.twoColor"); keepKey("look.mixPattern"); keepKey("look.patternScale");
+                            keepKey("look.dye"); keepKey("look.dyePattern"); }
+        if (lockMaterial) { keepKey("look.renderMode"); keepKey("look.material"); keepKey("look.sprite");
+                            keepKey("look.additive"); keepKey("look.lit"); }
+        if (lockMotion)   { keepPrefix("motion."); keepPrefix("audio."); keepKey("sim.gravityY"); keepKey("sim.viscosity");
+                            keepKey("sim.gasConstant"); keepKey("sim.surfaceTension"); keepKey("look.symFold"); keepKey("look.symMirror"); }
+        if (lockFX)       { keepPrefix("fx."); }
+        if (lockBackdrop) { keepKey("look.skyMode"); keepKey("look.skyOn"); }
+        ApplyPresetKV(keep, /*structural=*/true);
+    }
 
     pendingReset = true;
 }
@@ -2040,6 +2210,10 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutB(kv, "look.twoColor", twoColorEnabled);
     PutI(kv, "look.paletteId2", paletteId2);
     PutI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    PutB(kv, "look.dye", inkDye);
+    PutI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
+    PutI(kv, "look.symFold", sym3DFold);
+    PutB(kv, "look.symMirror", symMirror);
     PutF(kv, "look.hueShift", hueShiftDeg);
     PutF(kv, "look.satMul", satMul);
     PutF(kv, "look.brightMul", brightMul);
@@ -2213,6 +2387,11 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     paletteId2 = GetI(kv, "look.paletteId2", paletteId2);
     if (structural)
         fluidGPU->param_mixPattern = GetI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
+    inkDye = GetB(kv, "look.dye", inkDye);
+    if (structural)
+        fluidGPU->param_dyePattern = GetI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
+    sym3DFold = GetI(kv, "look.symFold", sym3DFold);
+    symMirror = GetB(kv, "look.symMirror", symMirror);
     hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
     satMul = GetF(kv, "look.satMul", satMul);
     brightMul = GetF(kv, "look.brightMul", brightMul);
@@ -2408,6 +2587,7 @@ void Scene0p::SetColorUniforms(Shader* s) const {
     if (GLint loc = s->GetUniformID("paletteFlow");  loc != -1) glUniform1f(loc, paletteFlow);
     if (GLint loc = s->GetUniformID("patternScale"); loc != -1) glUniform1f(loc, patternScale);
     if (GLint loc = s->GetUniformID("litSphere");   loc != -1) glUniform1i(loc, litParticles ? 1 : 0);
+    if (GLint loc = s->GetUniformID("useDye");      loc != -1) glUniform1i(loc, inkDye ? 1 : 0);
     if (GLint loc = s->GetUniformID("sunDirWorld"); loc != -1) glUniform3fv(loc, 1, sunDirWorld);
     if (GLint loc = s->GetUniformID("sunColor");    loc != -1) glUniform3fv(loc, 1, sunColor);
     SetGradeUniforms(s);
@@ -2446,7 +2626,22 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
-    glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
+    // 3D symmetry: draw the particle set once per rotational copy (and again
+    // mirrored for dihedral symmetry). uSym = identity when off (single draw).
+    const int    folds  = std::max(1, sym3DFold);
+    const int    passes = symMirror ? 2 : 1;
+    const GLint  symLoc = impostorShader->GetUniformID("uSym");
+    const GLsizei nP    = static_cast<GLsizei>(fluidGPU->GetNumFluids());
+    for (int pass = 0; pass < passes; ++pass) {
+        float mir = (pass == 1) ? -1.0f : 1.0f;
+        for (int k = 0; k < folds; ++k) {
+            float M[16];
+            MakeSymMatrix(M, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y,
+                          fluidGPU->param_boxCenter.z, float(k) * 6.2831853f / float(folds), mir);
+            if (symLoc != -1) glUniformMatrix4fv(symLoc, 1, GL_FALSE, M);
+            glDrawArrays(GL_POINTS, 0, nP);
+        }
+    }
     glBindVertexArray(0);
 
     if (additiveParticles) {

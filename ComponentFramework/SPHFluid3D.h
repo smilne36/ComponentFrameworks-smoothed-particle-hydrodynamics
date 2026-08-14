@@ -114,10 +114,12 @@ public:
                                            // torus: x=ring radius, y=tube radius | capsule: x=radius, y=core half length
                                            // hourglass: x=base radius, y=half height, z=neck radius | egg: x=XZ semi-axis, y=Y semi-axis
     Vec3  param_boxEulerDeg = Vec3(0, 0, 0);
-    int   param_shapeType = 0;             // 0=Box, 1=Sphere, 2=Cylinder, 3=Torus, 4=Capsule, 5=Hourglass, 6=Egg
-                                           // 7=Star Prism, 8=Superellipsoid, 9=Trefoil Knot
-    Vec3  param_shapeAux = Vec3(5.0f, 0.35f, 2.5f);   // star: x=points, y=depth | superellipsoid: z=exponent
+    int   param_shapeType = 0;             // 0=Box 1=Sphere 2=Cylinder 3=Torus 4=Capsule 5=Hourglass 6=Egg
+                                           // 7=Star 8=Superellipsoid 9=Trefoil 10=Mobius 11=DNA 12=Heart 13=Gyroid 14=Coil
+    Vec3  param_shapeAux = Vec3(5.0f, 0.35f, 2.5f);   // star: x=pts,y=depth | blob: z=exp | Mobius: x=thick
+                                                      // DNA/coil: x=turns,y=height | gyroid: x=freq,y=channel
     int   param_mixPattern = 0;            // color-group tagging at spawn: 0=split-X, 1=alternating, 2=random
+    int   param_dyePattern = 0;            // ink/marble dye seeded at spawn (padB): 0=bands, 1=layers, 2=blobs
     float param_wallRestitution = 0.15f;
     float param_wallFriction = 0.02f;
 
@@ -136,6 +138,21 @@ public:
             return Vec3(3.0f * param_boxHalf.x + param_boxHalf.y,
                         0.35f * param_boxHalf.x + param_boxHalf.y,
                         3.0f * param_boxHalf.x + param_boxHalf.y);
+        case 10: // Mobius: ring radius + band width in XZ, band width+thickness in Y
+            return Vec3(param_boxHalf.x + param_boxHalf.y,
+                        param_boxHalf.y + param_shapeAux.x,
+                        param_boxHalf.x + param_boxHalf.y);
+        case 11: // DNA helix: radius + tube in XZ, half-height + tube in Y
+        case 14: // coil: same envelope as the helix
+            return Vec3(param_boxHalf.x + param_boxHalf.y,
+                        param_shapeAux.y + param_boxHalf.y,
+                        param_boxHalf.x + param_boxHalf.y);
+        case 12: // heart: ~1.15x size in X/Y, tube thickness in Z
+            return Vec3(param_boxHalf.x + param_boxHalf.y,
+                        1.15f * param_boxHalf.x + param_boxHalf.y,
+                        param_boxHalf.y + 0.3f);
+        case 13: // gyroid: bounding sphere
+            return Vec3(param_boxHalf.x, param_boxHalf.x, param_boxHalf.x);
         default: return param_boxHalf;
         }
     }

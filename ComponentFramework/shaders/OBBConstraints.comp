@@ -200,6 +200,100 @@ void main() {
             qL  = best + nL * r;
             hit = true;
         }
+    } else if (uShapeType == 10) {
+        // Mobius band: a flat band around a circle whose cross-section rotates a
+        // half-turn over the loop. uBoxHalf.x = ring radius, .y = band half-width,
+        // uShapeAux.x = band half-thickness.
+        float R     = uBoxHalf.x;
+        float wHalf = uBoxHalf.y;
+        float tHalf = max(uShapeAux.x, 0.05);
+        float phi   = atan(pL.z, pL.x);
+        vec3  c     = R * vec3(cos(phi), 0.0, sin(phi));
+        vec3  er    = vec3(cos(phi), 0.0, sin(phi));   // radial (cross-section plane with ey)
+        vec3  ey    = vec3(0.0, 1.0, 0.0);
+        float psi   = 0.5 * phi;                       // half twist over the full loop
+        vec3  wAxis = cos(psi) * er + sin(psi) * ey;   // band width dir (twists)
+        vec3  tAxis = -sin(psi) * er + cos(psi) * ey;  // band thickness dir
+        vec3  o     = pL - c;
+        float cu    = clamp(dot(o, wAxis), -wHalf, wHalf);
+        float cv    = clamp(dot(o, tAxis), -tHalf, tHalf);
+        qL = c + cu * wAxis + cv * tAxis;
+        vec3  delta = pL - qL;
+        float dl    = length(delta);
+        if (dl > 1e-5) { nL = delta / dl; hit = true; }
+    } else if (uShapeType == 11) {
+        // DNA double helix: two helical tubes offset by half a turn. Nearest of
+        // 64 samples on each strand. uBoxHalf.x = radius, .y = tube r,
+        // uShapeAux.x = turns, uShapeAux.y = half height.
+        float R = uBoxHalf.x, r = uBoxHalf.y;
+        float turns = max(1.0, uShapeAux.x), H = max(uShapeAux.y, r);
+        vec3  best = vec3(R, -H, 0.0); float bestD2 = 1e30;
+        for (int k = 0; k < 64; ++k) {
+            float f = float(k) / 63.0;
+            float t = f * turns * 6.2831853;
+            float y = (f - 0.5) * 2.0 * H;
+            vec3 c1 = vec3(R * cos(t), y, R * sin(t));
+            vec3 c2 = vec3(R * cos(t + 3.14159265), y, R * sin(t + 3.14159265));
+            vec3 d1 = pL - c1; float e1 = dot(d1, d1); if (e1 < bestD2) { bestD2 = e1; best = c1; }
+            vec3 d2 = pL - c2; float e2 = dot(d2, d2); if (e2 < bestD2) { bestD2 = e2; best = c2; }
+        }
+        vec3 d = pL - best; float dl = length(d);
+        if (dl > r) { nL = d / max(dl, 1e-6); qL = best + nL * r; hit = true; }
+    } else if (uShapeType == 12) {
+        // Heart: a heart-outline tube ring in the XY plane (glowing heart wire).
+        // uBoxHalf.x = size, .y = tube r.
+        float S = uBoxHalf.x * 0.0625, r = uBoxHalf.y;   // heart param spans ~16 units
+        vec3  best = vec3(0.0); float bestD2 = 1e30;
+        for (int k = 0; k < 64; ++k) {
+            float t  = 6.2831853 * float(k) / 64.0;
+            float st = sin(t);
+            float hx = 16.0 * st * st * st;
+            float hy = 13.0 * cos(t) - 5.0 * cos(2.0 * t) - 2.0 * cos(3.0 * t) - cos(4.0 * t);
+            vec3  cc = vec3(S * hx, S * hy, 0.0);
+            vec3  dd = pL - cc; float d2 = dot(dd, dd);
+            if (d2 < bestD2) { bestD2 = d2; best = cc; }
+        }
+        vec3 d = pL - best; float dl = length(d);
+        if (dl > r) { nL = d / max(dl, 1e-6); qL = best + nL * r; hit = true; }
+    } else if (uShapeType == 13) {
+        // Gyroid: fluid fills the gyroid channel network inside a bounding
+        // sphere. uBoxHalf.x = sphere R, uShapeAux.x = cell frequency,
+        // uShapeAux.y = channel half-thickness.
+        float R  = uBoxHalf.x;
+        float sc = max(uShapeAux.x, 0.1);
+        float th = clamp(uShapeAux.y, 0.2, 2.5);
+        float lp = length(pL);
+        if (lp > R) {
+            nL = pL / max(lp, 1e-6); qL = nL * R; hit = true;
+        } else {
+            vec3  q = pL * sc;
+            float g = sin(q.x) * cos(q.y) + sin(q.y) * cos(q.z) + sin(q.z) * cos(q.x);
+            if (abs(g) > th) {
+                vec3 grad = sc * vec3(
+                    cos(q.x) * cos(q.y) - sin(q.z) * sin(q.x),
+                   -sin(q.x) * sin(q.y) + cos(q.y) * cos(q.z),
+                   -sin(q.y) * sin(q.z) + cos(q.z) * cos(q.x));
+                float gl = max(length(grad), 1e-5);
+                nL = sign(g) * grad / gl;
+                qL = pL - nL * ((abs(g) - th) / gl);
+                hit = true;
+            }
+        }
+    } else if (uShapeType == 14) {
+        // Coil / spring: a vertical helical tube. uBoxHalf.x = coil radius,
+        // .y = tube r, uShapeAux.x = turns, uShapeAux.y = half height.
+        float R = uBoxHalf.x, r = uBoxHalf.y;
+        float turns = max(1.0, uShapeAux.x), H = max(uShapeAux.y, r);
+        vec3  best = vec3(R, -H, 0.0); float bestD2 = 1e30;
+        for (int k = 0; k < 64; ++k) {
+            float f = float(k) / 63.0;
+            float t = f * turns * 6.2831853;
+            vec3  cc = vec3(R * cos(t), (f - 0.5) * 2.0 * H, R * sin(t));
+            vec3  dd = pL - cc; float d2 = dot(dd, dd);
+            if (d2 < bestD2) { bestD2 = d2; best = cc; }
+        }
+        vec3 d = pL - best; float dl = length(d);
+        if (dl > r) { nL = d / max(dl, 1e-6); qL = best + nL * r; hit = true; }
     } else {
         // Box: clamp to the OBB AABB in local space
         qL = clamp(pL, -uBoxHalf, uBoxHalf);

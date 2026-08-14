@@ -2,6 +2,7 @@
 layout(location=0) in vec2 dummy;
 
 uniform mat4 projectionMatrix, viewMatrix;
+uniform mat4 uSym;          // 3D symmetry instance transform (identity = single copy)
 uniform float particleRadius;
 uniform float viewportH;
 
@@ -19,18 +20,21 @@ out vec3 vViewPos;
 out vec3 vVel;
 out float vPressure;
 out float vDensity;
+out float vDye;
 
 void main() {
     int idx = gl_VertexID;
     Particle p = particles[idx];
     vIsGhost  = p.flags.x;
     vGroup    = p.flags.z;
-    vWorldPos = p.pos.xyz;
+    vDye      = p.padB;
+    vec3 worldPos = (uSym * vec4(p.pos.xyz, 1.0)).xyz;
+    vWorldPos = worldPos;
     vVel      = p.vel.xyz;
     vPressure = p.pressure;
     vDensity  = p.density;
 
-    vec4 viewPos = viewMatrix * vec4(p.pos.xyz, 1.0);
+    vec4 viewPos = viewMatrix * vec4(worldPos, 1.0);
     vViewPos = viewPos.xyz;
     gl_Position = projectionMatrix * viewPos;
 
