@@ -752,6 +752,13 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::SliderFloat("Irid Shift",     &iridShift, 0.0f, 1.0f);
             }
             ImGui::Checkbox("Lit particles", &litParticles);
+            if (useImpostors) {
+                ImGui::Combo("Particle Shape", &spriteStyle,
+                    "Sphere\0Glow Orb\0Star\0Bokeh Ring\0Petal\0");
+                ImGui::Checkbox("Additive Glow", &additiveParticles);
+                if (spriteStyle != 0 && !additiveParticles)
+                    ImGui::TextDisabled("Tip: turn on Additive Glow for glowing sprites.");
+            }
 
             ImGui::Separator(); ImGui::Text("Adjustments");
             ImGui::SliderFloat("Hue Shift",  &hueShiftDeg, -180.0f, 180.0f);
@@ -2018,6 +2025,8 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutB(kv, "look.invert", invertColor);
     PutB(kv, "look.lit", litParticles);
     PutI(kv, "look.material", fluidMaterial);
+    PutI(kv, "look.sprite", spriteStyle);
+    PutB(kv, "look.additive", additiveParticles);
     PutF(kv, "look.iridFreq", iridFreq);
     PutF(kv, "look.iridShift", iridShift);
     PutF(kv, "look.paletteFlow", paletteFlow);
@@ -2183,6 +2192,8 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     invertColor = GetB(kv, "look.invert", invertColor);
     litParticles = GetB(kv, "look.lit", litParticles);
     fluidMaterial = GetI(kv, "look.material", fluidMaterial);
+    spriteStyle = GetI(kv, "look.sprite", spriteStyle);
+    additiveParticles = GetB(kv, "look.additive", additiveParticles);
     iridFreq = GetF(kv, "look.iridFreq", iridFreq);
     iridShift = GetF(kv, "look.iridShift", iridShift);
     paletteFlow = GetF(kv, "look.paletteFlow", paletteFlow);
@@ -2388,11 +2399,26 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
         glUniform1f(r, std::max(0.02f, 0.5f * fluidGPU->param_h) * renderRadiusScaleLive);
     if (GLint r = impostorShader->GetUniformID("viewportH"); r != -1)
         glUniform1f(r, static_cast<float>(outH));
+    if (GLint r = impostorShader->GetUniformID("uSprite"); r != -1)
+        glUniform1i(r, spriteStyle);
+
+    // Additive blending makes the glow/star/petal sprites bloom into each other
+    // (depth writes off so they layer). Restored after the draw.
+    if (additiveParticles) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDepthMask(GL_FALSE);
+    }
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
     glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
     glBindVertexArray(0);
+
+    if (additiveParticles) {
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
     glUseProgram(0);
 }
 
