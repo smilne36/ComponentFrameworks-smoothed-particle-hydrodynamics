@@ -80,6 +80,9 @@ private:
     bool    inkDye        = false;  // drive color from the per-particle marble dye (padB)
     int     sym3DFold     = 1;      // 3D rotational symmetry copies about Y (1 = off); impostor/mesh
     bool    symMirror     = false;  // also draw an X-mirrored set (dihedral symmetry)
+    // Surprise Me category locks: a locked category keeps its current values on reroll
+    bool    lockShape = false, lockPalette = false, lockMaterial = false,
+            lockMotion = false, lockFX = false, lockBackdrop = false;
     float   iridFreq     = 3.0f;
     float   iridShift    = 0.0f;
     float   paletteFlow  = 0.0f;   // scrolls any palette over time (0 = static)
