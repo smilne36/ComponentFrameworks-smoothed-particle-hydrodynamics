@@ -773,12 +773,22 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::ColorEdit3("Background", bgColor);
             ImGui::SliderFloat("View Depth", &viewFarPlane, 50.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
             ImGui::TextDisabled("Raise if a huge container gets cut off far away.");
-            if (useWaterRendering) {
-                ImGui::Checkbox("Sky Background", &showSkyBackground);
+            // Backdrop works in every render mode. (Flat = the Background color
+            // above; the rest are procedural, animated, and Surprise-Me aware.)
+            int backdrop = (!showSkyBackground && skyMode == 0) ? 0
+                         : (skyMode == 0 ? 1 : skyMode + 1);
+            if (ImGui::Combo("Backdrop", &backdrop,
+                    "Flat Color\0Gradient\0Nebula\0Starfield\0Aurora\0Sunset\0")) {
+                if (backdrop <= 1) { showSkyBackground = (backdrop == 1); skyMode = 0; }
+                else { showSkyBackground = true; skyMode = backdrop - 1; }
+            }
+            if (backdrop != 0) {
                 ImGui::ColorEdit3("Sky Horizon", skyColor);
                 ImGui::ColorEdit3("Sky Zenith", skyZenith);
+            }
+            if (useWaterRendering) {
                 ImGui::ColorEdit3("Reflect Tint", envReflectColor);
-                ImGui::TextDisabled("Sky colors always drive the water's reflections;\nthe checkbox only draws them as the backdrop.");
+                ImGui::TextDisabled("Sky colors also drive the water's reflections.");
             }
             if (useWaterRendering && ImGui::TreeNode("Water Surface Detail")) {
                 if (ImGui::Checkbox("Half-Res Fluid (faster)", &ssfrHalfRes) && windowW > 0)
@@ -1461,6 +1471,9 @@ void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4
     glClearColor(bgColor[0], bgColor[1], bgColor[2], 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // Procedural backdrop behind the particles (impostor/mesh modes).
+    if (skyMode > 0 || showSkyBackground) DrawSkyBackdrop(proj);
+
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     if (showContainerOutline && lineShader && boxVAO) {
@@ -2043,6 +2056,7 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF3(kv, "look.duoA", duoColorA);
     PutF3(kv, "look.duoB", duoColorB);
     PutB(kv, "look.skyOn", showSkyBackground);
+    PutI(kv, "look.skyMode", skyMode);
     PutF3(kv, "look.bg", bgColor);
     PutF3(kv, "look.skyHorizon", skyColor);
     PutF3(kv, "look.skyZenith", skyZenith);
@@ -2215,6 +2229,7 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     GetF3(kv, "look.duoA", duoColorA);
     GetF3(kv, "look.duoB", duoColorB);
     showSkyBackground = GetB(kv, "look.skyOn", showSkyBackground);
+    skyMode = GetI(kv, "look.skyMode", skyMode);
     GetF3(kv, "look.bg", bgColor);
     GetF3(kv, "look.skyHorizon", skyColor);
     GetF3(kv, "look.skyZenith", skyZenith);
@@ -2802,6 +2817,29 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glEnable(GL_DEPTH_TEST);
 }
 
+// Fullscreen procedural sky/backdrop into the currently-bound FBO (depth off).
+// Shared by the water background pass and the impostor/mesh backdrop.
+void Scene0p::DrawSkyBackdrop(const Matrix4& proj) const {
+    if (!skyShader) return;
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glUseProgram(skyShader->GetProgram());
+    glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
+    glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
+    glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
+    glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
+    glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
+    glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
+    glUniform1i(skyShader->GetUniformID("uSkyMode"), skyMode);
+    glUniform1f(skyShader->GetUniformID("uTime"),    postTime);
+    glBindVertexArray(ssfrQuadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     if (!fluidGPU || ssfrW <= 0 || ssfrH <= 0) return;
 
@@ -2924,22 +2962,9 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDisable(GL_BLEND);
 
-    // Procedural sky gradient behind everything (no depth writes)
-    if (showSkyBackground && skyShader) {
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glUseProgram(skyShader->GetProgram());
-        glUniformMatrix4fv(skyShader->GetUniformID("projectionMatrix"), 1, GL_FALSE, proj);
-        glUniformMatrix4fv(skyShader->GetUniformID("viewMatrix"),       1, GL_FALSE, viewMatrix);
-        glUniform3fv(skyShader->GetUniformID("skyHorizonColor"), 1, skyColor);
-        glUniform3fv(skyShader->GetUniformID("skyZenithColor"),  1, skyZenith);
-        glUniform3fv(skyShader->GetUniformID("sunDirWorld"),     1, sunDirWorld);
-        glUniform3fv(skyShader->GetUniformID("sunColor"),        1, sunColor);
-        glBindVertexArray(ssfrQuadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
-        glDepthMask(GL_TRUE);
-    }
+    // Procedural sky/backdrop behind everything (no depth writes)
+    if ((showSkyBackground || skyMode > 0) && skyShader)
+        DrawSkyBackdrop(proj);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);

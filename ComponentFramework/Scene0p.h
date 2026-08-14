@@ -84,6 +84,7 @@ private:
     float   duoColorA[3] = {0.05f, 0.02f, 0.10f};
     float   duoColorB[3] = {1.00f, 0.35f, 0.75f};
     bool    showSkyBackground = false;                      // false = flat bgColor backdrop (water pops on black)
+    int     skyMode = 0;                                     // backdrop: 0 gradient 1 nebula 2 starfield 3 aurora 4 sunset
     float   bgColor[3]   = {0.0f, 0.0f, 0.0f};              // backdrop clear color (all render paths)
     float   skyColor[3]  = {0.40f, 0.55f, 0.65f};           // sky horizon color (reflections + optional backdrop)
     float   skyZenith[3] = {0.15f, 0.28f, 0.50f};           // sky zenith color
@@ -122,6 +123,7 @@ private:
     void    SequencerTick(float tSec);
     void    SetColorUniforms(Shader* s) const;
     void    SetGradeUniforms(Shader* s) const;
+    void    DrawSkyBackdrop(const Matrix4& proj) const;   // fullscreen procedural sky (depth off)
 
     // Screenshot capture state
     int     windowW = 0, windowH = 0;   // last known on-screen viewport size
