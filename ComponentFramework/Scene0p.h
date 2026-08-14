@@ -326,12 +326,14 @@ private:
     Shader* postBrightShader = nullptr;
     Shader* postBlurShader   = nullptr;
     Shader* postLensShader   = nullptr;
+    Shader* postGodrayShader = nullptr;
     Shader* postFinalShader  = nullptr;
     GLuint  postSceneFBO = 0, postSceneTex = 0;
     GLuint  postSceneDepth = 0;             // depth TEXTURE (sampled by the DOF pass)
     GLuint  dofFBO = 0, dofTex = 0;         // depth-of-field output
     GLuint  trailFBO[2] = {0,0}, trailTex[2] = {0,0};               // RGBA16F history ping-pong
     GLuint  bloomFBO[2] = {0,0}, bloomTex[2] = {0,0};               // RGBA16F half-res ping-pong
+    GLuint  godrayFBO = 0, godrayTex = 0;                           // RGBA16F half-res light shafts
     int     postW = 0, postH = 0;
     mutable int trailPing = 0;      // ping-pong index; flipped during (const) render
     float   postTime = 0.0f;        // advances in DriveAudioReaction (reel-deterministic)
@@ -346,6 +348,9 @@ private:
     float   lensFocusDist = 22.0f;  // view-space distance in focus
     float   lensAperture  = 0.0f;   // 0 = DOF off (impostor/mesh modes only)
     float   streakStrength = 0.0f;  // anamorphic streaks; 0 = off
+    float   godrayStrength = 0.0f;  // volumetric light shafts; 0 = off
+    float   godrayDecay = 0.96f, godrayDensity = 0.9f;
+    float   godrayPos[2] = { 0.5f, 0.78f };   // light position in screen UV
 
     void    InitPostBuffers(int w, int h, bool allocTrails = true, bool allocDof = true);
     void    DestroyPostBuffers();

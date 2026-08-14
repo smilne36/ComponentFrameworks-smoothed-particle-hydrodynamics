@@ -112,6 +112,8 @@ bool Scene0p::OnCreate() {
     if (!postTrailShader->OnCreate()) { std::cerr << "postTrails shader failed\n"; return false; }
     postLensShader = new Shader("shaders/screenQuad.vert", "shaders/postLens.frag");
     if (!postLensShader->OnCreate()) { std::cerr << "postLens shader failed\n"; return false; }
+    postGodrayShader = new Shader("shaders/screenQuad.vert", "shaders/postGodrays.frag");
+    if (!postGodrayShader->OnCreate()) { std::cerr << "postGodrays shader failed\n"; return false; }
 
     glGenVertexArrays(1, &ssfrQuadVAO);
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -824,6 +826,13 @@ void Scene0p::Update(const float deltaTime) {
             ImGui::SliderFloat("Aperture (DOF)", &lensAperture, 0.0f, 3.0f);
             ImGui::SliderFloat("Focus Distance", &lensFocusDist, 1.0f, 60.0f);
             ImGui::SliderFloat("Anamorphic Streaks", &streakStrength, 0.0f, 2.0f);
+            ImGui::Separator();
+            ImGui::SliderFloat("God Rays", &godrayStrength, 0.0f, 2.0f);
+            if (godrayStrength > 0.0f) {
+                ImGui::SliderFloat2("Ray Light Pos", godrayPos, 0.0f, 1.0f);
+                ImGui::SliderFloat("Ray Reach", &godrayDensity, 0.2f, 1.5f);
+                ImGui::SliderFloat("Ray Decay", &godrayDecay, 0.85f, 0.99f);
+            }
             ImGui::TextDisabled("DOF works in Impostor/Mesh modes (water writes no depth).");
             ImGui::TextDisabled("Bakes into screenshots + reels. Kaleidoscope 0 = off.\nTrails need motion over time (invisible in a single still).");
             ImGui::PopID();
@@ -1433,7 +1442,7 @@ void Scene0p::RenderSceneTo(GLuint targetFBO, int outW, int outH, const Matrix4&
 bool Scene0p::PostChainActive() const {
     return bloomStrength > 0.0f || trailHalfLife > 1e-3f || kaleidoSegments >= 2 ||
            vignetteAmount > 0.0f || grainAmount > 0.0f || chromaticAmount > 0.0f ||
-           lensAperture > 0.0f || streakStrength > 0.0f;
+           lensAperture > 0.0f || streakStrength > 0.0f || godrayStrength > 0.0f;
 }
 
 // The raw scene render (whichever render path is active), no post effects.
@@ -2070,6 +2079,11 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "fx.aperture", lensAperture);
     PutF(kv, "fx.focusDist", lensFocusDist);
     PutF(kv, "fx.streak", streakStrength);
+    PutF(kv, "fx.godray", godrayStrength);
+    PutF(kv, "fx.godrayDecay", godrayDecay);
+    PutF(kv, "fx.godrayDensity", godrayDensity);
+    PutF(kv, "fx.godrayX", godrayPos[0]);
+    PutF(kv, "fx.godrayY", godrayPos[1]);
     // motion
     PutB(kv, "motion.orbitOn", autoOrbitEnabled);
     PutF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -2237,6 +2251,11 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     lensAperture = GetF(kv, "fx.aperture", lensAperture);
     lensFocusDist = GetF(kv, "fx.focusDist", lensFocusDist);
     streakStrength = GetF(kv, "fx.streak", streakStrength);
+    godrayStrength = GetF(kv, "fx.godray", godrayStrength);
+    godrayDecay = GetF(kv, "fx.godrayDecay", godrayDecay);
+    godrayDensity = GetF(kv, "fx.godrayDensity", godrayDensity);
+    godrayPos[0] = GetF(kv, "fx.godrayX", godrayPos[0]);
+    godrayPos[1] = GetF(kv, "fx.godrayY", godrayPos[1]);
     // motion
     autoOrbitEnabled = GetB(kv, "motion.orbitOn", autoOrbitEnabled);
     autoOrbitSpeedDeg = GetF(kv, "motion.orbitSpeed", autoOrbitSpeedDeg);
@@ -2605,10 +2624,11 @@ void Scene0p::InitPostBuffers(int w, int h, bool allocTrails, bool allocDof) {
         for (int i = 0; i < 2; ++i)
             trailFBO[i] = MakeColorFBO(trailTex[i], w, h, GL_RGBA16F);
 
-    // Bloom: half-res 16F ping-pong
+    // Bloom + god rays: half-res 16F
     const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
     for (int i = 0; i < 2; ++i)
         bloomFBO[i] = MakeColorFBO(bloomTex[i], hw, hh, GL_RGBA16F);
+    godrayFBO = MakeColorFBO(godrayTex, hw, hh, GL_RGBA16F);
 
     ClearTrailHistory();
 }
@@ -2625,6 +2645,8 @@ void Scene0p::DestroyPostBuffers() {
         if (bloomFBO[i]) { glDeleteFramebuffers(1, &bloomFBO[i]); bloomFBO[i] = 0; }
         if (bloomTex[i]) { glDeleteTextures(1, &bloomTex[i]);     bloomTex[i] = 0; }
     }
+    if (godrayFBO) { glDeleteFramebuffers(1, &godrayFBO); godrayFBO = 0; }
+    if (godrayTex) { glDeleteTextures(1, &godrayTex);     godrayTex = 0; }
     postW = postH = 0;
 }
 
@@ -2698,7 +2720,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     const bool bloomOn = (bloomStrength > 0.0f || streakStrength > 0.0f)
                          && postBrightShader && postBlurShader
                          && bloomFBO[0] && bloomFBO[1];
-    if (bloomOn) {
+    const bool godraysOn = godrayStrength > 0.0f && postGodrayShader && postBrightShader
+                           && godrayFBO && bloomFBO[0];
+    // Both bloom and god rays start from the half-res bright pass; run it once.
+    if (bloomOn || godraysOn) {
         const int hw = std::max(1, postW / 2), hh = std::max(1, postH / 2);
         glViewport(0, 0, hw, hh);
 
@@ -2711,19 +2736,36 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
         glUniform1f(postBrightShader->GetUniformID("knee"), 0.5f * bloomThreshold);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
-        glUseProgram(postBlurShader->GetProgram());
-        glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
-        const float radiusScale = float(outH) / 1080.0f;
-        for (int iter = 0; iter < 2; ++iter) {
-            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+        // God rays: radial blur of the sharp brights toward the light, BEFORE
+        // the bloom blur smears bloomTex[0].
+        if (godraysOn) {
+            glBindFramebuffer(GL_FRAMEBUFFER, godrayFBO);
+            glViewport(0, 0, hw, hh);
+            glUseProgram(postGodrayShader->GetProgram());
             glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
-            glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+            glUniform1i(postGodrayShader->GetUniformID("srcTex"), 0);
+            glUniform2f(postGodrayShader->GetUniformID("uLightPos"), godrayPos[0], godrayPos[1]);
+            glUniform1f(postGodrayShader->GetUniformID("uDecay"), godrayDecay);
+            glUniform1f(postGodrayShader->GetUniformID("uDensity"), godrayDensity);
             glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
 
-            glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
-            glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
-            glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (bloomOn) {
+            glViewport(0, 0, hw, hh);
+            glUseProgram(postBlurShader->GetProgram());
+            glUniform1i(postBlurShader->GetUniformID("srcTex"), 0);
+            const float radiusScale = float(outH) / 1080.0f;
+            for (int iter = 0; iter < 2; ++iter) {
+                glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[1]);
+                glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
+                glUniform2f(postBlurShader->GetUniformID("uDir"), radiusScale / float(hw), 0.0f);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
+                glBindTexture(GL_TEXTURE_2D, bloomTex[1]);
+                glUniform2f(postBlurShader->GetUniformID("uDir"), 0.0f, radiusScale / float(hh));
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            }
         }
     }
 
@@ -2737,6 +2779,10 @@ void Scene0p::RunPostChain(GLuint targetFBO, int outW, int outH) const {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloomTex[0]);
     glUniform1i(postFinalShader->GetUniformID("bloomTex"), 1);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, godrayTex);
+    glUniform1i(postFinalShader->GetUniformID("godrayTex"), 2);
+    glUniform1f(postFinalShader->GetUniformID("uGodray"), godraysOn ? godrayStrength : 0.0f);
     glUniform2f(postFinalShader->GetUniformID("uResolution"), float(outW), float(outH));
     glUniform1f(postFinalShader->GetUniformID("uKaleidoSegments"), float(kaleidoSegments));
     glUniform1f(postFinalShader->GetUniformID("uKaleidoAngle"), kaleidoAngleDeg * (3.14159265f / 180.0f));

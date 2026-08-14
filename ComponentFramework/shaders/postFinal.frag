@@ -4,6 +4,8 @@ out vec4 outColor;
 
 uniform sampler2D baseTex;      // scene color, or the trail buffer when trails are on
 uniform sampler2D bloomTex;     // blurred half-res brights
+uniform sampler2D godrayTex;    // radial light shafts (half-res); added when uGodray>0
+uniform float uGodray;          // god-ray strength; 0 = off
 uniform vec2  uResolution;      // output size in pixels
 uniform float uKaleidoSegments; // < 2 = off
 uniform float uKaleidoAngle;    // radians
@@ -50,6 +52,7 @@ void main() {
     vec2 uv  = clamp(kaleido(vTexCoord), vec2(0.0), vec2(1.0));
     vec3 col = sampleChromatic(uv);
     col += texture(bloomTex, uv).rgb * uBloomStrength;   // bloom folds with the kaleidoscope
+    if (uGodray > 0.0) col += texture(godrayTex, uv).rgb * uGodray;   // volumetric light shafts
 
     // Anamorphic streaks: stretch the (already blurred) brights horizontally
     if (uStreak > 0.0) {
