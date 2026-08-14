@@ -43,6 +43,20 @@ static void MakeRotationMat3XYZ(float rxDeg, float ryDeg, float rzDeg, float out
     mul3(Rzy, Rx, outM);
 }
 
+// Column-major mat4: rotate by `ang` about the Y axis through center C, with an
+// optional X mirror (mir = -1). Used to instance the particle set into a 3D
+// rotational/dihedral symmetry sculpture.
+static void MakeSymMatrix(float M[16], float cx, float cy, float cz, float ang, float mir) {
+    const float c = cosf(ang), s = sinf(ang);
+    const float R00 = c * mir, R02 = s, R20 = -s * mir, R22 = c;
+    const float tx = cx - (R00 * cx + R02 * cz);
+    const float tz = cz - (R20 * cx + R22 * cz);
+    M[0]  = R00; M[1]  = 0.0f; M[2]  = R20; M[3]  = 0.0f;
+    M[4]  = 0.0f; M[5] = 1.0f; M[6]  = 0.0f; M[7]  = 0.0f;
+    M[8]  = R02; M[9]  = 0.0f; M[10] = R22; M[11] = 0.0f;
+    M[12] = tx;  M[13] = 0.0f; M[14] = tz;  M[15] = 1.0f;
+}
+
 Scene0p::Scene0p() {}
 Scene0p::~Scene0p() {}
 
@@ -807,6 +821,15 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::Checkbox("Additive Glow", &additiveParticles);
                 if (spriteStyle != 0 && !additiveParticles)
                     ImGui::TextDisabled("Tip: turn on Additive Glow for glowing sprites.");
+            }
+            if (!useWaterRendering) {
+                ImGui::SliderInt("3D Symmetry", &sym3DFold, 1, 8);
+                if (sym3DFold > 1) {
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Mirror", &symMirror);
+                }
+                if (sym3DFold > 1)
+                    ImGui::TextDisabled("Mirrors the fluid into a symmetric 3D sculpture you can orbit.");
             }
 
             ImGui::Separator(); ImGui::Text("Adjustments");
@@ -1590,7 +1613,20 @@ void Scene0p::RenderSceneRaw(GLuint targetFBO, int outW, int outH, const Matrix4
     glUniformMatrix4fv(shader->GetUniformID("modelMatrix"), 1, GL_FALSE, scaleMat);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
-    mesh->RenderInstanced(GL_TRIANGLES, fluidGPU->GetNumFluids());
+    // 3D symmetry: instance the sphere set per rotational/mirrored copy.
+    const int   mFolds  = std::max(1, sym3DFold);
+    const int   mPasses = symMirror ? 2 : 1;
+    const GLint mSymLoc = shader->GetUniformID("uSym");
+    for (int pass = 0; pass < mPasses; ++pass) {
+        float mir = (pass == 1) ? -1.0f : 1.0f;
+        for (int k = 0; k < mFolds; ++k) {
+            float M[16];
+            MakeSymMatrix(M, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y,
+                          fluidGPU->param_boxCenter.z, float(k) * 6.2831853f / float(mFolds), mir);
+            if (mSymLoc != -1) glUniformMatrix4fv(mSymLoc, 1, GL_FALSE, M);
+            mesh->RenderInstanced(GL_TRIANGLES, fluidGPU->GetNumFluids());
+        }
+    }
     glUseProgram(0);
 }
 
@@ -2123,6 +2159,8 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutI(kv, "look.mixPattern", fluidGPU->param_mixPattern);
     PutB(kv, "look.dye", inkDye);
     PutI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
+    PutI(kv, "look.symFold", sym3DFold);
+    PutB(kv, "look.symMirror", symMirror);
     PutF(kv, "look.hueShift", hueShiftDeg);
     PutF(kv, "look.satMul", satMul);
     PutF(kv, "look.brightMul", brightMul);
@@ -2299,6 +2337,8 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     inkDye = GetB(kv, "look.dye", inkDye);
     if (structural)
         fluidGPU->param_dyePattern = GetI(kv, "look.dyePattern", fluidGPU->param_dyePattern);
+    sym3DFold = GetI(kv, "look.symFold", sym3DFold);
+    symMirror = GetB(kv, "look.symMirror", symMirror);
     hueShiftDeg = GetF(kv, "look.hueShift", hueShiftDeg);
     satMul = GetF(kv, "look.satMul", satMul);
     brightMul = GetF(kv, "look.brightMul", brightMul);
@@ -2533,7 +2573,22 @@ void Scene0p::DrawFluidImpostors(const Matrix4& proj, int outH) const {
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, fluidGPU->ssbo);
     glBindVertexArray(impostorVAO);
-    glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(fluidGPU->GetNumFluids()));
+    // 3D symmetry: draw the particle set once per rotational copy (and again
+    // mirrored for dihedral symmetry). uSym = identity when off (single draw).
+    const int    folds  = std::max(1, sym3DFold);
+    const int    passes = symMirror ? 2 : 1;
+    const GLint  symLoc = impostorShader->GetUniformID("uSym");
+    const GLsizei nP    = static_cast<GLsizei>(fluidGPU->GetNumFluids());
+    for (int pass = 0; pass < passes; ++pass) {
+        float mir = (pass == 1) ? -1.0f : 1.0f;
+        for (int k = 0; k < folds; ++k) {
+            float M[16];
+            MakeSymMatrix(M, fluidGPU->param_boxCenter.x, fluidGPU->param_boxCenter.y,
+                          fluidGPU->param_boxCenter.z, float(k) * 6.2831853f / float(folds), mir);
+            if (symLoc != -1) glUniformMatrix4fv(symLoc, 1, GL_FALSE, M);
+            glDrawArrays(GL_POINTS, 0, nP);
+        }
+    }
     glBindVertexArray(0);
 
     if (additiveParticles) {

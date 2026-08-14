@@ -7,6 +7,7 @@ layout(location=5) in vec4 instancePos;
 layout(location=4) in vec3 instanceColor;
 
 uniform mat4 projectionMatrix, viewMatrix, modelMatrix;
+uniform mat4 uSym;          // 3D symmetry instance transform (identity = single copy)
 uniform int  useSSBO = 1;
 
 struct Particle {
@@ -38,10 +39,11 @@ void main() {
 
     vec4 world = modelMatrix * vec4(vertexPosition, 1.0);
     world.xyz += basePos;
+    world = uSym * vec4(world.xyz, 1.0);      // 3D symmetry instance
     vec4 viewPos = viewMatrix * world;
     gl_Position = projectionMatrix * viewPos;
 
-    vWorldPos = basePos;   // particle centre: gives flat per-particle color drives
+    vWorldPos = (uSym * vec4(basePos, 1.0)).xyz;   // particle centre (symmetrized)
     vViewPos  = viewPos.xyz;
     vNormal   = mat3(viewMatrix) * vertexNormal;   // model is uniform scale, so no inverse-transpose needed
     vVel      = p.vel.xyz;
