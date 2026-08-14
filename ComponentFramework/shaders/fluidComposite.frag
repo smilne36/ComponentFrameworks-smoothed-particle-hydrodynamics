@@ -20,6 +20,7 @@ uniform float     foamAmount;
 uniform float     exposure;
 uniform vec3      skyHorizonColor;
 uniform vec3      skyZenithColor;
+uniform int       uMaterial;   // 0 Water, 1 Chrome, 2 Glass, 3 Mercury, 4 Iridescent
 
 in vec2 vTexCoord;
 layout(location=0) out vec4 outColor;
@@ -160,13 +161,36 @@ void main() {
     vec3 Rw = transpose(mat3(viewMatrix)) * reflect(-V, N);
     vec3 envColor = skyGradient(Rw) * envReflectColor;
 
-    // Fresnel blend: thin/normal-incidence → refracted; thick/grazing → reflected
-    vec3 surfaceColor = mix(transmitted, envColor, F);
+    // Surface look by material. Water blends refraction<->reflection by Fresnel;
+    // the metals ignore transmission and ride the sky reflection; glass clears
+    // the refraction and brightens the rim; iridescent adds a thin-film rainbow.
+    vec3 surfaceColor;
+    if (uMaterial == 1) {                 // Chrome: mirror metal, silver tint
+        surfaceColor  = envColor * vec3(0.92, 0.94, 0.97);
+        surfaceColor += sunColor * pow(max(0.0, dot(N, H)), specularPower * 2.0)
+                        * specularStrength * 1.6;
+    } else if (uMaterial == 3) {          // Mercury: darker, cooler liquid metal
+        surfaceColor  = envColor * vec3(0.55, 0.60, 0.68);
+        surfaceColor += sunColor * pow(max(0.0, dot(N, H)), specularPower * 1.5)
+                        * specularStrength * 1.2;
+    } else if (uMaterial == 2) {          // Glass: clear, strong refraction + bright rim
+        vec2 gUV      = clamp(vTexCoord + N.xy * refractionStrength * 2.5,
+                              vec2(0.001), vec2(0.999));
+        vec3 clearBg  = texture(backgroundTex, gUV).rgb;
+        surfaceColor  = mix(clearBg, envColor, clamp(F * 1.3, 0.0, 1.0));
+        surfaceColor += sunColor * spec * specularStrength * 1.3;
+    } else if (uMaterial == 4) {          // Iridescent soap film: thin-film rainbow
+        float hue     = fract(thick * 0.35 + (1.0 - cosN) * 0.9);
+        vec3  iri     = hsv2rgb(vec3(hue, 0.65, 1.0));
+        surfaceColor  = mix(transmitted, mix(envColor, iri, 0.7), clamp(F + 0.25, 0.0, 1.0));
+        surfaceColor += iri * 0.15;
+        surfaceColor += sunColor * spec * specularStrength;
+    } else {                              // 0 Water (unchanged)
+        surfaceColor  = mix(transmitted, envColor, F);
+        surfaceColor += sunColor * spec * specularStrength;
+    }
 
-    // Sun specular highlight (HDR: tonemapped below instead of clamped)
-    surfaceColor += sunColor * spec * specularStrength;
-
-    // Foam: lift toward white where aerated particles accumulated
+    // Foam: lift toward white where aerated particles accumulated (all materials)
     float foamF = 1.0 - exp(-texture(foamTex, vTexCoord).r * foamAmount);
     surfaceColor = mix(surfaceColor, vec3(0.95), clamp(foamF, 0.0, 1.0));
 

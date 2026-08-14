@@ -74,6 +74,7 @@ private:
     float   contrastMul  = 1.0f;
     bool    invertColor  = false;
     bool    litParticles = true;
+    int     fluidMaterial = 0;   // water surface material: 0 Water 1 Chrome 2 Glass 3 Mercury 4 Iridescent
     float   iridFreq     = 3.0f;
     float   iridShift    = 0.0f;
     float   paletteFlow  = 0.0f;   // scrolls any palette over time (0 = static)

@@ -715,6 +715,11 @@ void Scene0p::Update(const float deltaTime) {
                 useWaterRendering = (renderMode == 0);
                 useImpostors      = (renderMode == 1);
             }
+            if (useWaterRendering) {
+                ImGui::Combo("Material", &fluidMaterial,
+                    "Water\0Liquid Chrome\0Glass\0Mercury\0Iridescent\0");
+                ImGui::TextDisabled("Chrome/Mercury = mirror metal, Glass = clear,\nIridescent = oil-slick rainbow. Uses the Water surface.");
+            }
             ImGui::Separator(); ImGui::Text("Color");
             ImGui::Combo("Palette", &paletteId,
                 "Classic Height\0Turbo\0Neon / Synthwave\0Fire / Lava\0Iridescent / Oil Slick\0Ice\0Vaporwave\0Toxic\0Duotone\0"
@@ -2012,6 +2017,7 @@ void Scene0p::GatherPreset(PresetIO::KV& kv) const {
     PutF(kv, "look.contrastMul", contrastMul);
     PutB(kv, "look.invert", invertColor);
     PutB(kv, "look.lit", litParticles);
+    PutI(kv, "look.material", fluidMaterial);
     PutF(kv, "look.iridFreq", iridFreq);
     PutF(kv, "look.iridShift", iridShift);
     PutF(kv, "look.paletteFlow", paletteFlow);
@@ -2176,6 +2182,7 @@ void Scene0p::ApplyPresetKV(const PresetIO::KV& kv, bool structural) {
     contrastMul = GetF(kv, "look.contrastMul", contrastMul);
     invertColor = GetB(kv, "look.invert", invertColor);
     litParticles = GetB(kv, "look.lit", litParticles);
+    fluidMaterial = GetI(kv, "look.material", fluidMaterial);
     iridFreq = GetF(kv, "look.iridFreq", iridFreq);
     iridShift = GetF(kv, "look.iridShift", iridShift);
     paletteFlow = GetF(kv, "look.paletteFlow", paletteFlow);
@@ -2944,6 +2951,7 @@ void Scene0p::RenderSSFR(GLuint targetFBO, const Matrix4& proj) const {
     glUniform3fv(ssfrCompositeShader->GetUniformID("skyZenithColor"),  1, skyZenith);
     glUniform1f(ssfrCompositeShader->GetUniformID("foamAmount"), foamAmountLive);
     glUniform1f(ssfrCompositeShader->GetUniformID("exposure"),   exposure);
+    glUniform1i(ssfrCompositeShader->GetUniformID("uMaterial"),  fluidMaterial);
     SetGradeUniforms(ssfrCompositeShader);
 
     glBindVertexArray(ssfrQuadVAO);
