@@ -521,6 +521,46 @@ void Scene0p::UpdateContainerWireframe() {
                 rp = p;
             }
         }
+    } else if (shape == 10) {
+        // Mobius: centerline circle + the single twisting boundary edge
+        const float R = H.x, wHalf = H.y;
+        { Vec3 prev; for (int s = 0; s <= SEGS; ++s) { float phi = (float(s) / SEGS) * TWO_PI;
+            Vec3 p = xform(R * std::cos(phi), 0.0f, R * std::sin(phi)); if (s > 0) seg(prev, p); prev = p; } }
+        { Vec3 prev; int N = SEGS * 2; for (int s = 0; s <= N; ++s) { float phi = (float(s) / SEGS) * TWO_PI;
+            float erx = std::cos(phi), erz = std::sin(phi), psi = 0.5f * phi;
+            float wx = std::cos(psi) * erx, wy = std::sin(psi), wz = std::cos(psi) * erz;
+            Vec3 p = xform(R * erx + wHalf * wx, wHalf * wy, R * erz + wHalf * wz);
+            if (s > 0) seg(prev, p); prev = p; } }
+    } else if (shape == 11 || shape == 14) {
+        // DNA (two strands + rungs) / coil (one strand)
+        const float R = H.x;
+        const float turns = std::max(1.0f, fluidGPU->param_shapeAux.x);
+        const float Hh = std::max(fluidGPU->param_shapeAux.y, H.y);
+        const int strands = (shape == 11) ? 2 : 1;
+        for (int strand = 0; strand < strands; ++strand) {
+            float ph = strand ? 3.14159265f : 0.0f; Vec3 prev; int N = int(turns * 32) + 1;
+            for (int s = 0; s <= N; ++s) { float f = float(s) / N, t = f * turns * TWO_PI, y = (f - 0.5f) * 2.0f * Hh;
+                Vec3 p = xform(R * std::cos(t + ph), y, R * std::sin(t + ph)); if (s > 0) seg(prev, p); prev = p; }
+        }
+        if (shape == 11) {
+            int RUNGS = std::max(2, int(turns * 4));
+            for (int k = 0; k < RUNGS; ++k) { float f = float(k) / (RUNGS - 1), t = f * turns * TWO_PI, y = (f - 0.5f) * 2.0f * Hh;
+                seg(xform(R * std::cos(t), y, R * std::sin(t)), xform(R * std::cos(t + 3.14159265f), y, R * std::sin(t + 3.14159265f))); }
+        }
+    } else if (shape == 12) {
+        // Heart outline
+        const float S = H.x * 0.0625f; Vec3 prev; int N = 128;
+        for (int s = 0; s <= N; ++s) { float t = (float(s) / N) * TWO_PI, st = std::sin(t);
+            float hx = 16.0f * st * st * st;
+            float hy = 13.0f * std::cos(t) - 5.0f * std::cos(2 * t) - 2.0f * std::cos(3 * t) - std::cos(4 * t);
+            Vec3 p = xform(S * hx, S * hy, 0.0f); if (s > 0) seg(prev, p); prev = p; }
+    } else if (shape == 13) {
+        // Gyroid: draw the bounding sphere
+        const float r = H.x;
+        for (int axis = 0; axis < 3; ++axis) { Vec3 prev; for (int s = 0; s <= SEGS; ++s) { float a = (float(s) / SEGS) * TWO_PI;
+            float ca = std::cos(a) * r, sa = std::sin(a) * r;
+            Vec3 p = (axis == 0) ? xform(0.0f, ca, sa) : (axis == 1) ? xform(ca, 0.0f, sa) : xform(ca, sa, 0.0f);
+            if (s > 0) seg(prev, p); prev = p; } }
     } else {
         // Box: 12 edges
         Vec3 c[8]; int i = 0;
@@ -891,9 +931,21 @@ void Scene0p::Update(const float deltaTime) {
         }
         if (ImGui::CollapsingHeader("Container")) {
             ImGui::PushID("ContainerBox");
-            ImGui::Combo("Shape", &fluidGPU->param_shapeType,
+            if (ImGui::Combo("Shape", &fluidGPU->param_shapeType,
                 "Box\0Sphere\0Cylinder\0Torus (Donut)\0Capsule (Pill)\0Hourglass\0Egg\0"
-                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0");
+                "Star Prism\0Blob (Superellipsoid)\0Trefoil Knot\0"
+                "Mobius Band\0DNA Double Helix\0Heart\0Gyroid\0Coil / Spring\0")) {
+                // First-look defaults for the exotic shapes (the shared shapeAux
+                // default doesn't suit them); shapes 0-9 keep the current dims.
+                switch (fluidGPU->param_shapeType) {
+                    case 10: fluidGPU->param_boxHalf = Vec3(6, 2.0f, 0); fluidGPU->param_shapeAux = Vec3(0.6f, 0, 0); break;
+                    case 11: fluidGPU->param_boxHalf = Vec3(5, 1.0f, 0); fluidGPU->param_shapeAux = Vec3(4, 6, 0);   break;
+                    case 12: fluidGPU->param_boxHalf = Vec3(7, 1.2f, 0); break;
+                    case 13: fluidGPU->param_boxHalf = Vec3(8, 0, 0);    fluidGPU->param_shapeAux = Vec3(0.6f, 1.0f, 0); break;
+                    case 14: fluidGPU->param_boxHalf = Vec3(5, 1.0f, 0); fluidGPU->param_shapeAux = Vec3(5, 7, 0);   break;
+                    default: break;
+                }
+            }
             ImGui::DragFloat3("Center", &fluidGPU->param_boxCenter.x, 0.05f);
             if (fluidGPU->param_shapeType == 1) {
                 ImGui::DragFloat("Radius", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
@@ -933,6 +985,28 @@ void Scene0p::Update(const float deltaTime) {
                 ImGui::DragFloat("Knot Scale", &fluidGPU->param_boxHalf.x, 0.05f, 0.5f, 20.0f);
                 ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.2f, 10.0f);
                 ImGui::TextDisabled("Fluid trapped in a knotted tube. Try Gravity Spin.");
+            } else if (fluidGPU->param_shapeType == 10) {
+                ImGui::DragFloat("Ring Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Band Width", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::DragFloat("Band Thickness", &fluidGPU->param_shapeAux.x, 0.02f, 0.1f, 5.0f);
+                ImGui::TextDisabled("A flat band that twists a half-turn around the loop.");
+            } else if (fluidGPU->param_shapeType == 11 || fluidGPU->param_shapeType == 14) {
+                ImGui::DragFloat("Coil Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::DragFloat("Turns", &fluidGPU->param_shapeAux.x, 0.1f, 1.0f, 12.0f);
+                ImGui::DragFloat("Half Height", &fluidGPU->param_shapeAux.y, 0.1f, 1.0f, 30.0f);
+                ImGui::TextDisabled(fluidGPU->param_shapeType == 11
+                    ? "Two intertwined helices. Try Gravity Spin + trails."
+                    : "A vertical spring. Great with fountain / gravity spin.");
+            } else if (fluidGPU->param_shapeType == 12) {
+                ImGui::DragFloat("Heart Size", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 30.0f);
+                ImGui::DragFloat("Tube Radius", &fluidGPU->param_boxHalf.y, 0.05f, 0.3f, 10.0f);
+                ImGui::TextDisabled("A glowing heart outline of fluid (XY plane).");
+            } else if (fluidGPU->param_shapeType == 13) {
+                ImGui::DragFloat("Sphere Radius", &fluidGPU->param_boxHalf.x, 0.05f, 1.0f, 40.0f);
+                ImGui::DragFloat("Cell Frequency", &fluidGPU->param_shapeAux.x, 0.01f, 0.15f, 2.0f);
+                ImGui::DragFloat("Channel Width", &fluidGPU->param_shapeAux.y, 0.02f, 0.2f, 2.5f);
+                ImGui::TextDisabled("Fluid fills a gyroid channel network. Endless randomness.");
             } else {
                 ImGui::DragFloat3("Half Extents", &fluidGPU->param_boxHalf.x, 0.05f, 0.05f, 100.0f);
             }

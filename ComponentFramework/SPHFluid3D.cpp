@@ -230,6 +230,60 @@ void SPHFluidGPU::InitializeParticles() {
                 }
                 return bestD2 <= r * r;
             }
+            case 10: {  // Mobius band: within the twisting flat cross-section
+                float R = param_boxHalf.x;
+                float wHalf = param_boxHalf.y - margin;
+                float tHalf = std::max(param_shapeAux.x, 0.05f) - margin;
+                if (wHalf <= 0.0f || tHalf <= 0.0f) return false;
+                float phi = std::atan2(lz, lx);
+                float erx = std::cos(phi), erz = std::sin(phi);
+                float ox = lx - R * erx, oy = ly, oz = lz - R * erz;
+                float psi = 0.5f * phi;
+                float cw = std::cos(psi), sw = std::sin(psi);
+                float du = ox * (cw * erx) + oy * (sw)      + oz * (cw * erz);
+                float dv = ox * (-sw * erx) + oy * (cw)     + oz * (-sw * erz);
+                return std::fabs(du) <= wHalf && std::fabs(dv) <= tHalf;
+            }
+            case 11: case 14: {  // DNA double helix (11) / coil (14): within tube r of the strand(s)
+                float R = param_boxHalf.x, r = param_boxHalf.y - margin;
+                float turns = std::max(1.0f, param_shapeAux.x);
+                float H = std::max(param_shapeAux.y, param_boxHalf.y);
+                if (r <= 0.0f) return false;
+                float bestD2 = 1e30f;
+                for (int k = 0; k < 64; ++k) {
+                    float f = float(k) / 63.0f, t = f * turns * 6.2831853f, y = (f - 0.5f) * 2.0f * H;
+                    float c1x = R * std::cos(t), c1z = R * std::sin(t);
+                    float d1 = (lx - c1x) * (lx - c1x) + (ly - y) * (ly - y) + (lz - c1z) * (lz - c1z);
+                    bestD2 = std::min(bestD2, d1);
+                    if (param_shapeType == 11) {   // second strand, half a turn away
+                        float c2x = R * std::cos(t + 3.14159265f), c2z = R * std::sin(t + 3.14159265f);
+                        float d2 = (lx - c2x) * (lx - c2x) + (ly - y) * (ly - y) + (lz - c2z) * (lz - c2z);
+                        bestD2 = std::min(bestD2, d2);
+                    }
+                }
+                return bestD2 <= r * r;
+            }
+            case 12: {  // heart-outline tube ring in XY
+                float S = param_boxHalf.x * 0.0625f, r = param_boxHalf.y - margin;
+                if (r <= 0.0f) return false;
+                float bestD2 = 1e30f;
+                for (int k = 0; k < 64; ++k) {
+                    float t = 6.2831853f * float(k) / 64.0f, st = std::sin(t);
+                    float hx = 16.0f * st * st * st;
+                    float hy = 13.0f * std::cos(t) - 5.0f * std::cos(2 * t) - 2.0f * std::cos(3 * t) - std::cos(4 * t);
+                    float dx = lx - S * hx, dy = ly - S * hy, dz = lz;
+                    bestD2 = std::min(bestD2, dx * dx + dy * dy + dz * dz);
+                }
+                return bestD2 <= r * r;
+            }
+            case 13: {  // gyroid channel inside a bounding sphere
+                float R = param_boxHalf.x - margin;
+                float sc = std::max(param_shapeAux.x, 0.1f), th = std::clamp(param_shapeAux.y, 0.2f, 2.5f);
+                if (lx * lx + ly * ly + lz * lz > R * R) return false;
+                float qx = lx * sc, qy = ly * sc, qz = lz * sc;
+                float g = std::sin(qx) * std::cos(qy) + std::sin(qy) * std::cos(qz) + std::sin(qz) * std::cos(qx);
+                return std::fabs(g) <= th;
+            }
             default: return true;
             }
         };
